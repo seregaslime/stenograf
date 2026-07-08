@@ -9,6 +9,7 @@ server/.env
 client/node_modules/
 client/dist/
 client/dist-electron/
+client/release/
 
 # OS
 .DS_Store

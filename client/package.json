@@ -2,7 +2,7 @@
   "name": "stenograf-client",
   "productName": "Стенограф",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Транскрипция встреч в реальном времени с локальной LLM",
   "main": "electron/main.cjs",
   "scripts": {
@@ -10,7 +10,39 @@
     "electron-dev": "wait-on tcp:5173 && cross-env ELECTRON_START_URL=http://localhost:5173 electron .",
     "web": "vite",
     "build": "tsc && vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dist:mac": "npm run build && electron-builder --mac dmg",
+    "dist:win": "npm run build && electron-builder --win nsis --x64"
+  },
+  "build": {
+    "appId": "ru.seregaslime.stenograf",
+    "productName": "Стенограф",
+    "artifactName": "Stenograf-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json"
+    ],
+    "asar": false,
+    "mac": {
+      "target": "dmg",
+      "identity": null,
+      "category": "public.app-category.productivity",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Стенограф превращает вашу речь на встрече в текст.",
+        "NSAudioCaptureUsageDescription": "Стенограф записывает системный звук, чтобы транскрибировать голоса собеседников в звонке."
+      }
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   },
   "dependencies": {
     "electron-audio-loopback": "^1.0.6",
@@ -25,6 +57,7 @@
     "concurrently": "^9.0.0",
     "cross-env": "^7.0.3",
     "electron": "^35.0.0",
+    "electron-builder": "^26.15.3",
     "typescript": "^5.6.0",
     "vite": "^6.0.0",
     "wait-on": "^8.0.0"
