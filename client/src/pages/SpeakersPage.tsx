@@ -95,6 +95,23 @@ export default function SpeakersPage() {
     }
   }
 
+  async function removeSpeaker(speaker: SpeakerDto) {
+    const ok = confirm(
+      `Удалить профиль «${speaker.name}»?\n` +
+        "Реплики в транскриптах останутся (как «Неизвестный»), " +
+        "а отпечатки и образцы голоса будут удалены — при следующей встрече " +
+        "этот голос распознается как новый спикер.",
+    );
+    if (!ok) return;
+    try {
+      await api.deleteSpeaker(speaker.id);
+      setSelected((previous) => previous.filter((x) => x !== speaker.id));
+      await load();
+    } catch (exc) {
+      setError((exc as Error).message);
+    }
+  }
+
   const [a, b] = selected
     .map((id) => speakers?.find((s) => s.id === id))
     .filter(Boolean) as SpeakerDto[];
@@ -169,6 +186,15 @@ export default function SpeakersPage() {
                     >
                       ✎
                     </button>
+                    {!speaker.is_self && (
+                      <button
+                        className="icon-btn"
+                        title="Удалить профиль"
+                        onClick={() => removeSpeaker(speaker)}
+                      >
+                        🗑
+                      </button>
+                    )}
                   </div>
                 )}
                 <div className="speaker-stats">

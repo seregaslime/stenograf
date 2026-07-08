@@ -75,8 +75,9 @@ def rename_speaker(db: Session, speaker_id: int, name: str) -> Optional[Speaker]
     return speaker
 
 
-def reassign_segments(db: Session, from_speaker_id: int, to_speaker_id: int) -> int:
-    """Переписывает speaker_id в сегментах ВСЕХ встреч (основа merge)."""
+def reassign_segments(db: Session, from_speaker_id: int, to_speaker_id: Optional[int]) -> int:
+    """Переписывает speaker_id в сегментах ВСЕХ встреч (merge либо, с None,
+    отвязка реплик при удалении спикера — текст остаётся как «Неизвестный»)."""
     segments = db.scalars(
         select(Segment).where(Segment.speaker_id == from_speaker_id)
     ).all()

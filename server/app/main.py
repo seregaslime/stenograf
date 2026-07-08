@@ -19,7 +19,7 @@ from .asr.transcriber import Transcriber
 from .config import settings
 from .db import crud
 from .db.database import init_db, session_scope
-from .db.models import Meeting, SpeakerSample
+from .db.models import Meeting, Speaker, SpeakerSample
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import SpeakerRegistry
 from .llm.ollama_client import OllamaClient
@@ -216,6 +216,21 @@ def patch_speaker(speaker_id: int, body: RenameBody):
         if speaker is None:
             raise HTTPException(404, "Спикер не найден")
         return {"id": speaker.id, "name": speaker.name}
+
+
+@app.delete("/api/speakers/{speaker_id}")
+def delete_speaker(speaker_id: int):
+    with session_scope() as db:
+        speaker = db.get(Speaker, speaker_id)
+        if speaker is None:
+            raise HTTPException(404, "Спикер не найден")
+        if speaker.is_self:
+            raise HTTPException(400, "Нельзя удалить собственный профиль «Вы»")
+        unassigned = crud.reassign_segments(db, speaker_id, None)
+        db.delete(speaker)  # отпечатки и образцы каскадом
+    registry.forget(speaker_id)
+    shutil.rmtree(settings.samples_dir / f"spk_{speaker_id}", ignore_errors=True)
+    return {"deleted": speaker_id, "unassigned_segments": unassigned}
 
 
 @app.post("/api/speakers/merge")

@@ -37,6 +37,10 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ name }),
     }),
+  deleteSpeaker: (id: number) =>
+    request<{ deleted: number; unassigned_segments: number }>(`/api/speakers/${id}`, {
+      method: "DELETE",
+    }),
   mergeSpeakers: (ids: [number, number]) =>
     request<{ target_id: number; name: string; moved_segments: number }>(
       "/api/speakers/merge",
