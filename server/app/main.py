@@ -34,13 +34,29 @@ embedder = VoiceEmbedder(settings)
 registry = SpeakerRegistry(settings)
 ollama = OllamaClient(settings)
 
-_background_tasks: set[asyncio.Task] = set()
+# Задачи суммаризации по id встречи — чтобы отменять их при удалении встречи
+# (иначе задача удалённой встречи допишет резюме в новую встречу с тем же id)
+_summary_tasks: dict[int, asyncio.Task] = {}
 
 
 def _schedule_summary(meeting_id: int) -> None:
+    previous = _summary_tasks.pop(meeting_id, None)
+    if previous is not None:
+        previous.cancel()
     task = asyncio.create_task(generate_summary(settings, ollama, meeting_id))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    _summary_tasks[meeting_id] = task
+
+    def _cleanup(done: asyncio.Task, mid: int = meeting_id) -> None:
+        if _summary_tasks.get(mid) is done:
+            del _summary_tasks[mid]
+
+    task.add_done_callback(_cleanup)
+
+
+def _cancel_summary(meeting_id: int) -> None:
+    task = _summary_tasks.pop(meeting_id, None)
+    if task is not None:
+        task.cancel()
 
 
 def _warm_models() -> None:
@@ -119,7 +135,9 @@ def get_meeting(meeting_id: int):
 
 
 @app.delete("/api/meetings/{meeting_id}")
-def delete_meeting(meeting_id: int):
+async def delete_meeting(meeting_id: int):
+    # async: отмена задачи резюме должна происходить в том же event loop
+    _cancel_summary(meeting_id)
     with session_scope() as db:
         meeting = db.get(Meeting, meeting_id)
         if meeting is None:

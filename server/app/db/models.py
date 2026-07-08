@@ -17,6 +17,9 @@ class Speaker(Base):
     """Глобальный профиль голоса — живёт между встречами."""
 
     __tablename__ = "speakers"
+    # AUTOINCREMENT: id удалённых профилей не переиспользуются — иначе фоновые
+    # задачи и файлы образцов «наследуются» новым профилем с тем же id
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
@@ -47,6 +50,9 @@ class SpeakerSample(Base):
 
 class Meeting(Base):
     __tablename__ = "meetings"
+    # AUTOINCREMENT: см. Speaker — новая встреча не должна получить id удалённой,
+    # пока по удалённой ещё может дописывать резюме фоновая задача
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(300), default="Встреча")
