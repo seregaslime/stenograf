@@ -1,7 +1,6 @@
 // Захват звука. Весь пайплайн работает на 16 кГц mono PCM16:
 // AudioContext создаётся сразу с sampleRate 16000 (Chromium ресемплирует сам),
 // AudioWorklet (public/pcm-worklet.js) нарезает поток на кадры по 100 мс.
-import { platform } from "../store";
 
 export interface CaptureCallbacks {
   onChunk: (pcm: ArrayBuffer) => void;
@@ -11,6 +10,10 @@ export interface CaptureCallbacks {
 export interface CaptureHandle {
   stop: () => void;
 }
+
+/** Источник системного звука: автозахват (Electron, без драйверов)
+ *  или конкретное устройство-петля (BlackHole и т.п.). */
+export type SystemSource = { kind: "auto" } | { kind: "device"; deviceId: string };
 
 export class AudioEngine {
   private context: AudioContext | null = null;
@@ -40,23 +43,45 @@ export class AudioEngine {
   }
 
   /** Системный звук.
-   *  macOS: виртуальное устройство BlackHole выбирается как обычный аудио-вход.
-   *  Windows: getDisplayMedia + WASAPI loopback (см. electron/main.cjs). */
-  async startSystem(deviceId: string | undefined, callbacks: CaptureCallbacks): Promise<CaptureHandle> {
-    if (platform() === "win32") {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
+   *  "auto" — захват без драйверов через Electron (ScreenCaptureKit на macOS 13+,
+   *  WASAPI loopback на Windows); нужно разрешение «Запись экрана и звука системы».
+   *  "device" — виртуальное устройство-петля (BlackHole) как обычный аудио-вход:
+   *  запасной путь для старых macOS и запуска в браузере. */
+  async startSystem(source: SystemSource, callbacks: CaptureCallbacks): Promise<CaptureHandle> {
+    if (source.kind === "auto") {
+      const bridge = window.stenograf;
+      if (!bridge?.enableLoopbackAudio) {
+        throw new Error("автозахват доступен только в приложении; в браузере выберите устройство BlackHole");
+      }
+      const permissionError = new Error(
+        "нет разрешения «Запись экрана и звука системы». Включите приложение в " +
+          "Системных настройках (кнопка ниже) и перезапустите его",
+      );
+      if ((await bridge.getScreenPermission?.()) === "denied") {
+        throw permissionError;
+      }
+      await bridge.enableLoopbackAudio();
+      let stream: MediaStream;
+      try {
+        // Без разрешения обработчик в main-процессе падает, а getDisplayMedia
+        // повисает навсегда — поэтому ждём не дольше 15 секунд.
+        stream = await Promise.race([
+          navigator.mediaDevices.getDisplayMedia({ video: true, audio: true }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(permissionError), 15_000)),
+        ]);
+      } finally {
+        await bridge.disableLoopbackAudio?.();
+      }
       stream.getVideoTracks().forEach((track) => track.stop());
       if (stream.getAudioTracks().length === 0) {
-        throw new Error("Система не отдала звук — разрешите захват аудио");
+        stream.getTracks().forEach((track) => track.stop());
+        throw permissionError;
       }
       return this.attach(stream, callbacks);
     }
-    if (!deviceId) {
-      throw new Error("Выберите устройство системного звука (BlackHole) в настройках встречи");
-    }
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        deviceId: { exact: deviceId },
+        deviceId: { exact: source.deviceId },
         channelCount: 1,
         echoCancellation: false,
         noiseSuppression: false,

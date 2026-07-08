@@ -4,6 +4,7 @@ import { LiveClient } from "../api/live";
 import {
   AudioEngine,
   type CaptureHandle,
+  type SystemSource,
   listAudioInputs,
   looksLikeLoopback,
 } from "../audio/capture";
@@ -38,8 +39,8 @@ export default function LivePage({
   const [hintsWanted, setHintsWanted] = useState(false);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [micId, setMicId] = useState("");
-  const [sysId, setSysId] = useState("");
-  const [sysWin, setSysWin] = useState(true); // Windows: захват системного звука
+  // "auto" — автозахват через Electron (без драйверов), "" — выключен, иначе deviceId
+  const [sysId, setSysId] = useState(platform() !== "web" ? "auto" : "");
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
   const [segments, setSegments] = useState<SegmentDto[]>([]);
@@ -61,17 +62,18 @@ export default function LivePage({
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
 
-  const isMac = platform() === "darwin";
-  const isWin = platform() === "win32";
-  const loopbackDevice = devices.find(looksLikeLoopback);
+  const isElectron = platform() !== "web";
 
   useEffect(() => {
     listAudioInputs().then((list) => {
       setDevices(list);
-      const loopback = list.find(looksLikeLoopback);
-      if (loopback) setSysId(loopback.deviceId);
+      if (!isElectron) {
+        // в браузере автозахвата нет — сразу предлагаем виртуальный кабель
+        const loopback = list.find(looksLikeLoopback);
+        if (loopback) setSysId(loopback.deviceId);
+      }
     });
-  }, []);
+  }, [isElectron]);
 
   useEffect(() => {
     const el = chatRef.current;
@@ -155,10 +157,11 @@ export default function LivePage({
       stop();
       return;
     }
-    const wantSystem = isWin ? sysWin : Boolean(sysId);
-    if (wantSystem) {
+    if (sysId !== "") {
       try {
-        const system = await engine.startSystem(isWin ? undefined : sysId, {
+        const source: SystemSource =
+          sysId === "auto" ? { kind: "auto" } : { kind: "device", deviceId: sysId };
+        const system = await engine.startSystem(source, {
           onChunk: (pcm) => clientRef.current?.sendAudio(1, pcm),
           onLevel: setSysLevel,
         });
@@ -261,53 +264,43 @@ export default function LivePage({
                     ))}
                 </select>
               </label>
-              {isWin ? (
-                <div className="field">
-                  <span style={{ display: "block", fontSize: 12.5, color: "var(--muted)", marginBottom: 6 }}>
-                    Системный звук
-                  </span>
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      checked={sysWin}
-                      onChange={(event) => setSysWin(event.target.checked)}
-                    />
-                    <span className="box">✓</span>
-                    Захватывать звук системы
-                  </label>
-                </div>
-              ) : (
-                <label className="field">
-                  <span>Системный звук (звонок, видео)</span>
-                  <select
-                    className="input"
-                    value={sysId}
-                    onChange={(event) => setSysId(event.target.value)}
-                  >
-                    <option value="">— выключен —</option>
-                    {devices.map((device) => (
-                      <option key={device.deviceId} value={device.deviceId}>
-                        {device.label || "Устройство"}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
+              <label className="field">
+                <span>Системный звук (звонок, видео)</span>
+                <select
+                  className="input"
+                  value={sysId}
+                  onChange={(event) => setSysId(event.target.value)}
+                >
+                  {isElectron && <option value="auto">Автоматически — звук системы</option>}
+                  <option value="">— выключен —</option>
+                  {devices.map((device) => (
+                    <option key={device.deviceId} value={device.deviceId}>
+                      {device.label || "Устройство"}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
-            {isMac && !loopbackDevice && (
-              <details className="help">
-                <summary>Как захватить системный звук на macOS (BlackHole)</summary>
-                <ol>
-                  <li>Установите виртуальный аудиодрайвер: <code>brew install blackhole-2ch</code></li>
-                  <li>
-                    В «Настройка Audio-MIDI» создайте «Устройство с несколькими выходами»:
-                    динамики + BlackHole 2ch, и выберите его как выход звука.
-                  </li>
-                  <li>Здесь выберите «BlackHole 2ch» как источник системного звука.</li>
-                </ol>
-                Так вы слышите собеседников как обычно, а Стенограф получает копию звука.
-              </details>
-            )}
+            <details className="help">
+              <summary>Про захват системного звука</summary>
+              <p style={{ margin: "8px 0 0" }}>
+                «Автоматически» работает в приложении на macOS 13+ и Windows без драйверов:
+                при первом запуске macOS попросит разрешить{" "}
+                <b>«Запись экрана и звука системы»</b> — разрешите и перезапустите приложение.
+              </p>
+              <p style={{ margin: "8px 0 0" }}>
+                Запасной вариант для старых macOS или запуска в браузере — виртуальный
+                аудиокабель:
+              </p>
+              <ol>
+                <li>Установите драйвер: <code>brew install blackhole-2ch</code></li>
+                <li>
+                  В «Настройка Audio-MIDI» создайте «Устройство с несколькими выходами»
+                  (динамики + BlackHole 2ch) и назначьте его выходом звука.
+                </li>
+                <li>Здесь выберите «BlackHole 2ch» как источник системного звука.</li>
+              </ol>
+            </details>
             <div style={{ marginTop: 10 }}>
               <label className="check">
                 <input
@@ -362,7 +355,20 @@ export default function LivePage({
       {(error || warning) && (
         <div style={{ padding: "12px 24px 0" }}>
           {error && <div className="banner error">{error}</div>}
-          {warning && <div className="banner warn">{warning}</div>}
+          {warning && (
+            <div className="banner warn">
+              {warning}
+              {warning.includes("Запись экрана") && (
+                <button
+                  className="btn small"
+                  style={{ marginLeft: 10 }}
+                  onClick={() => window.stenograf?.openScreenSettings?.()}
+                >
+                  Открыть настройки
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
       <div className="live-main">

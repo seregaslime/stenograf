@@ -74,6 +74,12 @@ export type LiveEvent =
 
 declare global {
   interface Window {
-    stenograf?: { platform: string };
+    stenograf?: {
+      platform: string;
+      enableLoopbackAudio?: () => Promise<void>;
+      disableLoopbackAudio?: () => Promise<void>;
+      getScreenPermission?: () => Promise<string>; // granted | denied | not-determined | restricted | unknown
+      openScreenSettings?: () => Promise<void>;
+    };
   }
 }

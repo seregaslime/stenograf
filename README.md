@@ -62,10 +62,19 @@ npm run dev             # Vite + Electron
 
 ## Системный звук
 
+Режим «Автоматически» (по умолчанию) захватывает звук системы **без драйверов**
+через [electron-audio-loopback](https://github.com/alectrocute/electron-audio-loopback)
+(ScreenCaptureKit на macOS, WASAPI loopback на Windows):
+
 | ОС | Как работает |
 |---|---|
-| **Windows** | Из коробки: WASAPI loopback через Electron (`audio: 'loopback'`). |
-| **macOS** | Нужен виртуальный аудиодрайвер [BlackHole](https://github.com/ExistentialAudio/BlackHole): `brew install blackhole-2ch`. Затем в «Настройка Audio-MIDI» создайте «Устройство с несколькими выходами» (динамики + BlackHole) и выберите его системным выходом. В приложении укажите BlackHole как источник системного звука. |
+| **Windows** | Из коробки. |
+| **macOS 13+** | При первом запуске разрешите приложению «Запись экрана и звука системы» (Системные настройки → Конфиденциальность) и перезапустите его. macOS Sequoia периодически просит подтвердить разрешение повторно — это системное поведение. |
+| **macOS ≤ 12 / браузер** | Запасной путь: виртуальный аудиокабель [BlackHole](https://github.com/ExistentialAudio/BlackHole) (`brew install blackhole-2ch`), затем в «Настройка Audio-MIDI» — «Устройство с несколькими выходами» (динамики + BlackHole) как системный выход, а BlackHole выбрать источником в приложении. |
+
+Важно: Electron должен оставаться на ветке 35.x — в Electron 40+ регрессия,
+loopback-аудио на macOS возвращает тишину
+([electron#49607](https://github.com/electron/electron/issues/49607)).
 
 Совет: в наушниках качество диаризации выше — голоса собеседников не попадают
 в микрофон повторно (для микрофона включено эхоподавление).

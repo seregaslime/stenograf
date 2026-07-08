@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "electron-audio-loopback": "^1.0.6",
     "marked": "^14.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
