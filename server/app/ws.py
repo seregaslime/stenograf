@@ -170,9 +170,9 @@ class LiveSession:
                 match = MatchResult(self_speaker.id, self_speaker.name, True, None, False)
             else:
                 match = await self._match_system_speaker(db, segment)
-                self._registry.maybe_save_sample(db, match.speaker_id, segment.audio)
                 self._last_system = match
                 self._last_system_end = segment.end_s
+            self._registry.maybe_save_sample(db, match.speaker_id, segment.audio)
             row = crud.add_segment(
                 db, meeting_id, match.speaker_id, channel,
                 segment.start_s, segment.end_s, text, match.similarity,

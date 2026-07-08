@@ -14,7 +14,7 @@ class Base(DeclarativeBase):
 
 
 class Speaker(Base):
-    """Глобальный профиль голоса — живёт между встречами."""
+    """Человек. Живёт между встречами; у него 1..N отпечатков голоса."""
 
     __tablename__ = "speakers"
     # AUTOINCREMENT: id удалённых профилей не переиспользуются — иначе фоновые
@@ -24,14 +24,34 @@ class Speaker(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
     is_self: Mapped[bool] = mapped_column(default=False)  # владелец микрофона ("Вы")
-    # Центроид ECAPA-эмбеддингов (float32 bytes) и сколько эмбеддингов в него вошло
-    centroid: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
-    embedding_count: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     samples: Mapped[list["SpeakerSample"]] = relationship(
         back_populates="speaker", cascade="all, delete-orphan"
     )
+    voiceprints: Mapped[list["VoicePrint"]] = relationship(
+        back_populates="speaker", cascade="all, delete-orphan"
+    )
+
+
+class VoicePrint(Base):
+    """Один «отпечаток» голоса — центроид ECAPA-эмбеддингов (float32 bytes).
+
+    У человека может быть несколько отпечатков: гарнитура, телефон и ноутбук
+    звучат по-разному. При объединении профилей отпечатки не усредняются,
+    а собираются под одним спикером — человек узнаётся в любом «звучании».
+    """
+
+    __tablename__ = "voiceprints"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    speaker_id: Mapped[int] = mapped_column(ForeignKey("speakers.id", ondelete="CASCADE"))
+    centroid: Mapped[bytes] = mapped_column(LargeBinary)
+    embedding_count: Mapped[int] = mapped_column(default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    speaker: Mapped[Speaker] = relationship(back_populates="voiceprints")
 
 
 class SpeakerSample(Base):

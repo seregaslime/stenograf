@@ -37,10 +37,10 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ name }),
     }),
-  mergeSpeakers: (sourceId: number, targetId: number) =>
-    request<{ target_id: number; moved_segments: number }>("/api/speakers/merge", {
-      method: "POST",
-      body: JSON.stringify({ source_id: sourceId, target_id: targetId }),
-    }),
+  mergeSpeakers: (ids: [number, number]) =>
+    request<{ target_id: number; name: string; moved_segments: number }>(
+      "/api/speakers/merge",
+      { method: "POST", body: JSON.stringify({ speaker_ids: ids }) },
+    ),
   sampleUrl: (sampleId: number) => `${getServerUrl()}/api/samples/${sampleId}`,
 };

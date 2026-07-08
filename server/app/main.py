@@ -200,8 +200,7 @@ class RenameBody(BaseModel):
 
 
 class MergeBody(BaseModel):
-    source_id: int
-    target_id: int
+    speaker_ids: list[int]  # ровно два id; сервер сам выбирает целевой профиль
 
 
 @app.get("/api/speakers")
@@ -221,9 +220,11 @@ def patch_speaker(speaker_id: int, body: RenameBody):
 
 @app.post("/api/speakers/merge")
 def merge_speakers(body: MergeBody):
+    if len(body.speaker_ids) != 2:
+        raise HTTPException(400, "Нужно ровно два спикера")
     with session_scope() as db:
         try:
-            result = registry.merge(db, body.source_id, body.target_id)
+            result = registry.merge(db, body.speaker_ids[0], body.speaker_ids[1])
         except ValueError as exc:
             raise HTTPException(400, str(exc))
     return result

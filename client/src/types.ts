@@ -49,6 +49,7 @@ export interface SpeakerDto {
   is_self: boolean;
   meetings_count: number;
   segments_count: number;
+  voiceprints_count: number;
   created_at: string | null;
   samples: SpeakerSampleDto[];
 }

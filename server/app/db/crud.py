@@ -6,7 +6,7 @@ from typing import Optional, Sequence
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
-from .models import Meeting, Segment, Speaker, SpeakerSample
+from .models import Meeting, Segment, Speaker, SpeakerSample, VoicePrint
 
 
 # --- Спикеры ---
@@ -29,18 +29,28 @@ def create_speaker(db: Session) -> Speaker:
 
 
 def list_speakers(db: Session) -> list[dict]:
+    # скалярные подзапросы вместо join'ов — два outerjoin размножили бы строки
+    meetings_sq = (
+        select(func.count(func.distinct(Segment.meeting_id)))
+        .where(Segment.speaker_id == Speaker.id)
+        .scalar_subquery()
+    )
+    segments_sq = (
+        select(func.count(Segment.id))
+        .where(Segment.speaker_id == Speaker.id)
+        .scalar_subquery()
+    )
+    prints_sq = (
+        select(func.count(VoicePrint.id))
+        .where(VoicePrint.speaker_id == Speaker.id)
+        .scalar_subquery()
+    )
     rows = db.execute(
-        select(
-            Speaker,
-            func.count(func.distinct(Segment.meeting_id)).label("meetings"),
-            func.count(Segment.id).label("segments"),
-        )
-        .outerjoin(Segment, Segment.speaker_id == Speaker.id)
-        .group_by(Speaker.id)
+        select(Speaker, meetings_sq, segments_sq, prints_sq)
         .order_by(Speaker.is_self.desc(), Speaker.id)
     ).all()
     result = []
-    for speaker, meetings, segments in rows:
+    for speaker, meetings, segments, prints in rows:
         result.append(
             {
                 "id": speaker.id,
@@ -48,6 +58,7 @@ def list_speakers(db: Session) -> list[dict]:
                 "is_self": speaker.is_self,
                 "meetings_count": meetings,
                 "segments_count": segments,
+                "voiceprints_count": prints,
                 "created_at": speaker.created_at.isoformat() if speaker.created_at else None,
                 "samples": [
                     {"id": s.id, "duration_s": round(s.duration_s, 1)} for s in speaker.samples

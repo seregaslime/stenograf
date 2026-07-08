@@ -1,9 +1,12 @@
 """Глобальная библиотека голосов.
 
-Профили спикеров живут между встречами: для каждого хранится центроид
-ECAPA-эмбеддингов. Новый речевой сегмент сверяется с библиотекой по косинусной
-близости — так человек «узнаётся» на следующей встрече. Ошибки (один человек
-на разных микрофонах = два профиля) чинятся ручным merge.
+Спикер — это человек; у него 1..N «отпечатков» голоса (центроидов
+ECAPA-эмбеддингов): гарнитура, телефон и ноутбук звучат по-разному. Новый
+речевой сегмент сверяется со ВСЕМИ отпечатками всех спикеров по косинусной
+близости — так человек узнаётся на следующей встрече в любом «звучании».
+
+Объединение профилей (один человек распознался как два) не усредняет
+отпечатки, а переносит их под одного спикера — данные не теряются.
 """
 import logging
 import threading
@@ -18,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from ..config import SAMPLE_RATE, Settings
 from ..db import crud
-from ..db.models import Speaker, SpeakerSample
+from ..db.models import Segment, Speaker, SpeakerSample, VoicePrint
 
 log = logging.getLogger(__name__)
 
@@ -32,25 +35,36 @@ class MatchResult:
     is_new: bool
 
 
+@dataclass
+class _Print:
+    id: int
+    vector: np.ndarray
+    count: int
+
+
 class SpeakerRegistry:
     def __init__(self, cfg: Settings):
         self._cfg = cfg
         self._lock = threading.Lock()
-        # speaker_id -> (центроид, число эмбеддингов в нём)
-        self._centroids: dict[int, tuple[np.ndarray, int]] = {}
+        self._prints: dict[int, list[_Print]] = {}  # speaker_id -> отпечатки
         self._self_id: Optional[int] = None
 
     # --- загрузка / self ---
 
     def load(self, db: Session) -> None:
         with self._lock:
-            self._centroids.clear()
+            self._prints.clear()
             self._self_id = crud.get_or_create_self_speaker(db).id
-            for speaker in db.scalars(select(Speaker)):
-                if speaker.centroid is not None:
-                    vec = np.frombuffer(speaker.centroid, dtype=np.float32).copy()
-                    self._centroids[speaker.id] = (vec, speaker.embedding_count)
-            log.info("Библиотека голосов: %d профилей с центроидами", len(self._centroids))
+            total = 0
+            for row in db.scalars(select(VoicePrint)):
+                vector = np.frombuffer(row.centroid, dtype=np.float32).copy()
+                self._prints.setdefault(row.speaker_id, []).append(
+                    _Print(row.id, vector, row.embedding_count)
+                )
+                total += 1
+            log.info(
+                "Библиотека голосов: %d спикеров, %d отпечатков", len(self._prints), total
+            )
 
     @property
     def self_id(self) -> int:
@@ -60,41 +74,55 @@ class SpeakerRegistry:
     # --- сопоставление ---
 
     def match_system(self, db: Session, embedding: np.ndarray) -> MatchResult:
-        """Ищет владельца голоса среди известных профилей, иначе создаёт новый."""
+        """Ищет владельца голоса по всем отпечаткам, иначе создаёт новый профиль."""
         with self._lock:
-            best_id, best_sim = None, -1.0
-            for speaker_id, (centroid, _count) in self._centroids.items():
+            best: Optional[tuple[int, _Print]] = None
+            best_sim = -1.0
+            for speaker_id, prints in self._prints.items():
                 if speaker_id == self._self_id:
                     continue  # голос владельца микрофона идёт отдельным каналом
-                sim = float(np.dot(centroid, embedding))
-                if sim > best_sim:
-                    best_id, best_sim = speaker_id, sim
+                for print_ in prints:
+                    sim = float(np.dot(print_.vector, embedding))
+                    if sim > best_sim:
+                        best, best_sim = (speaker_id, print_), sim
 
-            if best_id is not None and best_sim >= self._cfg.speaker_match_threshold:
-                self._update_centroid(db, best_id, embedding)
-                speaker = db.get(Speaker, best_id)
-                return MatchResult(best_id, speaker.name, False, round(best_sim, 3), False)
+            if best is not None and best_sim >= self._cfg.speaker_match_threshold:
+                speaker_id, print_ = best
+                self._update_print(db, print_, embedding)
+                speaker = db.get(Speaker, speaker_id)
+                return MatchResult(speaker_id, speaker.name, False, round(best_sim, 3), False)
 
             speaker = crud.create_speaker(db)
-            self._set_centroid(db, speaker.id, embedding, 1)
+            self._add_print(db, speaker.id, embedding)
             log.info("Новый профиль голоса: %s (лучшая близость была %.3f)", speaker.name, best_sim)
             return MatchResult(speaker.id, speaker.name, False,
                                round(best_sim, 3) if best_sim > -1 else None, True)
 
-    def _update_centroid(self, db: Session, speaker_id: int, embedding: np.ndarray) -> None:
-        centroid, count = self._centroids[speaker_id]
-        capped = min(count, self._cfg.speaker_centroid_max_count)
-        new = (centroid * capped + embedding) / (capped + 1)
+    def _update_print(self, db: Session, print_: _Print, embedding: np.ndarray) -> None:
+        """Скользящее среднее отпечатка; вес старого центроида ограничен, чтобы
+        отпечаток мог медленно «дрейфовать» за голосом."""
+        capped = min(print_.count, self._cfg.speaker_centroid_max_count)
+        new = (print_.vector * capped + embedding) / (capped + 1)
         norm = np.linalg.norm(new)
         if norm > 0:
             new = new / norm
-        self._set_centroid(db, speaker_id, new.astype(np.float32), count + 1)
+        print_.vector = new.astype(np.float32)
+        print_.count += 1
+        row = db.get(VoicePrint, print_.id)
+        row.centroid = print_.vector.tobytes()
+        row.embedding_count = print_.count
 
-    def _set_centroid(self, db: Session, speaker_id: int, vec: np.ndarray, count: int) -> None:
-        self._centroids[speaker_id] = (vec, count)
-        speaker = db.get(Speaker, speaker_id)
-        speaker.centroid = vec.tobytes()
-        speaker.embedding_count = count
+    def _add_print(self, db: Session, speaker_id: int, embedding: np.ndarray) -> None:
+        row = VoicePrint(
+            speaker_id=speaker_id,
+            centroid=embedding.astype(np.float32).tobytes(),
+            embedding_count=1,
+        )
+        db.add(row)
+        db.flush()
+        self._prints.setdefault(speaker_id, []).append(
+            _Print(row.id, embedding.astype(np.float32), 1)
+        )
 
     # --- аудио-образцы голоса ---
 
@@ -120,40 +148,50 @@ class SpeakerRegistry:
 
     # --- ручные операции (вкладка «Спикеры») ---
 
-    def merge(self, db: Session, source_id: int, target_id: int) -> dict:
-        """Сливает source в target: сегменты всех встреч, образцы, центроиды."""
-        source = db.get(Speaker, source_id)
-        target = db.get(Speaker, target_id)
-        if source is None or target is None:
-            raise ValueError("Спикер не найден")
-        if source_id == target_id:
+    def merge(self, db: Session, id_a: int, id_b: int) -> dict:
+        """Объединяет двух спикеров в одного. Целевой профиль выбирается сам:
+        «Вы» > человеческое имя > больше реплик > меньший id. Отпечатки голоса
+        и образцы переносятся, сегменты всех встреч переписываются."""
+        if id_a == id_b:
             raise ValueError("Нельзя объединить спикера с самим собой")
-        if source.is_self:
-            # «Вы» всегда остаётся — меняем направление слияния
-            source, target = target, source
-            source_id, target_id = target_id, source_id
+        a = db.get(Speaker, id_a)
+        b = db.get(Speaker, id_b)
+        if a is None or b is None:
+            raise ValueError("Спикер не найден")
+
+        def rank(speaker: Speaker) -> tuple:
+            segments = db.scalar(
+                select(func.count(Segment.id)).where(Segment.speaker_id == speaker.id)
+            )
+            return (speaker.is_self, self._has_custom_name(speaker), segments, -speaker.id)
+
+        target, source = (a, b) if rank(a) >= rank(b) else (b, a)
+        if not self._has_custom_name(target) and self._has_custom_name(source):
+            target.name = source.name
 
         with self._lock:
-            src = self._centroids.pop(source_id, None)
-            dst = self._centroids.get(target_id)
-            if src is not None and dst is not None:
-                src_vec, src_n = src
-                dst_vec, dst_n = dst
-                merged = (dst_vec * dst_n + src_vec * src_n) / (dst_n + src_n)
-                norm = np.linalg.norm(merged)
-                if norm > 0:
-                    merged = merged / norm
-                self._set_centroid(db, target_id, merged.astype(np.float32), dst_n + src_n)
-            elif src is not None:
-                self._set_centroid(db, target_id, src[0], src[1])
-
-        moved = crud.reassign_segments(db, source_id, target_id)
+            moved_prints = self._prints.pop(source.id, [])
+            self._prints.setdefault(target.id, []).extend(moved_prints)
+        # Переприсваиваем родителя: объект атомарно переезжает между
+        # коллекциями, и cascade delete-orphan при удалении source его не тронет
+        for print_row in list(source.voiceprints):
+            print_row.speaker = target
         for sample in list(source.samples):
-            sample.speaker_id = target_id
+            sample.speaker = target
+        db.flush()
+        moved = crud.reassign_segments(db, source.id, target.id)
+        source_name = source.name
         db.delete(source)
-        log.info("Merge: «%s» → «%s», перенесено сегментов: %d", source.name, target.name, moved)
-        return {"target_id": target_id, "moved_segments": moved}
+        log.info(
+            "Merge: «%s» → «%s», сегментов: %d, отпечатков теперь: %d",
+            source_name, target.name, moved, len(self._prints.get(target.id, [])),
+        )
+        return {"target_id": target.id, "name": target.name, "moved_segments": moved}
+
+    @staticmethod
+    def _has_custom_name(speaker: Speaker) -> bool:
+        return bool(speaker.name) and speaker.name != f"Спикер {speaker.id}"
 
     def forget(self, speaker_id: int) -> None:
         with self._lock:
-            self._centroids.pop(speaker_id, None)
+            self._prints.pop(speaker_id, None)

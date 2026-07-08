@@ -18,7 +18,34 @@ def init_db() -> None:
     from . import models  # noqa: F401 — регистрирует таблицы
 
     models.Base.metadata.create_all(engine)
+    _migrate_voiceprints(models.Base.metadata)
     _migrate_autoincrement(models.Base.metadata)
+
+
+def _migrate_voiceprints(metadata) -> None:
+    """Переносит центроиды из speakers в таблицу voiceprints (базы до v0.3).
+
+    Раньше у спикера был один центроид прямо в строке; теперь отпечатков может
+    быть несколько. Работает до _migrate_autoincrement: та перестройка берёт
+    список колонок из актуальной модели и потеряла бы старую колонку centroid.
+    """
+    with engine.begin() as conn:
+        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(speakers)")]
+        if "centroid" not in columns:
+            return
+        conn.exec_driver_sql(
+            "INSERT INTO voiceprints (speaker_id, centroid, embedding_count, created_at) "
+            "SELECT id, centroid, embedding_count, created_at FROM speakers "
+            "WHERE centroid IS NOT NULL"
+        )
+        keep = "id, name, is_self, created_at"
+        conn.exec_driver_sql(f"CREATE TEMPORARY TABLE _migration AS SELECT {keep} FROM speakers")
+        conn.exec_driver_sql("DROP TABLE speakers")
+        metadata.tables["speakers"].create(conn)
+        conn.exec_driver_sql(
+            f"INSERT INTO speakers ({keep}) SELECT {keep} FROM _migration"
+        )
+        conn.exec_driver_sql("DROP TABLE _migration")
 
 
 def _migrate_autoincrement(metadata) -> None:
