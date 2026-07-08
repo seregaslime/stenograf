@@ -1,0 +1,401 @@
+import { useEffect, useRef, useState } from "react";
+import type { Page } from "../App";
+import { LiveClient } from "../api/live";
+import {
+  AudioEngine,
+  type CaptureHandle,
+  listAudioInputs,
+  looksLikeLoopback,
+} from "../audio/capture";
+import Transcript, { formatTime } from "../components/Transcript";
+import { isDebugMode, platform } from "../store";
+import type { HealthDto, LiveEvent, SegmentDto } from "../types";
+
+type Phase = "setup" | "starting" | "live" | "stopping";
+
+function LevelMeter({ label, value }: { label: string; value: number }) {
+  const width = Math.min(100, Math.round(value * 260)); // RMS речи ~0.05–0.3
+  return (
+    <div className="level-meter">
+      <span>{label}</span>
+      <div className="level-track">
+        <div className="level-fill" style={{ width: `${width}%` }} />
+      </div>
+    </div>
+  );
+}
+
+export default function LivePage({
+  navigate,
+  health,
+}: {
+  navigate: (page: Page) => void;
+  health: HealthDto | null;
+}) {
+  const [phase, setPhase] = useState<Phase>("setup");
+  const [title, setTitle] = useState("");
+  const [recordAudio, setRecordAudio] = useState(false);
+  const [hintsWanted, setHintsWanted] = useState(false);
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [micId, setMicId] = useState("");
+  const [sysId, setSysId] = useState("");
+  const [sysWin, setSysWin] = useState(true); // Windows: захват системного звука
+  const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
+  const [segments, setSegments] = useState<SegmentDto[]>([]);
+  const [hintList, setHintList] = useState<{ text: string; at: string }[]>([]);
+  const [hintError, setHintError] = useState("");
+  const [micLevel, setMicLevel] = useState(0);
+  const [sysLevel, setSysLevel] = useState(0);
+  const [sysActive, setSysActive] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [liveTitle, setLiveTitle] = useState("");
+
+  const clientRef = useRef<LiveClient | null>(null);
+  const engineRef = useRef<AudioEngine | null>(null);
+  const handlesRef = useRef<CaptureHandle[]>([]);
+  const meetingIdRef = useRef<number | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const finishedRef = useRef(false);
+  const chatRef = useRef<HTMLDivElement>(null);
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+
+  const isMac = platform() === "darwin";
+  const isWin = platform() === "win32";
+  const loopbackDevice = devices.find(looksLikeLoopback);
+
+  useEffect(() => {
+    listAudioInputs().then((list) => {
+      setDevices(list);
+      const loopback = list.find(looksLikeLoopback);
+      if (loopback) setSysId(loopback.deviceId);
+    });
+  }, []);
+
+  useEffect(() => {
+    const el = chatRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [segments]);
+
+  useEffect(() => () => cleanup(), []); // размонтирование страницы
+
+  function cleanup() {
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = null;
+    handlesRef.current.forEach((handle) => handle.stop());
+    handlesRef.current = [];
+    engineRef.current?.close();
+    engineRef.current = null;
+    clientRef.current?.close();
+    clientRef.current = null;
+    setMicLevel(0);
+    setSysLevel(0);
+    setSysActive(false);
+  }
+
+  function finish(meetingId: number | null) {
+    if (finishedRef.current) return;
+    finishedRef.current = true;
+    cleanup();
+    setPhase("setup");
+    if (meetingId != null) navigate({ name: "meeting", id: meetingId });
+  }
+
+  function onEvent(event: LiveEvent) {
+    switch (event.type) {
+      case "ready":
+        meetingIdRef.current = event.meeting_id;
+        setLiveTitle(event.title);
+        void startCaptures();
+        break;
+      case "segment":
+        setSegments((previous) => [...previous, event.segment]);
+        break;
+      case "hint":
+        setHintList((previous) => [
+          ...previous,
+          { text: event.text, at: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) },
+        ]);
+        break;
+      case "hint_error":
+        setHintError(event.message);
+        break;
+      case "stopped":
+        finish(event.meeting_id);
+        break;
+      case "error":
+        setError(event.message);
+        break;
+    }
+  }
+
+  function onWsClose() {
+    if (finishedRef.current) return;
+    if (phaseRef.current === "stopping") {
+      finish(meetingIdRef.current);
+    } else if (phaseRef.current === "live" || phaseRef.current === "starting") {
+      setError("Соединение с сервером прервано. Уже распознанная часть встречи сохранена.");
+      cleanup();
+      setPhase("setup");
+    }
+  }
+
+  async function startCaptures() {
+    const engine = new AudioEngine();
+    engineRef.current = engine;
+    try {
+      const mic = await engine.startMic(micId || undefined, {
+        onChunk: (pcm) => clientRef.current?.sendAudio(0, pcm),
+        onLevel: setMicLevel,
+      });
+      handlesRef.current.push(mic);
+    } catch (exc) {
+      setError(`Микрофон недоступен: ${(exc as Error).message}`);
+      stop();
+      return;
+    }
+    const wantSystem = isWin ? sysWin : Boolean(sysId);
+    if (wantSystem) {
+      try {
+        const system = await engine.startSystem(isWin ? undefined : sysId, {
+          onChunk: (pcm) => clientRef.current?.sendAudio(1, pcm),
+          onLevel: setSysLevel,
+        });
+        handlesRef.current.push(system);
+        setSysActive(true);
+      } catch (exc) {
+        setWarning(`Системный звук не захвачен (${(exc as Error).message}) — пишем только микрофон.`);
+      }
+    }
+    const startedAt = Date.now();
+    timerRef.current = setInterval(
+      () => setElapsed(Math.floor((Date.now() - startedAt) / 1000)),
+      1000,
+    );
+    setPhase("live");
+  }
+
+  async function start() {
+    setError("");
+    setWarning("");
+    setHintError("");
+    setSegments([]);
+    setHintList([]);
+    setElapsed(0);
+    finishedRef.current = false;
+    meetingIdRef.current = null;
+    setPhase("starting");
+
+    const client = new LiveClient(onEvent, onWsClose);
+    clientRef.current = client;
+    try {
+      await client.connect();
+    } catch (exc) {
+      setError(
+        `${(exc as Error).message}. Проверьте, что сервер запущен, и адрес в настройках верный.`,
+      );
+      setPhase("setup");
+      return;
+    }
+    client.start({
+      title: title.trim() || "Встреча",
+      record_audio: recordAudio,
+      hints: hintsWanted,
+    });
+  }
+
+  function stop() {
+    setPhase("stopping");
+    handlesRef.current.forEach((handle) => handle.stop());
+    handlesRef.current = [];
+    if (clientRef.current?.connected) {
+      clientRef.current.stop(); // ответ придёт событием "stopped"
+    } else {
+      finish(meetingIdRef.current);
+    }
+  }
+
+  // ---------------------------------------------------------------- setup
+
+  if (phase === "setup" || phase === "starting") {
+    return (
+      <div className="content">
+        <div className="setup-grid">
+          <h1>Новая встреча</h1>
+          <p className="page-sub">
+            Речь с микрофона и из звонка превращается в текст в реальном времени.
+            Все данные обрабатываются локально.
+          </p>
+          {error && <div className="banner error">{error}</div>}
+          {!health && (
+            <div className="banner warn">
+              Сервер недоступен — запустите его или проверьте адрес в настройках.
+            </div>
+          )}
+          <div className="card">
+            <label className="field">
+              <span>Название встречи</span>
+              <input
+                className="input"
+                placeholder="Например: Планёрка отдела"
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+              />
+            </label>
+            <div className="setup-row">
+              <label className="field">
+                <span>Микрофон</span>
+                <select
+                  className="input"
+                  value={micId}
+                  onChange={(event) => setMicId(event.target.value)}
+                >
+                  <option value="">По умолчанию</option>
+                  {devices
+                    .filter((device) => !looksLikeLoopback(device))
+                    .map((device) => (
+                      <option key={device.deviceId} value={device.deviceId}>
+                        {device.label || "Микрофон"}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              {isWin ? (
+                <div className="field">
+                  <span style={{ display: "block", fontSize: 12.5, color: "var(--muted)", marginBottom: 6 }}>
+                    Системный звук
+                  </span>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={sysWin}
+                      onChange={(event) => setSysWin(event.target.checked)}
+                    />
+                    <span className="box">✓</span>
+                    Захватывать звук системы
+                  </label>
+                </div>
+              ) : (
+                <label className="field">
+                  <span>Системный звук (звонок, видео)</span>
+                  <select
+                    className="input"
+                    value={sysId}
+                    onChange={(event) => setSysId(event.target.value)}
+                  >
+                    <option value="">— выключен —</option>
+                    {devices.map((device) => (
+                      <option key={device.deviceId} value={device.deviceId}>
+                        {device.label || "Устройство"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+            {isMac && !loopbackDevice && (
+              <details className="help">
+                <summary>Как захватить системный звук на macOS (BlackHole)</summary>
+                <ol>
+                  <li>Установите виртуальный аудиодрайвер: <code>brew install blackhole-2ch</code></li>
+                  <li>
+                    В «Настройка Audio-MIDI» создайте «Устройство с несколькими выходами»:
+                    динамики + BlackHole 2ch, и выберите его как выход звука.
+                  </li>
+                  <li>Здесь выберите «BlackHole 2ch» как источник системного звука.</li>
+                </ol>
+                Так вы слышите собеседников как обычно, а Стенограф получает копию звука.
+              </details>
+            )}
+            <div style={{ marginTop: 10 }}>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={recordAudio}
+                  onChange={(event) => setRecordAudio(event.target.checked)}
+                />
+                <span className="box">✓</span>
+                Записывать аудио встречи
+              </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={hintsWanted}
+                  onChange={(event) => setHintsWanted(event.target.checked)}
+                />
+                <span className="box">✓</span>
+                Подсказки ИИ во время встречи
+                <span className="hint">экспериментально, нагружает память</span>
+              </label>
+            </div>
+            <div style={{ marginTop: 18 }}>
+              <button
+                className="btn primary big"
+                onClick={start}
+                disabled={phase === "starting" || !health}
+              >
+                {phase === "starting" ? <span className="spinner" /> : "▶"} Начать встречу
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------- live
+
+  return (
+    <div className="live-layout">
+      <div className="live-header">
+        <span className="rec-dot" />
+        <span className="live-title">{liveTitle}</span>
+        <span className="live-timer">{formatTime(elapsed)}</span>
+        <LevelMeter label="Микрофон" value={micLevel} />
+        {sysActive && <LevelMeter label="Система" value={sysLevel} />}
+        <span className="live-spacer" />
+        <button className="btn danger" onClick={stop} disabled={phase === "stopping"}>
+          {phase === "stopping" ? <span className="spinner" /> : "■"} Завершить
+        </button>
+      </div>
+      {(error || warning) && (
+        <div style={{ padding: "12px 24px 0" }}>
+          {error && <div className="banner error">{error}</div>}
+          {warning && <div className="banner warn">{warning}</div>}
+        </div>
+      )}
+      <div className="live-main">
+        <div className="live-chat" ref={chatRef}>
+          {segments.length > 0 ? (
+            <Transcript segments={segments} debug={isDebugMode()} />
+          ) : (
+            <div className="empty">
+              <div className="big-icon">🎙️</div>
+              Говорите — распознанные реплики появятся здесь
+            </div>
+          )}
+        </div>
+        {hintsWanted && (
+          <div className="hints-panel">
+            <div className="hints-title">
+              💡 Подсказки ИИ <span className="chip live">демо</span>
+            </div>
+            {hintError && <div className="banner warn">{hintError}</div>}
+            {hintList.length === 0 && !hintError && (
+              <div className="empty" style={{ padding: "20px 8px" }}>
+                Модель слушает разговор…
+              </div>
+            )}
+            {[...hintList].reverse().slice(0, 8).map((hint, index) => (
+              <div className="hint-card" key={`${hint.at}-${index}`}>
+                {hint.text}
+                <div className="hint-time">{hint.at}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

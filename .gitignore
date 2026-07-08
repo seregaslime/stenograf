@@ -1,0 +1,15 @@
+# Python
+server/.venv/
+__pycache__/
+*.pyc
+server/data/
+server/.env
+
+# Node / Electron
+client/node_modules/
+client/dist/
+client/dist-electron/
+
+# OS
+.DS_Store
+.claude/
