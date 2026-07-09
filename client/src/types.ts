@@ -57,11 +57,21 @@ export interface SpeakerDto {
 export interface HealthDto {
   status: string;
   version: string;
-  asr: { model: string; loaded: boolean };
+  asr: { engine: string; model: string; loaded: boolean };
   diarization: { loaded: boolean };
   ollama: { reachable: boolean; models: string[] };
   summary_model: string;
   hints_model: string;
+}
+
+export interface AsrStateDto {
+  engine: string;
+  model: string;
+  loaded: boolean;
+  loading: boolean;
+  error: string | null;
+  engines: { faster_whisper: boolean; mlx: boolean };
+  models: string[];
 }
 
 export type LiveEvent =

@@ -1,7 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api/rest";
 import { DEFAULT_SERVER_URL, getSetting, isDebugMode, platform, setSetting } from "../store";
-import type { HealthDto } from "../types";
+import type { AsrStateDto, HealthDto } from "../types";
+
+const ENGINE_LABELS: Record<string, string> = {
+  faster_whisper: "CPU (faster-whisper)",
+  mlx: "GPU Metal (mlx)",
+};
+
+const MODEL_HINTS: Record<string, string> = {
+  tiny: "самая лёгкая, много ошибок на русском",
+  base: "лёгкая, но заметно больше ошибок (имена, окончания)",
+  small: "лучшее качество, стандарт",
+};
 
 export default function SettingsPage({ onServerChange }: { onServerChange: () => void }) {
   const [url, setUrl] = useState(getSetting("serverUrl", DEFAULT_SERVER_URL));
@@ -10,12 +21,20 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
   const [testError, setTestError] = useState("");
   const [testing, setTesting] = useState(false);
 
+  const [asr, setAsr] = useState<AsrStateDto | null>(null);
+  const [engine, setEngine] = useState("faster_whisper");
+  const [model, setModel] = useState("small");
+  const [asrError, setAsrError] = useState("");
+  const [applying, setApplying] = useState(false);
+  const unmounted = useRef(false);
+
   async function test() {
     setTesting(true);
     setTestError("");
     setHealth(null);
     try {
       setHealth(await api.health());
+      await refreshAsr(true);
     } catch (exc) {
       setTestError((exc as Error).message);
     } finally {
@@ -23,14 +42,55 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     }
   }
 
+  async function refreshAsr(resetSelects: boolean) {
+    try {
+      const state = await api.asr();
+      setAsr(state);
+      if (resetSelects) {
+        setEngine(state.engine);
+        setModel(state.model);
+      }
+      return state;
+    } catch {
+      setAsr(null); // старый сервер без /api/asr — карточку просто не показываем
+      return null;
+    }
+  }
+
   useEffect(() => {
+    unmounted.current = false; // StrictMode в dev монтирует дважды — флаг надо вернуть
     void test();
+    return () => {
+      unmounted.current = true;
+    };
   }, []);
 
   function save() {
     setSetting("serverUrl", url.trim().replace(/\/+$/, "") || DEFAULT_SERVER_URL);
     onServerChange();
     void test();
+  }
+
+  async function applyAsr() {
+    setApplying(true);
+    setAsrError("");
+    try {
+      let state = await api.setAsr(engine, model);
+      setAsr(state);
+      // модель грузится в фоне — опрашиваем сервер, пока не поднимется
+      for (let i = 0; i < 200 && !state.loaded && !state.error; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        if (unmounted.current) return;
+        const fresh = await refreshAsr(false);
+        if (fresh === null) break;
+        state = fresh;
+      }
+      if (state.error) setAsrError(state.error);
+    } catch (exc) {
+      setAsrError((exc as Error).message);
+    } finally {
+      setApplying(false);
+    }
   }
 
   function toggleDebug(checked: boolean) {
@@ -80,7 +140,8 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
             <div className="kv">
               <span className="k">Распознавание речи</span>
               <span>
-                whisper {health.asr.model} {health.asr.loaded ? "· загружен" : "· грузится…"}
+                whisper {health.asr.model} · {ENGINE_LABELS[health.asr.engine] ?? health.asr.engine}{" "}
+                {health.asr.loaded ? "· загружен" : "· грузится…"}
               </span>
             </div>
             <div className="kv">
@@ -102,6 +163,59 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
           </div>
         )}
       </div>
+
+      {asr && (
+        <div className="card settings-block">
+          <h2 style={{ marginBottom: 12 }}>Распознавание речи</h2>
+          <label className="field">
+            <span>Движок</span>
+            <select
+              className="input"
+              value={engine}
+              onChange={(event) => setEngine(event.target.value)}
+            >
+              <option value="faster_whisper">CPU — faster-whisper, работает везде</option>
+              <option value="mlx" disabled={!asr.engines.mlx}>
+                GPU Metal — mlx, разгружает процессор
+                {asr.engines.mlx ? "" : " (недоступен на этом сервере)"}
+              </option>
+            </select>
+          </label>
+          <label className="field">
+            <span>Модель whisper</span>
+            <select
+              className="input"
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+            >
+              {asr.models.map((m) => (
+                <option key={m} value={m}>
+                  {m} — {MODEL_HINTS[m] ?? ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <button
+              className="btn primary"
+              onClick={applyAsr}
+              disabled={applying || (engine === asr.engine && model === asr.model)}
+            >
+              {applying ? <span className="spinner" /> : "Применить"}
+            </button>
+            <span style={{ color: "var(--muted)", fontSize: 12.5 }}>
+              {applying || asr.loading
+                ? "модель загружается…"
+                : `сейчас: ${asr.model} · ${ENGINE_LABELS[asr.engine] ?? asr.engine}${asr.loaded ? " · загружена" : ""}`}
+            </span>
+          </div>
+          {asrError && (
+            <div className="banner error" style={{ marginTop: 12 }}>
+              {asrError}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="card settings-block">
         <h2 style={{ marginBottom: 12 }}>Приложение</h2>

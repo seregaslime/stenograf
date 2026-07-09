@@ -1,5 +1,5 @@
 import { getServerUrl } from "../store";
-import type { HealthDto, MeetingDetail, MeetingListItem, SpeakerDto } from "../types";
+import type { AsrStateDto, HealthDto, MeetingDetail, MeetingListItem, SpeakerDto } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(getServerUrl() + path, {
@@ -21,6 +21,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => request<HealthDto>("/api/health"),
+
+  asr: () => request<AsrStateDto>("/api/asr"),
+  setAsr: (engine: string, model: string) =>
+    request<AsrStateDto>("/api/asr", {
+      method: "POST",
+      body: JSON.stringify({ engine, model }),
+    }),
 
   meetings: () => request<MeetingListItem[]>("/api/meetings"),
   meeting: (id: number) => request<MeetingDetail>(`/api/meetings/${id}`),

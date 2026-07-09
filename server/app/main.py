@@ -11,15 +11,17 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket
+from sqlalchemy import select
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from .asr.transcriber import Transcriber
-from .config import settings
+from .asr.transcriber import MLX_AVAILABLE, Transcriber
+from .config import ASR_ENGINES, ASR_MODELS, save_asr_choice, settings
 from .db import crud
 from .db.database import init_db, session_scope
 from .db.models import Meeting, Speaker, SpeakerSample
+from datetime import datetime, timezone
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import SpeakerRegistry
 from .llm.ollama_client import OllamaClient
@@ -75,6 +77,12 @@ async def lifespan(_app: FastAPI):
         directory.mkdir(parents=True, exist_ok=True)
     init_db()
     with session_scope() as db:
+        # Чистим зависшие встречи (клиент оборвался, а встреча осталась live)
+        stale = db.scalars(select(Meeting).where(Meeting.status == "live")).all()
+        for meeting in stale:
+            meeting.status = "done"
+            meeting.ended_at = datetime.now(timezone.utc)
+            log.info("Зависшая встреча #%d «%s» принудительно завершена", meeting.id, meeting.title)
         registry.load(db)
     if settings.preload_asr:
         threading.Thread(target=_warm_models, daemon=True).start()
@@ -97,12 +105,56 @@ async def health():
     return {
         "status": "ok",
         "version": app.version,
-        "asr": {"model": settings.asr_model, "loaded": transcriber.loaded},
+        "asr": {
+            "engine": transcriber.engine,
+            "model": transcriber.model_name,
+            "loaded": transcriber.loaded,
+        },
         "diarization": {"loaded": embedder.loaded},
         "ollama": await ollama.status(),
         "summary_model": settings.summary_model,
         "hints_model": settings.hints_model,
     }
+
+
+# ---------------------------------------------------------------- ASR
+
+class AsrBody(BaseModel):
+    engine: str
+    model: str
+
+
+def _asr_state() -> dict:
+    return {
+        "engine": transcriber.engine,
+        "model": transcriber.model_name,
+        "loaded": transcriber.loaded,
+        "loading": transcriber.loading,
+        "error": transcriber.load_error,
+        "engines": {"faster_whisper": True, "mlx": MLX_AVAILABLE},
+        "models": list(ASR_MODELS),
+    }
+
+
+@app.get("/api/asr")
+def get_asr():
+    return _asr_state()
+
+
+@app.post("/api/asr")
+async def set_asr(body: AsrBody):
+    if body.engine not in ASR_ENGINES or body.model not in ASR_MODELS:
+        raise HTTPException(400, "Неизвестный движок или модель")
+    if body.engine == "mlx" and not MLX_AVAILABLE:
+        raise HTTPException(400, "mlx-whisper не установлен на этом сервере (нужен Apple Silicon)")
+    with session_scope() as db:
+        live = db.scalars(select(Meeting).where(Meeting.status == "live")).first()
+        if live is not None:
+            raise HTTPException(409, "Идёт встреча — модель можно сменить после её завершения")
+    await transcriber.reconfigure(body.engine, body.model)
+    save_asr_choice(body.engine, body.model)
+    threading.Thread(target=_warm_models, daemon=True).start()
+    return _asr_state()
 
 
 # ---------------------------------------------------------------- встречи
@@ -143,7 +195,9 @@ async def delete_meeting(meeting_id: int):
         if meeting is None:
             raise HTTPException(404, "Встреча не найдена")
         if meeting.status == "live":
-            raise HTTPException(409, "Нельзя удалить идущую встречу")
+            # Встреча могла зависнуть после обрыва клиента — принудительно завершаем
+            meeting.status = "done"
+            meeting.ended_at = datetime.now(timezone.utc)
         if meeting.audio_dir:
             shutil.rmtree(meeting.audio_dir, ignore_errors=True)
         db.delete(meeting)

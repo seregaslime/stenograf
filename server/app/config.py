@@ -1,10 +1,15 @@
 """Конфигурация сервера. Все параметры переопределяются переменными окружения
 с префиксом STENOGRAF_ (например STENOGRAF_ASR_MODEL=base) или файлом .env."""
+import json
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SAMPLE_RATE = 16_000  # весь пайплайн работает на 16 кГц mono
+
+ASR_ENGINES = ("faster_whisper", "mlx")
+ASR_MODELS = ("tiny", "base", "small")  # medium на 8 ГБ рядом с Ollama не помещается
 
 _SERVER_DIR = Path(__file__).resolve().parent.parent
 
@@ -14,8 +19,9 @@ class Settings(BaseSettings):
 
     data_dir: Path = _SERVER_DIR / "data"
 
-    # --- ASR (faster-whisper) ---
-    asr_model: str = "small"        # tiny | base | small | medium
+    # --- ASR ---
+    asr_engine: str = "faster_whisper"  # faster_whisper (CPU) | mlx (GPU Metal, только Apple Silicon)
+    asr_model: str = "small"        # tiny | base | small
     asr_device: str = "cpu"
     asr_compute_type: str = "int8"
     asr_language: str = "ru"        # "auto" — автоопределение языка
@@ -30,10 +36,10 @@ class Settings(BaseSettings):
     vad_max_segment_s: float = 15.0  # принудительная нарезка длинного монолога
 
     # --- Диаризация (глобальная база голосов) ---
-    speaker_match_threshold: float = 0.60  # косинусная близость ECAPA для "тот же человек"
+    speaker_match_threshold: float = 0.35  # косинусная близость ECAPA для "тот же человек"
     speaker_min_embed_s: float = 0.4       # короче — не считаем эмбеддинг, берём последнего спикера
     speaker_max_samples: int = 3           # аудио-образцов голоса на профиль
-    speaker_sample_min_s: float = 1.5
+    speaker_sample_min_s: float = 0.8
     speaker_sample_max_s: float = 8.0
     speaker_centroid_max_count: int = 200  # ограничение веса центроида (чтобы профиль мог "дрейфовать")
 
@@ -65,3 +71,33 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def _asr_choice_path() -> Path:
+    return settings.data_dir / "asr.json"
+
+
+def load_asr_choice() -> None:
+    """Выбор движка/модели, сделанный из приложения, важнее env-дефолтов."""
+    try:
+        data = json.loads(_asr_choice_path().read_text())
+    except (OSError, ValueError):
+        return
+    if data.get("engine") in ASR_ENGINES:
+        settings.asr_engine = data["engine"]
+    if data.get("model") in ASR_MODELS:
+        settings.asr_model = data["model"]
+
+
+def save_asr_choice(engine: str, model: str) -> None:
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    _asr_choice_path().write_text(json.dumps({"engine": engine, "model": model}))
+    settings.asr_engine = engine
+    settings.asr_model = model
+
+
+load_asr_choice()
+
+# mlx-whisper качает модели через huggingface_hub — держим кэш рядом с остальными
+# моделями в data/models, а не в ~/.cache
+os.environ.setdefault("HF_HUB_CACHE", str(settings.models_dir / "hf"))
