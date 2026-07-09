@@ -188,11 +188,11 @@ export default function SpeakersPage() {
                     </button>
                     {!speaker.is_self && (
                       <button
-                        className="icon-btn"
+                        className="btn small danger"
                         title="Удалить профиль"
                         onClick={() => removeSpeaker(speaker)}
                       >
-                        🗑
+                        Удалить
                       </button>
                     )}
                   </div>
