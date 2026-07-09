@@ -35,6 +35,19 @@ CHANNELS = {0: "mic", 1: "system"}
 _STOP = object()  # сигнал потребителю очереди
 
 
+def _texts_similar(a: str, b: str, threshold: float = 0.5) -> bool:
+    """Проверяет, похожи ли два текста (для обнаружения эха микрофона)."""
+    if not a or not b:
+        return False
+    a_words = set(a.lower().split())
+    b_words = set(b.lower().split())
+    if not a_words or not b_words:
+        return False
+    intersection = a_words & b_words
+    union = a_words | b_words
+    return len(intersection) / len(union) >= threshold
+
+
 class LiveSession:
     def __init__(
         self,
@@ -66,6 +79,8 @@ class LiveSession:
         # Короткие сегменты без эмбеддинга приписываем последнему системному спикеру
         self._last_system: Optional[MatchResult] = None
         self._last_system_end = -1e9
+        # Буфер сегментов для обнаружения эха (микрофон дублирует системный звук из колонок)
+        self._recent_segments: deque[dict] = deque(maxlen=30)
 
     # ------------------------------------------------------------------ основной цикл
 
@@ -164,6 +179,20 @@ class LiveSession:
         if not text:
             return
 
+        # Дедупликация эха: если микрофон подхватил звук из колонок (Discord),
+        # тот же текст уже пришёл через системный канал — пропускаем дубликат.
+        for recent in self._recent_segments:
+            if recent["channel"] == channel:
+                continue
+            overlap = min(segment.end_s, recent["end_s"]) - max(segment.start_s, recent["start_s"])
+            if overlap > 0.3 and _texts_similar(text, recent["text"]):
+                log.info("Эхо: канал %s повторяет %s — пропускаем", channel, recent["channel"])
+                return
+        self._recent_segments.append({
+            "channel": channel, "text": text,
+            "start_s": segment.start_s, "end_s": segment.end_s,
+        })
+
         with session_scope() as db:
             if channel == "mic":
                 self_speaker = db.get(Speaker, self._registry.self_id)
@@ -245,28 +274,32 @@ class LiveSession:
             return
         meeting_id, self._meeting_id = self._meeting_id, None
 
-        if self._hints_task:
-            self._hints_task.cancel()
-        # Дожимаем недоговорённые фразы и ждём, пока ASR обработает очередь
-        for channel, segmenter in self._segmenters.items():
-            for segment in segmenter.flush():
-                self._queue.put_nowait((meeting_id, channel, segment))
-        self._queue.put_nowait(_STOP)
-        if self._consumer:
-            try:
-                await asyncio.wait_for(self._consumer, timeout=120)
-            except asyncio.TimeoutError:
-                self._consumer.cancel()
+        try:
+            if self._hints_task:
+                self._hints_task.cancel()
+            # Дожимаем недоговорённые фразы и ждём, пока ASR обработает очередь
+            for channel, segmenter in self._segmenters.items():
+                for segment in segmenter.flush():
+                    self._queue.put_nowait((meeting_id, channel, segment))
+            self._queue.put_nowait(_STOP)
+            if self._consumer:
+                try:
+                    await asyncio.wait_for(self._consumer, timeout=120)
+                except asyncio.TimeoutError:
+                    self._consumer.cancel()
 
-        for recorder in self._recorders.values():
-            recorder.close()
-        self._recorders.clear()
-
-        with session_scope() as db:
-            crud.end_meeting(db, meeting_id)
-        log.info("Встреча #%d завершена", meeting_id)
-        await self._send({"type": "stopped", "meeting_id": meeting_id})
-        self._on_meeting_ended(meeting_id)
+            for recorder in self._recorders.values():
+                recorder.close()
+            self._recorders.clear()
+        except Exception:
+            log.exception("Ошибка при финализации встречи #%d", meeting_id)
+        finally:
+            # ВАЖНО: встреча завершается в БД даже если consumer упал
+            with session_scope() as db:
+                crud.end_meeting(db, meeting_id)
+            log.info("Встреча #%d завершена", meeting_id)
+            await self._send({"type": "stopped", "meeting_id": meeting_id})
+            self._on_meeting_ended(meeting_id)
 
     async def _send(self, payload: dict) -> None:
         try:
