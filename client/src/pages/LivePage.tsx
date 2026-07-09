@@ -29,9 +29,11 @@ function LevelMeter({ label, value }: { label: string; value: number }) {
 export default function LivePage({
   navigate,
   health,
+  onPhaseChange,
 }: {
   navigate: (page: Page) => void;
   health: HealthDto | null;
+  onPhaseChange?: (phase: string | null) => void;
 }) {
   const [phase, setPhase] = useState<Phase>("setup");
   const [title, setTitle] = useState("");
@@ -65,6 +67,10 @@ export default function LivePage({
   const isElectron = platform() !== "web";
 
   useEffect(() => {
+    onPhaseChange?.(phase === "setup" || phase === "stopping" ? null : phase);
+  }, [phase, onPhaseChange]);
+
+  useEffect(() => {
     listAudioInputs().then((list) => {
       setDevices(list);
       if (!isElectron) {
@@ -80,7 +86,13 @@ export default function LivePage({
     if (el) el.scrollTop = el.scrollHeight;
   }, [segments]);
 
-  useEffect(() => () => cleanup(), []); // размонтирование страницы
+  useEffect(() => () => {
+    if (clientRef.current?.connected && (phaseRef.current === "live" || phaseRef.current === "starting")) {
+      clientRef.current?.stop();
+    }
+    cleanup();
+    onPhaseChange?.(null);
+  }, []);
 
   function cleanup() {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -281,6 +293,12 @@ export default function LivePage({
                 </select>
               </label>
             </div>
+            {sysId !== "" && (
+              <div className="banner warn" style={{ marginTop: 10 }}>
+                🎧 Наденьте наушники: если звонок звучит из колонок, микрофон подхватит
+                голоса собеседников — их реплики запишутся как ваши.
+              </div>
+            )}
             <details className="help">
               <summary>Про захват системного звука</summary>
               <p style={{ margin: "8px 0 0" }}>
@@ -322,14 +340,19 @@ export default function LivePage({
                 <span className="hint">экспериментально, нагружает память</span>
               </label>
             </div>
-            <div style={{ marginTop: 18 }}>
+            <div style={{ marginTop: 18, display: "flex", gap: 12, alignItems: "center" }}>
               <button
                 className="btn primary big"
                 onClick={start}
-                disabled={phase === "starting" || !health}
+                disabled={phase === "starting" || !health || !health.asr.loaded}
               >
                 {phase === "starting" ? <span className="spinner" /> : "▶"} Начать встречу
               </button>
+              {health && !health.asr.loaded && (
+                <span style={{ color: "var(--muted)", fontSize: 13 }}>
+                  <span className="spinner" /> модель распознавания загружается — обычно до минуты
+                </span>
+              )}
             </div>
           </div>
         </div>

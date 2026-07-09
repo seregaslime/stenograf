@@ -25,6 +25,7 @@ const NAV: { key: Page["name"]; icon: string; label: string }[] = [
 export default function App() {
   const [page, setPage] = useState<Page>({ name: "live" });
   const [health, setHealth] = useState<HealthDto | null>(null);
+  const [livePhase, setLivePhase] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -58,7 +59,12 @@ export default function App() {
             <button
               key={item.key}
               className={`nav-item ${active === item.key ? "active" : ""}`}
-              onClick={() => setPage({ name: item.key } as Page)}
+              onClick={() => {
+                if (item.key !== "live" && livePhase === "live") {
+                  if (!window.confirm("Встреча ещё идёт. Завершить её и перейти?")) return;
+                }
+                setPage({ name: item.key } as Page);
+              }}
             >
               <span className="icon">{item.icon}</span>
               <span className="nav-label">{item.label}</span>
@@ -73,7 +79,7 @@ export default function App() {
         </div>
       </aside>
       <div className="page-host">
-        {page.name === "live" && <LivePage navigate={setPage} health={health} />}
+        {page.name === "live" && <LivePage navigate={setPage} health={health} onPhaseChange={setLivePhase} />}
         {page.name === "history" && <HistoryPage navigate={setPage} />}
         {page.name === "meeting" && <MeetingPage id={page.id} navigate={setPage} />}
         {page.name === "speakers" && <SpeakersPage />}
