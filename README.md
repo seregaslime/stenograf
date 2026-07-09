@@ -57,21 +57,20 @@ GitHub Actions (workflow «Build installers», артефакты у каждо�
 [Ollama](https://ollama.com).
 
 ```bash
-# 1. Сервер
-cd server
-uv venv --python 3.12 .venv && uv pip install -r requirements.txt --python .venv/bin/python
-# (или классически: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt)
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8765
-
-# 2. LLM (один раз)
-ollama serve &          # если не запущен
+# LLM-модели (один раз)
 ollama pull qwen3:4b    # протоколы встреч
 ollama pull qwen3:1.7b  # подсказки в реальном времени (быстрая)
 
-# 3. Клиент (второй терминал)
-cd client
-npm install
-npm run dev             # Vite + Electron
+# Всё остальное — одной командой (Ollama + сервер + приложение):
+./start.sh
+```
+
+При первом запуске сервер сам создаст окружение и скачает модели распознавания.
+По частям, если нужно:
+
+```bash
+./server/run.sh         # только сервер (окружение создаётся автоматически)
+cd client && npm install && npm run dev   # клиент в dev-режиме (Vite + Electron)
 ```
 
 При первом запуске сервер скачает модели whisper (~500 МБ) и ECAPA (~80 МБ) в

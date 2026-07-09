@@ -14,3 +14,4 @@ client/release/
 # OS
 .DS_Store
 .claude/
+server.log
