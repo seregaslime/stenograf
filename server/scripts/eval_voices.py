@@ -186,7 +186,9 @@ def simulate(names: list[str], embeddings: dict[str, list[np.ndarray]], threshol
     for utterances in itertools.zip_longest(*(embeddings[n] for n in names)):
         for name, vector in zip(names, utterances):
             if vector is not None:
-                assigned[name].add(registry.match_system(db, vector).speaker_id)
+                assigned[name].add(
+                    registry.match_all(db, vector, mic_dominant=False).speaker_id
+                )
 
     profiles = set().union(*assigned.values())
     splits = sum(1 for ids in assigned.values() if len(ids) > 1)

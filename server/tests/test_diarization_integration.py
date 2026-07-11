@@ -15,7 +15,7 @@ import pytest
 sys.path.append(str(Path(__file__).resolve().parent.parent / "scripts"))
 import eval_voices  # noqa: E402
 
-from app.config import SAMPLE_RATE, Settings  # noqa: E402
+from app.config import SAMPLE_RATE, Settings  # noqa: E402, F401
 from app.diarization.embedder import VoiceEmbedder  # noqa: E402
 
 pytestmark = pytest.mark.integration
@@ -65,3 +65,46 @@ def test_current_threshold_separates_three_voices(synth_embeddings):
         names, synth_embeddings, cfg.speaker_match_threshold
     )
     assert (profiles, splits, merges) == (3, 0, 0)
+
+
+def test_speaker_echo_yields_single_segment(tmp_path):
+    """Эхо из колонок: голос из звонка играет в комнате и попадает в микрофон
+    с задержкой. В смешанном потоке это ОДИН сегмент (копия совпадает по
+    времени с оригиналом), и доминанта — системный канал."""
+    import subprocess
+
+    import numpy as np
+
+    from app.audio.mixer import ChannelMixer
+    from app.audio.vad import SpeechSegmenter
+
+    if shutil.which("say") is None:
+        pytest.skip("нет команды say (не macOS)")
+    wav = tmp_path / "phrase.wav"
+    subprocess.run(
+        ["say", "-v", "Milena", "-o", str(wav), "--data-format=LEI16@16000",
+         "Коллеги, давайте обсудим результаты тестирования новой версии"],
+        check=True, capture_output=True,
+    )
+    voice = eval_voices.load_wav_16k(wav)
+
+    delay = int(0.04 * SAMPLE_RATE)  # звук долетел до микрофона за ~40 мс
+    system = np.concatenate([voice, np.zeros(SAMPLE_RATE, dtype=np.float32)])
+    mic = np.concatenate([np.zeros(delay, dtype=np.float32), voice * 0.3,
+                          np.zeros(SAMPLE_RATE - delay, dtype=np.float32)])
+
+    cfg = Settings(_env_file=None)
+    mixer = ChannelMixer(cfg)
+    segmenter = SpeechSegmenter(cfg)
+    segments = []
+    chunk = 1600  # кадры по 100 мс, как шлёт клиент
+    for i in range(0, len(system), chunk):
+        for channel, stream in (("mic", mic), ("system", system)):
+            for mixed in mixer.feed(channel, stream[i:i + chunk]):
+                segments += segmenter.feed(mixed)
+    for mixed in mixer.flush():
+        segments += segmenter.feed(mixed)
+    segments += segmenter.flush()
+
+    assert len(segments) == 1, f"эхо раздвоило фразу: {len(segments)} сегмента"
+    assert mixer.dominance(segments[0].start_s, segments[0].end_s) == "system"

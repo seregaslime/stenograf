@@ -4,7 +4,15 @@
 и JSON-команды (start / stop / hints). Сервер отвечает JSON-событиями:
 ready, segment, speaker_new, hint, stopped, error.
 
-Пайплайн: кадр → VAD-сегментация → очередь → (ASR → эмбеддинг → спикер → БД → событие).
+Конвейер из обособленных этапов (каждый заменяем независимо):
+    микшер каналов → денойз → VAD-сегментация → очередь →
+    → ASR → эмбеддинг → диаризация → БД → событие клиенту.
+
+Каналы склеиваются в один поток и распознаются единым проходом; кто говорит —
+решает диаризация по всем спикерам (включая «Вы»), опираясь на подсказку
+микшера о том, в каком канале голос был громче. Эхо из колонок дублей не даёт:
+копия голоса в миксе совпадает по времени с оригиналом.
+
 Очередь с одним потребителем сохраняет порядок реплик и не даёт CPU-задачам
 выполняться параллельно (важно для 8 ГБ RAM).
 """
@@ -19,11 +27,12 @@ import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .asr.transcriber import Transcriber
+from .audio.denoise import create_denoiser
+from .audio.mixer import ChannelMixer
 from .audio.vad import SpeechSegment, SpeechSegmenter
 from .config import SAMPLE_RATE, Settings
 from .db import crud
 from .db.database import session_scope
-from .db.models import Speaker
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import MatchResult, SpeakerRegistry
 from .llm import prompts
@@ -33,19 +42,6 @@ log = logging.getLogger(__name__)
 
 CHANNELS = {0: "mic", 1: "system"}
 _STOP = object()  # сигнал потребителю очереди
-
-
-def _texts_similar(a: str, b: str, threshold: float = 0.5) -> bool:
-    """Проверяет, похожи ли два текста (для обнаружения эха микрофона)."""
-    if not a or not b:
-        return False
-    a_words = set(a.lower().split())
-    b_words = set(b.lower().split())
-    if not a_words or not b_words:
-        return False
-    intersection = a_words & b_words
-    union = a_words | b_words
-    return len(intersection) / len(union) >= threshold
 
 
 class LiveSession:
@@ -68,7 +64,10 @@ class LiveSession:
         self._on_meeting_ended = on_meeting_ended
 
         self._meeting_id: Optional[int] = None
-        self._segmenters: dict[str, SpeechSegmenter] = {}
+        # Этапы конвейера (создаются на старте встречи)
+        self._mixer: Optional[ChannelMixer] = None
+        self._denoiser = None
+        self._segmenter: Optional[SpeechSegmenter] = None
         self._recorders: dict[str, wave.Wave_write] = {}
         self._queue: asyncio.Queue = asyncio.Queue()
         self._consumer: Optional[asyncio.Task] = None
@@ -76,11 +75,9 @@ class LiveSession:
         self._hints_enabled = False
         self._recent: deque[str] = deque(maxlen=60)  # последние реплики для подсказок
         self._new_text_since_hint = False
-        # Короткие сегменты без эмбеддинга приписываем последнему системному спикеру
-        self._last_system: Optional[MatchResult] = None
-        self._last_system_end = -1e9
-        # Буфер сегментов для обнаружения эха (микрофон дублирует системный звук из колонок)
-        self._recent_segments: deque[dict] = deque(maxlen=30)
+        # Короткие сегменты без эмбеддинга приписываем последнему говорившему
+        self._last_match: Optional[MatchResult] = None
+        self._last_match_end = -1e9
 
     # ------------------------------------------------------------------ основной цикл
 
@@ -137,7 +134,9 @@ class LiveSession:
                     writer.setframerate(SAMPLE_RATE)
                     self._recorders[channel] = writer
             title = meeting.title
-        self._segmenters = {"mic": SpeechSegmenter(self._cfg), "system": SpeechSegmenter(self._cfg)}
+        self._mixer = ChannelMixer(self._cfg)
+        self._denoiser = create_denoiser(self._cfg)
+        self._segmenter = SpeechSegmenter(self._cfg)
         self._hints_enabled = bool(command.get("hints"))
         self._consumer = asyncio.create_task(self._consume())
         self._hints_task = asyncio.create_task(self._hints_loop())
@@ -147,7 +146,7 @@ class LiveSession:
     # ------------------------------------------------------------------ аудио
 
     def _on_audio(self, frame: bytes) -> None:
-        if self._meeting_id is None or not self._segmenters or len(frame) < 2:
+        if self._meeting_id is None or self._segmenter is None or len(frame) < 2:
             return
         channel = CHANNELS.get(frame[0])
         if channel is None:
@@ -155,11 +154,12 @@ class LiveSession:
         pcm = frame[1:]
         recorder = self._recorders.get(channel)
         if recorder is not None:
-            recorder.writeframes(pcm)
+            recorder.writeframes(pcm)  # в запись идут сырые каналы, до микса
         audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
-        # VAD лёгкий (~1 мс на кадр 100 мс) — работаем прямо в event loop
-        for segment in self._segmenters[channel].feed(audio):
-            self._queue.put_nowait((self._meeting_id, channel, segment))
+        # Микшер и VAD лёгкие (~1 мс на кадр 100 мс) — работаем прямо в event loop
+        for mixed in self._mixer.feed(channel, audio):
+            for segment in self._segmenter.feed(self._denoiser.process(mixed)):
+                self._queue.put_nowait((self._meeting_id, segment))
 
     # ------------------------------------------------------------------ обработка сегментов
 
@@ -168,42 +168,27 @@ class LiveSession:
             item = await self._queue.get()
             if item is _STOP:
                 return
-            meeting_id, channel, segment = item
+            meeting_id, segment = item
             try:
-                await self._process_segment(meeting_id, channel, segment)
+                await self._process_segment(meeting_id, segment)
             except Exception:
                 log.exception("Ошибка обработки сегмента")
 
-    async def _process_segment(self, meeting_id: int, channel: str, segment: SpeechSegment) -> None:
+    async def _process_segment(self, meeting_id: int, segment: SpeechSegment) -> None:
         text = await self._transcriber.transcribe(segment.audio)
         if not text:
             return
 
-        # Дедупликация эха: если микрофон подхватил звук из колонок (Discord),
-        # тот же текст уже пришёл через системный канал — пропускаем дубликат.
-        for recent in self._recent_segments:
-            if recent["channel"] == channel:
-                continue
-            overlap = min(segment.end_s, recent["end_s"]) - max(segment.start_s, recent["start_s"])
-            if overlap > 0.3 and _texts_similar(text, recent["text"]):
-                log.info("Эхо: канал %s повторяет %s — пропускаем", channel, recent["channel"])
-                return
-        self._recent_segments.append({
-            "channel": channel, "text": text,
-            "start_s": segment.start_s, "end_s": segment.end_s,
-        })
+        # Подсказка микшера: в каком канале голос сегмента был громче
+        dominance = self._mixer.dominance(segment.start_s, segment.end_s)
 
         with session_scope() as db:
-            if channel == "mic":
-                self_speaker = db.get(Speaker, self._registry.self_id)
-                match = MatchResult(self_speaker.id, self_speaker.name, True, None, False)
-            else:
-                match = await self._match_system_speaker(db, segment)
-                self._last_system = match
-                self._last_system_end = segment.end_s
+            match = await self._match_speaker(db, segment, dominance)
+            self._last_match = match
+            self._last_match_end = segment.end_s
             self._registry.maybe_save_sample(db, match.speaker_id, segment.audio)
             row = crud.add_segment(
-                db, meeting_id, match.speaker_id, channel,
+                db, meeting_id, match.speaker_id, dominance,
                 segment.start_s, segment.end_s, text, match.similarity,
             )
             segment_id = row.id
@@ -221,7 +206,7 @@ class LiveSession:
             "segment": {
                 "id": segment_id,
                 "meeting_id": meeting_id,
-                "channel": channel,
+                "channel": dominance,
                 "start_s": round(segment.start_s, 2),
                 "end_s": round(segment.end_s, 2),
                 "text": text,
@@ -234,14 +219,14 @@ class LiveSession:
             },
         })
 
-    async def _match_system_speaker(self, db, segment: SpeechSegment) -> MatchResult:
+    async def _match_speaker(self, db, segment: SpeechSegment, dominance: str) -> MatchResult:
         too_short = segment.duration_s < self._cfg.speaker_min_embed_s
-        recently = (segment.start_s - self._last_system_end) < 4.0
-        if too_short and self._last_system is not None and recently:
-            previous = self._last_system
-            return MatchResult(previous.speaker_id, previous.name, False, None, False)
+        recently = (segment.start_s - self._last_match_end) < 4.0
+        if too_short and self._last_match is not None and recently:
+            previous = self._last_match
+            return MatchResult(previous.speaker_id, previous.name, previous.is_self, None, False)
         embedding = await asyncio.to_thread(self._embedder.embed, segment.audio)
-        return self._registry.match_system(db, embedding)
+        return self._registry.match_all(db, embedding, mic_dominant=dominance == "mic")
 
     # ------------------------------------------------------------------ подсказки (демо)
 
@@ -278,9 +263,12 @@ class LiveSession:
             if self._hints_task:
                 self._hints_task.cancel()
             # Дожимаем недоговорённые фразы и ждём, пока ASR обработает очередь
-            for channel, segmenter in self._segmenters.items():
-                for segment in segmenter.flush():
-                    self._queue.put_nowait((meeting_id, channel, segment))
+            if self._segmenter is not None:
+                for mixed in self._mixer.flush():
+                    for segment in self._segmenter.feed(self._denoiser.process(mixed)):
+                        self._queue.put_nowait((meeting_id, segment))
+                for segment in self._segmenter.flush():
+                    self._queue.put_nowait((meeting_id, segment))
             self._queue.put_nowait(_STOP)
             if self._consumer:
                 try:

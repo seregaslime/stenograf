@@ -38,15 +38,15 @@ def registry(cfg, db_session) -> SpeakerRegistry:
 
 
 def test_first_voice_creates_new_profile(registry, db_session, rng):
-    match = registry.match_system(db_session, unit(rng.standard_normal(DIM)))
+    match = registry.match_all(db_session, unit(rng.standard_normal(DIM)), mic_dominant=False)
     assert match.is_new
     assert not match.is_self
 
 
 def test_same_voice_matches_same_profile(registry, db_session, rng):
     voice = unit(rng.standard_normal(DIM))
-    first = registry.match_system(db_session, voice)
-    second = registry.match_system(db_session, voice)
+    first = registry.match_all(db_session, voice, mic_dominant=False)
+    second = registry.match_all(db_session, voice, mic_dominant=False)
     assert not second.is_new
     assert second.speaker_id == first.speaker_id
     assert second.similarity == pytest.approx(1.0, abs=1e-3)
@@ -54,18 +54,18 @@ def test_same_voice_matches_same_profile(registry, db_session, rng):
 
 def test_below_threshold_creates_new_profile(registry, db_session, cfg, rng):
     base = unit(rng.standard_normal(DIM))
-    first = registry.match_system(db_session, base)
+    first = registry.match_all(db_session, base, mic_dominant=False)
     near_miss = vec_with_similarity(base, cfg.speaker_match_threshold - 0.03, rng)
-    second = registry.match_system(db_session, near_miss)
+    second = registry.match_all(db_session, near_miss, mic_dominant=False)
     assert second.is_new
     assert second.speaker_id != first.speaker_id
 
 
 def test_above_threshold_matches(registry, db_session, cfg, rng):
     base = unit(rng.standard_normal(DIM))
-    first = registry.match_system(db_session, base)
+    first = registry.match_all(db_session, base, mic_dominant=False)
     close = vec_with_similarity(base, cfg.speaker_match_threshold + 0.03, rng)
-    second = registry.match_system(db_session, close)
+    second = registry.match_all(db_session, close, mic_dominant=False)
     assert not second.is_new
     assert second.speaker_id == first.speaker_id
 
@@ -81,7 +81,7 @@ def test_three_distinct_voices_stay_separate(registry, db_session, rng):
     for round_ in range(4):  # 4 реплики каждого, по кругу — как в разговоре
         for person, base in enumerate(bases):
             utterance = vec_with_similarity(base, 0.9, rng)  # голос слегка «плавает»
-            match = registry.match_system(db_session, utterance)
+            match = registry.match_all(db_session, utterance, mic_dominant=False)
             ids[person].add(match.speaker_id)
     for person, speaker_ids in ids.items():
         assert len(speaker_ids) == 1, f"человека {person} распознало как {len(speaker_ids)} разных"
@@ -94,21 +94,46 @@ def test_similar_voices_merge_at_low_threshold(registry, db_session, cfg, rng):
     считаются одним человеком. При threshold=0.35 два похожих голоса
     (близость 0.5 — бывает у людей одного пола и тембра) склеятся."""
     base = unit(rng.standard_normal(DIM))
-    first = registry.match_system(db_session, base)
+    first = registry.match_all(db_session, base, mic_dominant=False)
     similar_person = vec_with_similarity(base, cfg.speaker_match_threshold + 0.15, rng)
-    second = registry.match_system(db_session, similar_person)
+    second = registry.match_all(db_session, similar_person, mic_dominant=False)
     assert not second.is_new
     assert second.speaker_id == first.speaker_id
 
 
-def test_self_voice_is_excluded_from_matching(registry, db_session, rng):
-    """Голос владельца микрофона идёт отдельным каналом; даже идентичный
-    вектор в системном канале не должен сматчиться с профилем «Вы»."""
+def test_first_mic_voice_enrolls_self(registry, db_session, rng):
+    """Первый голос, доминирующий в микрофоне, — владелец: профиль «Вы»
+    обучается автоматически, без отдельной записи образцов."""
     voice = unit(rng.standard_normal(DIM))
-    registry._add_print(db_session, registry.self_id, voice)
-    match = registry.match_system(db_session, voice)
-    assert match.speaker_id != registry.self_id
+    match = registry.match_all(db_session, voice, mic_dominant=True)
+    assert match.is_self
+    assert not match.is_new
+    # дальше владелец узнаётся уже по голосу, даже из системного канала
+    again = registry.match_all(db_session, voice, mic_dominant=False)
+    assert again.is_self
+
+
+def test_second_person_at_mic_gets_new_profile(registry, db_session, rng):
+    """Два человека за одним микрофоном: непохожий голос из микрофона
+    не приклеивается к «Вы», а получает свой профиль."""
+    owner = unit(rng.standard_normal(DIM))
+    guest = unit(rng.standard_normal(DIM))  # случайные векторы почти ортогональны
+    registry.match_all(db_session, owner, mic_dominant=True)
+    match = registry.match_all(db_session, guest, mic_dominant=True)
+    assert not match.is_self
     assert match.is_new
+
+
+def test_self_print_updates_only_from_mic(registry, db_session, rng):
+    """Отпечаток «Вы» дообучается только голосом из микрофона: звук из
+    звонка (даже похожий) не должен размывать профиль владельца."""
+    voice = unit(rng.standard_normal(DIM))
+    registry.match_all(db_session, voice, mic_dominant=True)   # энролл
+    self_print = registry._prints[registry.self_id][0]
+    registry.match_all(db_session, voice, mic_dominant=False)  # матч без обучения
+    assert self_print.count == 1
+    registry.match_all(db_session, voice, mic_dominant=True)   # матч с обучением
+    assert self_print.count == 2
 
 
 def test_centroid_drifts_toward_recent_voice(registry, db_session, rng):
@@ -116,12 +141,12 @@ def test_centroid_drifts_toward_recent_voice(registry, db_session, rng):
     текущему звучанию голоса (человек охрип, сменил гарнитуру)."""
     base = unit(rng.standard_normal(DIM))
     drifted = vec_with_similarity(base, 0.85, rng)  # «новое звучание»
-    registry.match_system(db_session, base)
+    registry.match_all(db_session, base, mic_dominant=False)
     print_ = next(iter(p for pid, prints in registry._prints.items()
                        for p in prints if pid != registry.self_id))
     before = float(print_.vector.dot(drifted))
     for _ in range(10):
-        registry.match_system(db_session, drifted)
+        registry.match_all(db_session, drifted, mic_dominant=False)
     after = float(print_.vector.dot(drifted))
     assert after > before
     assert print_.count == 11
@@ -132,8 +157,8 @@ def test_merge_moves_prints_and_segments(registry, db_session, rng):
     и реплики, лишний профиль удаляется, данные не теряются."""
     voice_a = unit(rng.standard_normal(DIM))
     voice_b = unit(rng.standard_normal(DIM))
-    a = registry.match_system(db_session, voice_a)
-    b = registry.match_system(db_session, voice_b)
+    a = registry.match_all(db_session, voice_a, mic_dominant=False)
+    b = registry.match_all(db_session, voice_b, mic_dominant=False)
     meeting = crud.create_meeting(db_session, "тест", record_audio=False)
     crud.add_segment(db_session, meeting.id, a.speaker_id, "system", 0.0, 1.0, "раз", 0.9)
     crud.add_segment(db_session, meeting.id, b.speaker_id, "system", 1.0, 2.0, "два", 0.9)
@@ -145,14 +170,14 @@ def test_merge_moves_prints_and_segments(registry, db_session, rng):
     assert len(registry._prints[target]) == 2
     # оба голоса теперь узнаются как один человек
     for voice in (voice_a, voice_b):
-        match = registry.match_system(db_session, voice)
+        match = registry.match_all(db_session, voice, mic_dominant=False)
         assert match.speaker_id == target
 
 
 def test_forget_removes_profile(registry, db_session, rng):
     voice = unit(rng.standard_normal(DIM))
-    first = registry.match_system(db_session, voice)
+    first = registry.match_all(db_session, voice, mic_dominant=False)
     registry.forget(first.speaker_id)
-    second = registry.match_system(db_session, voice)
+    second = registry.match_all(db_session, voice, mic_dominant=False)
     assert second.is_new
     assert second.speaker_id != first.speaker_id
