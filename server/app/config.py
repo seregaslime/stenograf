@@ -8,8 +8,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SAMPLE_RATE = 16_000  # весь пайплайн работает на 16 кГц mono
 
-ASR_ENGINES = ("faster_whisper", "mlx")
-ASR_MODELS = ("tiny", "base", "small")  # medium на 8 ГБ рядом с Ollama не помещается
+ASR_ENGINES = ("faster_whisper", "mlx", "gigaam")
+# Допустимые модели каждого движка (medium whisper на 8 ГБ рядом с Ollama не помещается)
+ASR_MODELS = {
+    "faster_whisper": ("tiny", "base", "small"),
+    "mlx": ("tiny", "base", "small"),
+    "gigaam": ("v3_e2e_rnnt", "v3_e2e_ctc"),  # русский SOTA, сразу с пунктуацией
+}
 
 _SERVER_DIR = Path(__file__).resolve().parent.parent
 
@@ -20,13 +25,21 @@ class Settings(BaseSettings):
     data_dir: Path = _SERVER_DIR / "data"
 
     # --- ASR ---
-    asr_engine: str = "faster_whisper"  # faster_whisper (CPU) | mlx (GPU Metal, только Apple Silicon)
-    asr_model: str = "small"        # tiny | base | small
+    # Целевой движок — GigaAM (Сбер): для русского на порядок точнее whisper
+    # (замер: WER 1.2% против 9.8% у whisper small) и быстрее реального времени
+    # на CPU. Если пакет gigaam не установлен, main.py откатывается на whisper.
+    asr_engine: str = "gigaam"      # gigaam | faster_whisper (CPU) | mlx (GPU, Apple Silicon)
+    asr_model: str = "v3_e2e_rnnt"  # см. ASR_MODELS
     asr_device: str = "cpu"
     asr_compute_type: str = "int8"
     asr_language: str = "ru"        # "auto" — автоопределение языка
     asr_beam_size: int = 1          # 1 = greedy, быстрее на CPU
     preload_asr: bool = True        # грузить модель при старте, а не при первой фразе
+
+    # --- Конвейер звука (микшер каналов, денойз) ---
+    mixer_max_lag_ms: int = 500     # насколько канал может отставать, прежде чем дополним тишиной
+    speaker_channel_dominance: float = 2.0  # во сколько раз RMS канала должен быть громче для доминанты
+    denoise: str = "off"            # этап чистки шума: off | (реализации подключаются в audio/denoise.py)
 
     # --- VAD / сегментация речи ---
     vad_threshold: float = 0.5
@@ -85,7 +98,7 @@ def load_asr_choice() -> None:
         return
     if data.get("engine") in ASR_ENGINES:
         settings.asr_engine = data["engine"]
-    if data.get("model") in ASR_MODELS:
+    if data.get("model") in ASR_MODELS.get(settings.asr_engine, ()):
         settings.asr_model = data["model"]
 
 

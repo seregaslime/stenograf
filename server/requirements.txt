@@ -10,3 +10,4 @@ torch>=2.3
 torchaudio>=2.3
 speechbrain>=1.0
 mlx-whisper>=0.4; sys_platform == "darwin" and platform_machine == "arm64"
+gigaam @ git+https://github.com/salute-developers/GigaAM.git

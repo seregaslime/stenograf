@@ -49,6 +49,8 @@ COMBOS = [
     ("mlx", "tiny"),
     ("mlx", "base"),
     ("mlx", "small"),
+    ("gigaam", "v3_e2e_ctc"),
+    ("gigaam", "v3_e2e_rnnt"),
 ]
 
 

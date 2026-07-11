@@ -6,12 +6,15 @@ import type { AsrStateDto, HealthDto } from "../types";
 const ENGINE_LABELS: Record<string, string> = {
   faster_whisper: "CPU (faster-whisper)",
   mlx: "GPU Metal (mlx)",
+  gigaam: "GigaAM (Сбер)",
 };
 
 const MODEL_HINTS: Record<string, string> = {
   tiny: "самая лёгкая, много ошибок на русском",
   base: "лёгкая, но заметно больше ошибок (имена, окончания)",
-  small: "лучшее качество, стандарт",
+  small: "лучшее качество среди whisper",
+  v3_e2e_rnnt: "точнее, с пунктуацией (только русский)",
+  v3_e2e_ctc: "быстрее, с пунктуацией (только русский)",
 };
 
 export default function SettingsPage({ onServerChange }: { onServerChange: () => void }) {
@@ -140,8 +143,8 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
             <div className="kv">
               <span className="k">Распознавание речи</span>
               <span>
-                whisper {health.asr.model} · {ENGINE_LABELS[health.asr.engine] ?? health.asr.engine}{" "}
-                {health.asr.loaded ? "· загружен" : "· грузится…"}
+                {health.asr.model} · {ENGINE_LABELS[health.asr.engine] ?? health.asr.engine}{" "}
+                {health.asr.loaded ? "· загружена" : "· грузится…"}
               </span>
             </div>
             <div className="kv">
@@ -172,23 +175,32 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
             <select
               className="input"
               value={engine}
-              onChange={(event) => setEngine(event.target.value)}
+              onChange={(event) => {
+                const next = event.target.value;
+                setEngine(next);
+                const models = asr.models_by_engine[next] ?? [];
+                if (!models.includes(model)) setModel(models[0] ?? "");
+              }}
             >
-              <option value="faster_whisper">CPU — faster-whisper, работает везде</option>
+              <option value="gigaam" disabled={!asr.engines.gigaam}>
+                GigaAM (Сбер) — лучшее качество для русского
+                {asr.engines.gigaam ? "" : " (не установлен на сервере)"}
+              </option>
+              <option value="faster_whisper">whisper CPU — работает везде</option>
               <option value="mlx" disabled={!asr.engines.mlx}>
-                GPU Metal — mlx, разгружает процессор
+                whisper GPU Metal — разгружает процессор
                 {asr.engines.mlx ? "" : " (недоступен на этом сервере)"}
               </option>
             </select>
           </label>
           <label className="field">
-            <span>Модель whisper</span>
+            <span>Модель</span>
             <select
               className="input"
               value={model}
               onChange={(event) => setModel(event.target.value)}
             >
-              {asr.models.map((m) => (
+              {(asr.models_by_engine[engine] ?? []).map((m) => (
                 <option key={m} value={m}>
                   {m} — {MODEL_HINTS[m] ?? ""}
                 </option>

@@ -27,6 +27,13 @@ try:
 except ImportError:
     MLX_AVAILABLE = False
 
+try:
+    import gigaam  # ставится с GitHub: gigaam @ git+https://github.com/salute-developers/GigaAM.git
+
+    GIGAAM_AVAILABLE = True
+except ImportError:
+    GIGAAM_AVAILABLE = False
+
 # Квантованные q4-варианты: в ~3 раза меньше памяти, чем fp16, качество почти то же
 _MLX_REPOS = {
     "tiny": "mlx-community/whisper-tiny-mlx-q4",
@@ -107,12 +114,47 @@ class _MlxBackend:
             pass
 
 
+class _GigaAmBackend:
+    """GigaAM v3 (Сбер) — SOTA для русского, e2e-варианты сразу с пунктуацией.
+
+    Файловый API пакета читает аудио через ffmpeg; мы его минуем и кормим
+    модель тензором напрямую (наш звук уже float32 16 кГц) через тот же путь,
+    что использует model.transcribe: forward → _decode."""
+
+    def __init__(self, model_name: str, cfg: Settings):
+        self._model_name = model_name
+        self._cfg = cfg
+        self._model = None
+
+    def load(self) -> None:
+        self._model = gigaam.load_model(
+            self._model_name,
+            fp16_encoder=False,  # CPU: fp32 быстрее и стабильнее
+            device="cpu",
+            download_root=str(self._cfg.models_dir / "gigaam"),
+        )
+
+    def transcribe(self, audio: np.ndarray, language: str | None) -> list[str]:
+        # language игнорируется — модель только русская
+        import torch
+
+        device = getattr(self._model, "_device", "cpu")
+        dtype = getattr(self._model, "_dtype", torch.float32)
+        with torch.no_grad():
+            wav = torch.from_numpy(audio).to(device).to(dtype).unsqueeze(0)
+            length = torch.full([1], wav.shape[-1], device=device)
+            encoded, encoded_len = self._model.forward(wav, length)
+            text, _words = self._model._decode(encoded, encoded_len, length)[0]
+        text = text.strip()
+        return [text] if text else []
+
+
 class Transcriber:
     def __init__(self, cfg: Settings):
         self._cfg = cfg
         self._engine = cfg.asr_engine
         self._model_name = cfg.asr_model
-        self._backend: _FasterWhisperBackend | _MlxBackend | None = None
+        self._backend: _FasterWhisperBackend | _MlxBackend | _GigaAmBackend | None = None
         self._loading = False
         self._load_error: str | None = None
         self._load_lock = threading.Lock()
@@ -147,6 +189,8 @@ class Transcriber:
             try:
                 if self._engine == "mlx":
                     backend = _MlxBackend(self._model_name)
+                elif self._engine == "gigaam":
+                    backend = _GigaAmBackend(self._model_name, self._cfg)
                 else:
                     backend = _FasterWhisperBackend(self._model_name, self._cfg)
                 backend.load()

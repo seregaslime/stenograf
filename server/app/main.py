@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from .asr.transcriber import MLX_AVAILABLE, Transcriber
+from .asr.transcriber import GIGAAM_AVAILABLE, MLX_AVAILABLE, Transcriber
 from .config import ASR_ENGINES, ASR_MODELS, save_asr_choice, settings
 from .db import crud
 from .db.database import init_db, session_scope
@@ -30,6 +30,14 @@ from .ws import LiveSession
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 log = logging.getLogger("stenograf")
+
+# Выбранный движок может быть не установлен (gigaam ставится с GitHub,
+# mlx — только Apple Silicon) — откатываемся на whisper, который есть всегда
+if (settings.asr_engine == "gigaam" and not GIGAAM_AVAILABLE) or (
+    settings.asr_engine == "mlx" and not MLX_AVAILABLE
+):
+    log.warning("Движок '%s' недоступен — используем faster-whisper small", settings.asr_engine)
+    settings.asr_engine, settings.asr_model = "faster_whisper", "small"
 
 transcriber = Transcriber(settings)
 embedder = VoiceEmbedder(settings)
@@ -124,6 +132,13 @@ class AsrBody(BaseModel):
     model: str
 
 
+_ENGINE_AVAILABLE = {
+    "faster_whisper": True,
+    "mlx": MLX_AVAILABLE,
+    "gigaam": GIGAAM_AVAILABLE,
+}
+
+
 def _asr_state() -> dict:
     return {
         "engine": transcriber.engine,
@@ -131,8 +146,8 @@ def _asr_state() -> dict:
         "loaded": transcriber.loaded,
         "loading": transcriber.loading,
         "error": transcriber.load_error,
-        "engines": {"faster_whisper": True, "mlx": MLX_AVAILABLE},
-        "models": list(ASR_MODELS),
+        "engines": _ENGINE_AVAILABLE,
+        "models_by_engine": {engine: list(models) for engine, models in ASR_MODELS.items()},
     }
 
 
@@ -143,10 +158,10 @@ def get_asr():
 
 @app.post("/api/asr")
 async def set_asr(body: AsrBody):
-    if body.engine not in ASR_ENGINES or body.model not in ASR_MODELS:
+    if body.engine not in ASR_ENGINES or body.model not in ASR_MODELS[body.engine]:
         raise HTTPException(400, "Неизвестный движок или модель")
-    if body.engine == "mlx" and not MLX_AVAILABLE:
-        raise HTTPException(400, "mlx-whisper не установлен на этом сервере (нужен Apple Silicon)")
+    if not _ENGINE_AVAILABLE[body.engine]:
+        raise HTTPException(400, f"Движок «{body.engine}» не установлен на этом сервере")
     with session_scope() as db:
         live = db.scalars(select(Meeting).where(Meeting.status == "live")).first()
         if live is not None:

@@ -70,8 +70,8 @@ export interface AsrStateDto {
   loaded: boolean;
   loading: boolean;
   error: string | null;
-  engines: { faster_whisper: boolean; mlx: boolean };
-  models: string[];
+  engines: { faster_whisper: boolean; mlx: boolean; gigaam: boolean };
+  models_by_engine: Record<string, string[]>;
 }
 
 export type LiveEvent =
