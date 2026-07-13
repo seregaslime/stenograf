@@ -220,7 +220,10 @@ class LiveSession:
         })
 
     async def _match_speaker(self, db, segment: SpeechSegment, dominance: str) -> MatchResult:
-        too_short = segment.duration_s < self._cfg.speaker_min_embed_s
+        # duration_s включает паддинг VAD по краям — вычитаем его, чтобы порог
+        # сравнивался с длительностью самой речи (иначе правило не срабатывает)
+        speech_s = segment.duration_s - 2 * self._cfg.vad_pad_ms / 1000
+        too_short = speech_s < self._cfg.speaker_min_embed_s
         recently = (segment.start_s - self._last_match_end) < 4.0
         if too_short and self._last_match is not None and recently:
             previous = self._last_match
