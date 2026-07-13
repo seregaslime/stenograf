@@ -174,10 +174,15 @@ cd server
 .venv/bin/pip install -r requirements-dev.txt   # один раз (pytest)
 
 .venv/bin/python -m pytest                  # юнит-тесты: логика диаризации,
-                                            # порог, дрейф отпечатков, merge, эхо
+                                            # порог, дрейф отпечатков, merge, микшер
 .venv/bin/python -m pytest -m integration   # + реальная ECAPA на синтезированных
                                             # голосах macOS (медленно)
+.venv/bin/python -m pytest -m e2e           # встречи целиком: одноразовый сервер +
+                                            # WebSocket-клиент (эхо, память голосов,
+                                            # обрыв связи, REST, переключение ASR)
 ```
+
+Ручной чек-лист перед показом (реальный микрофон, звонки, железо) — [TESTING.md](TESTING.md).
 
 Инструменты для проверки на реальных данных (папка `server/scripts`):
 
