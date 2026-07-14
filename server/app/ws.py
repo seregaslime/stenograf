@@ -78,6 +78,8 @@ class LiveSession:
         # Короткие сегменты без эмбеддинга приписываем последнему говорившему
         self._last_match: Optional[MatchResult] = None
         self._last_match_end = -1e9
+        # Кто говорил недавно — приор для диаризации (speaker_id → конец реплики)
+        self._recent_speakers: dict[int, float] = {}
 
     # ------------------------------------------------------------------ основной цикл
 
@@ -186,6 +188,7 @@ class LiveSession:
             match = await self._match_speaker(db, segment, dominance)
             self._last_match = match
             self._last_match_end = segment.end_s
+            self._recent_speakers[match.speaker_id] = segment.end_s
             self._registry.maybe_save_sample(db, match.speaker_id, segment.audio)
             row = crud.add_segment(
                 db, meeting_id, match.speaker_id, dominance,
@@ -229,7 +232,13 @@ class LiveSession:
             previous = self._last_match
             return MatchResult(previous.speaker_id, previous.name, previous.is_self, None, False)
         embedding = await asyncio.to_thread(self._embedder.embed, segment.audio)
-        return self._registry.match_all(db, embedding, mic_dominant=dominance == "mic")
+        recent = frozenset(
+            speaker_id for speaker_id, end_s in self._recent_speakers.items()
+            if segment.start_s - end_s <= self._cfg.speaker_recent_window_s
+        )
+        return self._registry.match_all(
+            db, embedding, mic_dominant=dominance == "mic", recent_ids=recent
+        )
 
     # ------------------------------------------------------------------ подсказки (демо)
 

@@ -50,6 +50,11 @@ class Settings(BaseSettings):
 
     # --- Диаризация (глобальная база голосов) ---
     speaker_match_threshold: float = 0.35  # косинусная близость ECAPA для "тот же человек"
+    # Живой голос гуляет сильнее порога, поэтому у порога есть скидки-приоры:
+    speaker_self_bonus: float = 0.12       # голос из микрофона — скорее всего владелец
+    speaker_recent_bonus: float = 0.10     # кто говорил недавно, вероятно говорит и сейчас
+    speaker_recent_window_s: float = 30.0  # сколько секунд спикер считается «недавним»
+    speaker_max_prints: int = 5            # отпечатков на человека (разные «звучания» голоса)
     speaker_min_embed_s: float = 0.4       # короче — не считаем эмбеддинг, берём последнего спикера
     speaker_max_samples: int = 3           # аудио-образцов голоса на профиль
     speaker_sample_min_s: float = 0.8

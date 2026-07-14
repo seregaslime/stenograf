@@ -73,15 +73,29 @@ class SpeakerRegistry:
 
     # --- сопоставление ---
 
-    def match_all(self, db: Session, embedding: np.ndarray, mic_dominant: bool) -> MatchResult:
+    def match_all(
+        self,
+        db: Session,
+        embedding: np.ndarray,
+        mic_dominant: bool,
+        recent_ids: frozenset[int] = frozenset(),
+    ) -> MatchResult:
         """Ищет владельца голоса по отпечаткам ВСЕХ спикеров, включая «Вы».
 
-        mic_dominant — подсказка микшера: голос пришёл в основном из микрофона,
-        то есть человек физически в комнате. Первый такой голос — владелец
-        («Вы»): его профиль автоматически набирает отпечатки, отдельного
-        обучения не нужно. Дальше различает уже ECAPA — в том числе второго
-        человека за тем же микрофоном.
+        Живой голос от фразы к фразе гуляет сильнее порога, поэтому кроме
+        близости работают два приора (скидки к порогу, берётся большая):
+        - mic_dominant: голос пришёл в основном из микрофона — человек в
+          комнате, скорее всего владелец («Вы»). Первый такой голос обучает
+          профиль «Вы» автоматически;
+        - recent_ids: кто говорил в последние полминуты, вероятно, говорит
+          и сейчас — склеивает монолог, который иначе рассыпался бы на
+          «Спикер N» на каждой просадке близости.
+
+        Если голос узнан со скидкой (ниже основного порога), его «звучание»
+        добавляется отдельным отпечатком — так профиль набирает варианты
+        (гарнитура, комната, простуда), а не размывает главный отпечаток.
         """
+        cfg = self._cfg
         with self._lock:
             self_prints = self._prints.get(self._self_id, [])
             if mic_dominant and not self_prints:
@@ -90,24 +104,39 @@ class SpeakerRegistry:
                 log.info("Профиль «Вы» обучен по первому голосу из микрофона")
                 return MatchResult(self._self_id, speaker.name, True, None, False)
 
+            def required(speaker_id: int) -> float:
+                bonus = 0.0
+                if mic_dominant and speaker_id == self._self_id:
+                    bonus = cfg.speaker_self_bonus
+                if speaker_id in recent_ids:
+                    bonus = max(bonus, cfg.speaker_recent_bonus)
+                return cfg.speaker_match_threshold - bonus
+
             best: Optional[tuple[int, _Print]] = None
             best_sim = -1.0
+            matched: Optional[tuple[int, _Print, float]] = None
             for speaker_id, prints in self._prints.items():
                 for print_ in prints:
                     sim = float(np.dot(print_.vector, embedding))
                     if sim > best_sim:
                         best, best_sim = (speaker_id, print_), sim
+                    if sim >= required(speaker_id) and (matched is None or sim > matched[2]):
+                        matched = (speaker_id, print_, sim)
 
-            if best is not None and best_sim >= self._cfg.speaker_match_threshold:
-                speaker_id, print_ = best
+            if matched is not None:
+                speaker_id, print_, sim = matched
                 is_self = speaker_id == self._self_id
-                # Отпечаток «Вы» дообучаем только голосом из микрофона, чтобы
-                # не размывать его чужим звуком из звонка (и наоборот — чужие
-                # профили не трогаем голосом, доминирующим в микрофоне)
+                # Отпечатки «Вы» пополняем только голосом из микрофона, чтобы не
+                # размывать их звуком из звонка (и наоборот для остальных)
                 if is_self == mic_dominant:
-                    self._update_print(db, print_, embedding)
+                    if sim < cfg.speaker_match_threshold and \
+                            len(self._prints[speaker_id]) < cfg.speaker_max_prints:
+                        # узнали со скидкой — это другое «звучание», новый отпечаток
+                        self._add_print(db, speaker_id, embedding)
+                    else:
+                        self._update_print(db, print_, embedding)
                 speaker = db.get(Speaker, speaker_id)
-                return MatchResult(speaker_id, speaker.name, is_self, round(best_sim, 3), False)
+                return MatchResult(speaker_id, speaker.name, is_self, round(sim, 3), False)
 
             speaker = crud.create_speaker(db)
             self._add_print(db, speaker.id, embedding)

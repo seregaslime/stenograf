@@ -136,6 +136,50 @@ def test_self_print_updates_only_from_mic(registry, db_session, rng):
     assert self_print.count == 2
 
 
+def test_self_bonus_keeps_owner_below_threshold(registry, db_session, cfg, rng):
+    """Живой голос владельца гуляет: близость чуть ниже порога, но голос из
+    микрофона — скидка speaker_self_bonus удерживает его в «Вы», и другое
+    «звучание» добавляется вторым отпечатком."""
+    voice = unit(rng.standard_normal(DIM))
+    registry.match_all(db_session, voice, mic_dominant=True)  # энролл
+    drifted = vec_with_similarity(voice, cfg.speaker_match_threshold - 0.05, rng)
+    match = registry.match_all(db_session, drifted, mic_dominant=True)
+    assert match.is_self, "голос владельца ниже порога, но из микрофона — должен остаться «Вы»"
+    assert len(registry._prints[registry.self_id]) == 2  # новое «звучание» — новый отпечаток
+    # без микрофонного приора тот же вектор владельцу бы не достался
+    far = vec_with_similarity(voice, cfg.speaker_match_threshold - 0.05, rng)
+    stranger = registry.match_all(db_session, far, mic_dominant=False)
+    assert not stranger.is_self
+
+
+def test_recent_speaker_bonus_glues_monologue(registry, db_session, cfg, rng):
+    """Монолог из звонка: близость просела чуть ниже порога, но спикер
+    говорил только что — скидка недавности не даёт наплодить «Спикер N»."""
+    voice = unit(rng.standard_normal(DIM))
+    first = registry.match_all(db_session, voice, mic_dominant=False)
+    wobble = vec_with_similarity(voice, cfg.speaker_match_threshold - 0.05, rng)
+    without = registry.match_all(db_session, wobble, mic_dominant=False)
+    assert without.is_new, "без приора недавности такой голос — новый спикер"
+    registry.forget(without.speaker_id)
+    wobble2 = vec_with_similarity(voice, cfg.speaker_match_threshold - 0.05, rng)
+    with_recent = registry.match_all(
+        db_session, wobble2, mic_dominant=False,
+        recent_ids=frozenset({first.speaker_id}),
+    )
+    assert with_recent.speaker_id == first.speaker_id
+
+
+def test_prints_capped_per_speaker(registry, db_session, cfg, rng):
+    """Отпечатков на человека не больше speaker_max_prints — дальше
+    «звучания» вливаются в ближайший отпечаток."""
+    voice = unit(rng.standard_normal(DIM))
+    registry.match_all(db_session, voice, mic_dominant=True)
+    for _ in range(cfg.speaker_max_prints + 3):
+        wobble = vec_with_similarity(voice, cfg.speaker_match_threshold - 0.05, rng)
+        registry.match_all(db_session, wobble, mic_dominant=True)
+    assert len(registry._prints[registry.self_id]) <= cfg.speaker_max_prints
+
+
 def test_centroid_drifts_toward_recent_voice(registry, db_session, rng):
     """Отпечаток — скользящее среднее: после серии реплик он смещается к
     текущему звучанию голоса (человек охрип, сменил гарнитуру)."""
