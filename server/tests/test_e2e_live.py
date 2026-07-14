@@ -302,6 +302,20 @@ def test_09_rest_operations(server):
     after = httpx.get(f"{BASE}/api/speakers", timeout=5).json()
     assert len(after) == len(speakers) - 1
 
+    # у объединённого профиля отпечатки обоих; один можно удалить
+    target = next(s for s in after if s["id"] == merged["target_id"])
+    assert len(target["voiceprints"]) == 2
+    print_id = target["voiceprints"][0]["id"]
+    removed = httpx.delete(
+        f"{BASE}/api/speakers/{target['id']}/voiceprints/{print_id}", timeout=5)
+    assert removed.status_code == 200
+    fresh = next(s for s in httpx.get(f"{BASE}/api/speakers", timeout=5).json()
+                 if s["id"] == target["id"])
+    assert [p["id"] for p in fresh["voiceprints"]] == [target["voiceprints"][1]["id"]]
+    assert httpx.delete(
+        f"{BASE}/api/speakers/{target['id']}/voiceprints/{print_id}", timeout=5,
+    ).status_code == 404  # повторное удаление — честный 404
+
     meetings = httpx.get(f"{BASE}/api/meetings", timeout=5).json()
     first = min(m["id"] for m in meetings)
     export = httpx.get(f"{BASE}/api/meetings/{first}/export?fmt=md", timeout=5)

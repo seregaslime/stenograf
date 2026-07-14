@@ -52,6 +52,7 @@ export interface SpeakerDto {
   voiceprints_count: number;
   created_at: string | null;
   samples: SpeakerSampleDto[];
+  voiceprints: { id: number; count: number }[];
 }
 
 export interface HealthDto {

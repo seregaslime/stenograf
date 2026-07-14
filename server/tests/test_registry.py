@@ -218,6 +218,19 @@ def test_merge_moves_prints_and_segments(registry, db_session, rng):
         assert match.speaker_id == target
 
 
+def test_remove_print_forgets_voice(registry, db_session, rng):
+    """Удаление отпечатка: голос перестаёт узнаваться, профиль остаётся;
+    несуществующий отпечаток — честный отказ."""
+    voice = unit(rng.standard_normal(DIM))
+    first = registry.match_all(db_session, voice, mic_dominant=False)
+    print_id = registry._prints[first.speaker_id][0].id
+
+    assert registry.remove_print(db_session, first.speaker_id, print_id)
+    again = registry.match_all(db_session, voice, mic_dominant=False)
+    assert again.is_new, "голос узнан по удалённому отпечатку"
+    assert not registry.remove_print(db_session, first.speaker_id, 99_999)
+
+
 def test_forget_removes_profile(registry, db_session, rng):
     voice = unit(rng.standard_normal(DIM))
     first = registry.match_all(db_session, voice, mic_dominant=False)

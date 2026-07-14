@@ -302,6 +302,16 @@ def delete_speaker(speaker_id: int):
     return {"deleted": speaker_id, "unassigned_segments": unassigned}
 
 
+@app.delete("/api/speakers/{speaker_id}/voiceprints/{print_id}")
+def delete_voiceprint(speaker_id: int, print_id: int):
+    """Удаляет один отпечаток голоса — например, «испорченный» чужим звуком.
+    Профиль и его реплики остаются."""
+    with session_scope() as db:
+        if not registry.remove_print(db, speaker_id, print_id):
+            raise HTTPException(404, "Отпечаток не найден")
+    return {"deleted": print_id, "speaker_id": speaker_id}
+
+
 @app.post("/api/speakers/merge")
 def merge_speakers(body: MergeBody):
     if len(body.speaker_ids) != 2:

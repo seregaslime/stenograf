@@ -238,6 +238,29 @@ class SpeakerRegistry:
     def _has_custom_name(speaker: Speaker) -> bool:
         return bool(speaker.name) and speaker.name != f"Спикер {speaker.id}"
 
+    def remove_print(self, db: Session, speaker_id: int, print_id: int) -> bool:
+        """Удаляет один отпечаток голоса (из памяти и из БД).
+
+        Профиль остаётся: человек с сегментами не пропадает из встреч, просто
+        перестаёт узнаваться этим «звучанием». Если удалить все отпечатки
+        «Вы» — профиль заново обучится по первому голосу из микрофона."""
+        row = db.get(VoicePrint, print_id)
+        found_db = row is not None and row.speaker_id == speaker_id
+        with self._lock:
+            prints = self._prints.get(speaker_id, [])
+            kept = [p for p in prints if p.id != print_id]
+            found_memory = len(kept) != len(prints)
+            if found_memory:
+                if kept:
+                    self._prints[speaker_id] = kept
+                else:
+                    self._prints.pop(speaker_id, None)
+        if found_db:
+            db.delete(row)
+        if found_db or found_memory:
+            log.info("Удалён отпечаток #%d спикера #%d", print_id, speaker_id)
+        return found_db or found_memory
+
     def forget(self, speaker_id: int) -> None:
         with self._lock:
             self._prints.pop(speaker_id, None)

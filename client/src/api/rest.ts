@@ -48,6 +48,10 @@ export const api = {
     request<{ deleted: number; unassigned_segments: number }>(`/api/speakers/${id}`, {
       method: "DELETE",
     }),
+  deleteVoiceprint: (speakerId: number, printId: number) =>
+    request<{ deleted: number }>(`/api/speakers/${speakerId}/voiceprints/${printId}`, {
+      method: "DELETE",
+    }),
   mergeSpeakers: (ids: [number, number]) =>
     request<{ target_id: number; name: string; moved_segments: number }>(
       "/api/speakers/merge",

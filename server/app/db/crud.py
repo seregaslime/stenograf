@@ -63,6 +63,10 @@ def list_speakers(db: Session) -> list[dict]:
                 "samples": [
                     {"id": s.id, "duration_s": round(s.duration_s, 1)} for s in speaker.samples
                 ],
+                "voiceprints": [
+                    {"id": p.id, "count": p.embedding_count}
+                    for p in sorted(speaker.voiceprints, key=lambda p: p.id)
+                ],
             }
         )
     return result

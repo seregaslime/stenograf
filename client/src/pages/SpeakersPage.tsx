@@ -95,6 +95,25 @@ export default function SpeakersPage() {
     }
   }
 
+  async function removeVoiceprint(speaker: SpeakerDto, printId: number, index: number) {
+    const last = speaker.voiceprints.length === 1;
+    const ok = confirm(
+      `Удалить отпечаток №${index} у «${speaker.name}»?\n` +
+        (last
+          ? speaker.is_self
+            ? "Это последний отпечаток — профиль заново обучится по вашему голосу из микрофона."
+            : "Это последний отпечаток — голос перестанет узнаваться автоматически."
+          : "Профиль и реплики останутся, удалится только это «звучание» голоса."),
+    );
+    if (!ok) return;
+    try {
+      await api.deleteVoiceprint(speaker.id, printId);
+      await load();
+    } catch (exc) {
+      setError((exc as Error).message);
+    }
+  }
+
   async function removeSpeaker(speaker: SpeakerDto) {
     const ok = confirm(
       `Удалить профиль «${speaker.name}»?\n` +
@@ -205,6 +224,21 @@ export default function SpeakersPage() {
               </div>
             </div>
             <SampleButtons speaker={speaker} playing={playingSample} onPlay={playSample} />
+            {speaker.voiceprints.length > 0 && (
+              <div className="sample-row" style={{ alignItems: "center" }}>
+                <span style={{ color: "var(--muted)", fontSize: 12 }}>отпечатки:</span>
+                {speaker.voiceprints.map((print, index) => (
+                  <button
+                    key={print.id}
+                    className="icon-btn"
+                    title={`Отпечаток «звучания» №${index + 1}, усреднён из ${print.count} реплик. Нажмите, чтобы удалить (например, если профиль стал путать голоса).`}
+                    onClick={() => removeVoiceprint(speaker, print.id, index + 1)}
+                  >
+                    №{index + 1} · {print.count} ✕
+                  </button>
+                ))}
+              </div>
+            )}
             <label className="check">
               <input
                 type="checkbox"
