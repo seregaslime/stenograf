@@ -333,6 +333,20 @@ def get_sample(sample_id: int):
         return FileResponse(sample.path, media_type="audio/wav")
 
 
+@app.delete("/api/samples/{sample_id}")
+def delete_sample(sample_id: int):
+    """Удаляет аудио-образец голоса (файл и запись). На узнавание не влияет —
+    за него отвечают отпечатки; на месте удалённого сервер со временем
+    сохранит новый образец из свежих встреч."""
+    with session_scope() as db:
+        sample = db.get(SpeakerSample, sample_id)
+        if sample is None:
+            raise HTTPException(404, "Образец не найден")
+        Path(sample.path).unlink(missing_ok=True)
+        db.delete(sample)
+    return {"deleted": sample_id}
+
+
 # ---------------------------------------------------------------- live
 
 @app.websocket("/ws/live")

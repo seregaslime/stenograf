@@ -58,4 +58,6 @@ export const api = {
       { method: "POST", body: JSON.stringify({ speaker_ids: ids }) },
     ),
   sampleUrl: (sampleId: number) => `${getServerUrl()}/api/samples/${sampleId}`,
+  deleteSample: (sampleId: number) =>
+    request<{ deleted: number }>(`/api/samples/${sampleId}`, { method: "DELETE" }),
 };

@@ -316,6 +316,17 @@ def test_09_rest_operations(server):
         f"{BASE}/api/speakers/{target['id']}/voiceprints/{print_id}", timeout=5,
     ).status_code == 404  # повторное удаление — честный 404
 
+    # аудио-образцы удаляются отдельно от отпечатков
+    with_samples = next(
+        (s for s in httpx.get(f"{BASE}/api/speakers", timeout=5).json() if s["samples"]), None)
+    assert with_samples is not None, "ни у кого не сохранилось ни одного образца"
+    sample_id = with_samples["samples"][0]["id"]
+    assert httpx.delete(f"{BASE}/api/samples/{sample_id}", timeout=5).status_code == 200
+    fresh = next(s for s in httpx.get(f"{BASE}/api/speakers", timeout=5).json()
+                 if s["id"] == with_samples["id"])
+    assert sample_id not in [s["id"] for s in fresh["samples"]]
+    assert httpx.delete(f"{BASE}/api/samples/{sample_id}", timeout=5).status_code == 404
+
     meetings = httpx.get(f"{BASE}/api/meetings", timeout=5).json()
     first = min(m["id"] for m in meetings)
     export = httpx.get(f"{BASE}/api/meetings/{first}/export?fmt=md", timeout=5)

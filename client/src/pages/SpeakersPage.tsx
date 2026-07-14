@@ -7,10 +7,12 @@ function SampleButtons({
   speaker,
   playing,
   onPlay,
+  onDelete,
 }: {
   speaker: SpeakerDto;
   playing: number | null;
   onPlay: (sampleId: number) => void;
+  onDelete: (sampleId: number) => void;
 }) {
   if (speaker.samples.length === 0) {
     return <span className="hint" style={{ fontSize: 12 }}>образцов голоса пока нет</span>;
@@ -18,13 +20,21 @@ function SampleButtons({
   return (
     <div className="sample-row">
       {speaker.samples.map((sample) => (
-        <button
-          key={sample.id}
-          className={`icon-btn ${playing === sample.id ? "playing" : ""}`}
-          onClick={() => onPlay(sample.id)}
-        >
-          {playing === sample.id ? "◼" : "▶"} {sample.duration_s}с
-        </button>
+        <span key={sample.id} style={{ display: "inline-flex", gap: 2 }}>
+          <button
+            className={`icon-btn ${playing === sample.id ? "playing" : ""}`}
+            onClick={() => onPlay(sample.id)}
+          >
+            {playing === sample.id ? "◼" : "▶"} {sample.duration_s}с
+          </button>
+          <button
+            className="icon-btn"
+            title="Удалить образец (аудио для прослушивания; на узнавание голоса не влияет)"
+            onClick={() => onDelete(sample.id)}
+          >
+            ✕
+          </button>
+        </span>
       ))}
     </div>
   );
@@ -89,6 +99,16 @@ export default function SpeakersPage() {
     if (!name) return;
     try {
       await api.renameSpeaker(id, name);
+      await load();
+    } catch (exc) {
+      setError((exc as Error).message);
+    }
+  }
+
+  async function removeSample(sampleId: number) {
+    if (!confirm("Удалить этот аудио-образец? На узнавание голоса он не влияет.")) return;
+    try {
+      await api.deleteSample(sampleId);
       await load();
     } catch (exc) {
       setError((exc as Error).message);
@@ -223,7 +243,12 @@ export default function SpeakersPage() {
                 </div>
               </div>
             </div>
-            <SampleButtons speaker={speaker} playing={playingSample} onPlay={playSample} />
+            <SampleButtons
+              speaker={speaker}
+              playing={playingSample}
+              onPlay={playSample}
+              onDelete={removeSample}
+            />
             {speaker.voiceprints.length > 0 && (
               <div className="sample-row" style={{ alignItems: "center" }}>
                 <span style={{ color: "var(--muted)", fontSize: 12 }}>отпечатки:</span>
@@ -292,7 +317,12 @@ export default function SpeakersPage() {
                       </div>
                     </div>
                   </div>
-                  <SampleButtons speaker={speaker} playing={playingSample} onPlay={playSample} />
+                  <SampleButtons
+                    speaker={speaker}
+                    playing={playingSample}
+                    onPlay={playSample}
+                    onDelete={removeSample}
+                  />
                 </div>
               ))}
             </div>
