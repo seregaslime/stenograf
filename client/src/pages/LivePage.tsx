@@ -156,19 +156,7 @@ export default function LivePage({
   }
 
   async function startCaptures() {
-    const engine = new AudioEngine();
-    engineRef.current = engine;
-    try {
-      const mic = await engine.startMic(micId || undefined, {
-        onChunk: (pcm) => clientRef.current?.sendAudio(0, pcm),
-        onLevel: setMicLevel,
-      });
-      handlesRef.current.push(mic);
-    } catch (exc) {
-      setError(`Микрофон недоступен: ${(exc as Error).message}`);
-      stop();
-      return;
-    }
+    const engine = engineRef.current!; // микрофон уже захвачен в start()
     if (sysId !== "") {
       try {
         const source: SystemSource =
@@ -202,6 +190,23 @@ export default function LivePage({
     meetingIdRef.current = null;
     setPhase("starting");
 
+    // Микрофон захватываем ДО создания встречи: если его нет (нет разрешения,
+    // устройство отвалилось), в истории не должна оставаться пустая встреча
+    const engine = new AudioEngine();
+    engineRef.current = engine;
+    try {
+      const mic = await engine.startMic(micId || undefined, {
+        onChunk: (pcm) => clientRef.current?.sendAudio(0, pcm),
+        onLevel: setMicLevel,
+      });
+      handlesRef.current.push(mic);
+    } catch (exc) {
+      setError(`Микрофон недоступен: ${(exc as Error).message}`);
+      cleanup();
+      setPhase("setup");
+      return;
+    }
+
     const client = new LiveClient(onEvent, onWsClose);
     clientRef.current = client;
     try {
@@ -210,6 +215,7 @@ export default function LivePage({
       setError(
         `${(exc as Error).message}. Проверьте, что сервер запущен, и адрес в настройках верный.`,
       );
+      cleanup();
       setPhase("setup");
       return;
     }
