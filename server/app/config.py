@@ -61,7 +61,8 @@ class Settings(BaseSettings):
     speaker_recent_window_s: float = 30.0  # сколько секунд спикер считается «недавним»
     speaker_max_prints: int = 5            # отпечатков на человека (разные «звучания» голоса)
     speaker_min_embed_s: float = 0.4       # короче — не считаем эмбеддинг, берём последнего спикера
-    speaker_max_samples: int = 3           # аудио-образцов голоса на профиль
+    speaker_max_samples: int = 1           # аудио-образцов на профиль (узнать голос ухом
+                                           # хватает одного; при merge образцы суммируются)
     speaker_sample_min_s: float = 0.8
     speaker_sample_max_s: float = 8.0
     speaker_centroid_max_count: int = 200  # ограничение веса центроида (чтобы профиль мог "дрейфовать")
