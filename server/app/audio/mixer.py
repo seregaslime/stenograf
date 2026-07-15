@@ -115,3 +115,63 @@ class ChannelMixer:
         if system > mic * self._dominance_ratio:
             return "system"
         return "mixed"
+
+    def dominance_spans(
+        self, start_s: float, end_s: float, window_s: float, min_run_s: float,
+    ) -> list[tuple[float, float]]:
+        """Участки стабильной доминанты внутри сегмента: [(start, end), ...].
+
+        Один участок — резать нечего. Окна с 'mixed' (наложение голосов, тихое
+        место) наследуют метку соседа, а серии короче min_run_s вливаются в
+        соседнюю: кашель в микрофон посреди чужой фразы — не смена говорящего.
+        """
+        n_windows = int((end_s - start_s) / window_s)
+        if len(self._active) < 2 or n_windows < 2:
+            return [(start_s, end_s)]
+
+        labels = []
+        for i in range(n_windows):
+            lo = start_s + i * window_s
+            hi = end_s if i == n_windows - 1 else lo + window_s  # хвост — в последнее окно
+            labels.append(self.dominance(lo, hi))
+        for i in range(1, n_windows):
+            if labels[i] == "mixed":
+                labels[i] = labels[i - 1]
+        for i in range(n_windows - 2, -1, -1):
+            if labels[i] == "mixed":
+                labels[i] = labels[i + 1]
+        if labels[0] == "mixed":  # весь сегмент неразличим
+            return [(start_s, end_s)]
+
+        runs: list[list] = []  # [метка, число окон]
+        for label in labels:
+            if runs and runs[-1][0] == label:
+                runs[-1][1] += 1
+            else:
+                runs.append([label, 1])
+
+        min_windows = max(1, round(min_run_s / window_s))
+        while len(runs) > 1:
+            shortest = min(range(len(runs)), key=lambda i: runs[i][1])
+            if runs[shortest][1] >= min_windows:
+                break
+            neighbours = [i for i in (shortest - 1, shortest + 1) if 0 <= i < len(runs)]
+            target = max(neighbours, key=lambda i: runs[i][1])
+            runs[target][1] += runs[shortest][1]
+            del runs[shortest]
+            merged: list[list] = []  # слияние могло уравнять метки соседей
+            for label, count in runs:
+                if merged and merged[-1][0] == label:
+                    merged[-1][1] += count
+                else:
+                    merged.append([label, count])
+            runs = merged
+
+        spans = []
+        edge, seen = start_s, 0
+        for _, count in runs:
+            seen += count
+            cut = end_s if seen == n_windows else start_s + seen * window_s
+            spans.append((edge, cut))
+            edge = cut
+        return spans

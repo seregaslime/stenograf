@@ -1,13 +1,16 @@
 """Тесты правил LiveSession, влияющих на то, кому припишется реплика:
 короткий сегмент («да», «угу») без эмбеддинга приписывается последнему
-говорившему, но только в течение 4 секунд.
+говорившему, но только в течение 4 секунд и только из того же канала;
+сегмент со сменой доминанты канала режется на части.
 """
 import asyncio
 
 import numpy as np
 import pytest
 
+from app.audio.mixer import ChannelMixer
 from app.audio.vad import SpeechSegment
+from app.config import SAMPLE_RATE
 from app.diarization.registry import SpeakerRegistry
 from app.ws import LiveSession
 
@@ -55,7 +58,7 @@ def test_short_segment_reuses_last_speaker(cfg, db_session, registry):
 
     long_seg = _segment(0.0, 2.0)
     first = asyncio.run(session._match_speaker(db_session, long_seg, "system"))
-    session._last_match, session._last_match_end = first, long_seg.end_s
+    session._last_by_channel["system"] = (first, long_seg.end_s)
 
     short_seg = _segment(2.5, cfg.speaker_min_embed_s / 2)  # короче минимума
     match = asyncio.run(session._match_speaker(db_session, short_seg, "system"))
@@ -72,7 +75,7 @@ def test_short_segment_after_long_pause_is_embedded(cfg, db_session, registry):
 
     long_seg = _segment(0.0, 2.0)
     first = asyncio.run(session._match_speaker(db_session, long_seg, "system"))
-    session._last_match, session._last_match_end = first, long_seg.end_s
+    session._last_by_channel["system"] = (first, long_seg.end_s)
 
     short_seg = _segment(10.0, cfg.speaker_min_embed_s / 2)
     asyncio.run(session._match_speaker(db_session, short_seg, "system"))
@@ -88,9 +91,46 @@ def test_short_segment_inherits_self(cfg, db_session, registry):
     long_seg = _segment(0.0, 2.0)
     first = asyncio.run(session._match_speaker(db_session, long_seg, "mic"))
     assert first.is_self  # первый голос из микрофона — «Вы»
-    session._last_match, session._last_match_end = first, long_seg.end_s
+    session._last_by_channel["mic"] = (first, long_seg.end_s)
 
     short_seg = _segment(2.5, cfg.speaker_min_embed_s / 2)
     match = asyncio.run(session._match_speaker(db_session, short_seg, "mixed"))
     assert match.is_self
     assert match.speaker_id == first.speaker_id
+
+
+def test_short_segment_from_other_channel_is_embedded(cfg, db_session, registry):
+    """Быстрое «да» из звонка сразу после фразы владельца — другой человек:
+    наследование не действует, эмбеддинг считается."""
+    embedder = _FakeEmbedder(rand_unit(4))
+    session = _make_session(cfg, registry, embedder)
+
+    long_seg = _segment(0.0, 2.0)
+    first = asyncio.run(session._match_speaker(db_session, long_seg, "mic"))
+    session._last_by_channel["mic"] = (first, long_seg.end_s)
+
+    short_seg = _segment(2.2, cfg.speaker_min_embed_s / 2)
+    asyncio.run(session._match_speaker(db_session, short_seg, "system"))
+
+    assert embedder.calls == 2  # коротыш из чужого канала — эмбеддинг заново
+
+
+def test_split_by_dominance_cuts_segment(cfg, registry):
+    """Сегмент со сменой канала посередине режется на две части: аудио не
+    теряется, граница — в точке смены доминанты."""
+    session = _make_session(cfg, registry, _FakeEmbedder(rand_unit(5)))
+    session._mixer = ChannelMixer(cfg)
+    n = int(1.2 * SAMPLE_RATE)
+    system = np.concatenate([np.full(n, 0.5, np.float32), np.full(n, 0.01, np.float32)])
+    mic = np.concatenate([np.full(n, 0.01, np.float32), np.full(n, 0.5, np.float32)])
+    for i in range(0, 2 * n, 1600):  # кадры по 100 мс, как с клиента
+        session._mixer.feed("system", system[i:i + 1600])
+        session._mixer.feed("mic", mic[i:i + 1600])
+
+    segment = SpeechSegment(np.arange(2 * n, dtype=np.float32), 0.0, 2.4)
+    parts = session._split_by_dominance(segment)
+
+    assert len(parts) == 2
+    assert np.array_equal(np.concatenate([p.audio for p in parts]), segment.audio)
+    assert parts[0].end_s == pytest.approx(1.2)
+    assert parts[1].start_s == pytest.approx(1.2)

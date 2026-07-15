@@ -5,8 +5,8 @@
 ready, segment, speaker_new, hint, stopped, error.
 
 Конвейер из обособленных этапов (каждый заменяем независимо):
-    микшер каналов → денойз → VAD-сегментация → очередь →
-    → ASR → эмбеддинг → диаризация → БД → событие клиенту.
+    микшер каналов → денойз → VAD-сегментация → разрез по смене канала →
+    → очередь → ASR → эмбеддинг → диаризация → БД → событие клиенту.
 
 Каналы склеиваются в один поток и распознаются единым проходом; кто говорит —
 решает диаризация по всем спикерам (включая «Вы»), опираясь на подсказку
@@ -75,9 +75,10 @@ class LiveSession:
         self._hints_enabled = False
         self._recent: deque[str] = deque(maxlen=60)  # последние реплики для подсказок
         self._new_text_since_hint = False
-        # Короткие сегменты без эмбеддинга приписываем последнему говорившему
-        self._last_match: Optional[MatchResult] = None
-        self._last_match_end = -1e9
+        # Короткие сегменты без эмбеддинга приписываем последнему говорившему,
+        # но только из того же канала: быстрое «да» из звонка сразу после фразы
+        # владельца — другой человек. Доминанта → (кто, когда закончил)
+        self._last_by_channel: dict[str, tuple[MatchResult, float]] = {}
         # Кто говорил недавно — приор для диаризации (speaker_id → конец реплики)
         self._recent_speakers: dict[int, float] = {}
 
@@ -160,8 +161,33 @@ class LiveSession:
         audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
         # Микшер и VAD лёгкие (~1 мс на кадр 100 мс) — работаем прямо в event loop
         for mixed in self._mixer.feed(channel, audio):
-            for segment in self._segmenter.feed(self._denoiser.process(mixed)):
-                self._queue.put_nowait((self._meeting_id, segment))
+            self._enqueue(self._meeting_id, self._segmenter.feed(self._denoiser.process(mixed)))
+
+    def _enqueue(self, meeting_id: int, segments: list[SpeechSegment]) -> None:
+        for segment in segments:
+            for part in self._split_by_dominance(segment):
+                self._queue.put_nowait((meeting_id, part))
+
+    def _split_by_dominance(self, segment: SpeechSegment) -> list[SpeechSegment]:
+        """Диалог без паузы: VAD не видит тишины и склеивает реплики двух людей
+        в один сегмент. Но если голос перескочил между каналами (владелец ↔
+        звонок), говорящий сменился — режем сегмент в точках смены доминанты."""
+        spans = self._mixer.dominance_spans(
+            segment.start_s, segment.end_s,
+            self._cfg.segment_split_window_ms / 1000,
+            self._cfg.segment_split_min_run_ms / 1000,
+        )
+        if len(spans) < 2:
+            return [segment]
+        parts = []
+        for span_start, span_end in spans:
+            lo = int((span_start - segment.start_s) * SAMPLE_RATE)
+            hi = min(int((span_end - segment.start_s) * SAMPLE_RATE), len(segment.audio))
+            if hi > lo:
+                parts.append(SpeechSegment(segment.audio[lo:hi], span_start, span_end))
+        log.info("Сегмент %.1f–%.1f с разрезан по смене канала на %d части",
+                 segment.start_s, segment.end_s, len(parts))
+        return parts or [segment]
 
     # ------------------------------------------------------------------ обработка сегментов
 
@@ -186,8 +212,7 @@ class LiveSession:
 
         with session_scope() as db:
             match = await self._match_speaker(db, segment, dominance)
-            self._last_match = match
-            self._last_match_end = segment.end_s
+            self._last_by_channel[dominance] = (match, segment.end_s)
             self._recent_speakers[match.speaker_id] = segment.end_s
             self._registry.maybe_save_sample(db, match.speaker_id, segment.audio)
             row = crud.add_segment(
@@ -226,11 +251,10 @@ class LiveSession:
         # duration_s включает паддинг VAD по краям — вычитаем его, чтобы порог
         # сравнивался с длительностью самой речи (иначе правило не срабатывает)
         speech_s = segment.duration_s - 2 * self._cfg.vad_pad_ms / 1000
-        too_short = speech_s < self._cfg.speaker_min_embed_s
-        recently = (segment.start_s - self._last_match_end) < 4.0
-        if too_short and self._last_match is not None and recently:
-            previous = self._last_match
-            return MatchResult(previous.speaker_id, previous.name, previous.is_self, None, False)
+        if speech_s < self._cfg.speaker_min_embed_s:
+            donor = self._short_segment_donor(dominance, segment.start_s)
+            if donor is not None:
+                return MatchResult(donor.speaker_id, donor.name, donor.is_self, None, False)
         embedding = await asyncio.to_thread(self._embedder.embed, segment.audio)
         recent = frozenset(
             speaker_id for speaker_id, end_s in self._recent_speakers.items()
@@ -239,6 +263,20 @@ class LiveSession:
         return self._registry.match_all(
             db, embedding, mic_dominant=dominance == "mic", recent_ids=recent
         )
+
+    def _short_segment_donor(self, dominance: str, start_s: float) -> Optional[MatchResult]:
+        """Кому отдать сегмент, слишком короткий для эмбеддинга: последнему
+        говорившему из того же канала не дольше 4 секунд назад
+        ('mixed' совместим с обоими каналами)."""
+        fresh = [
+            (end_s, match)
+            for channel, (match, end_s) in self._last_by_channel.items()
+            if start_s - end_s < 4.0
+            and (channel == dominance or "mixed" in (channel, dominance))
+        ]
+        if not fresh:
+            return None
+        return max(fresh, key=lambda item: item[0])[1]
 
     # ------------------------------------------------------------------ подсказки (демо)
 
@@ -277,10 +315,8 @@ class LiveSession:
             # Дожимаем недоговорённые фразы и ждём, пока ASR обработает очередь
             if self._segmenter is not None:
                 for mixed in self._mixer.flush():
-                    for segment in self._segmenter.feed(self._denoiser.process(mixed)):
-                        self._queue.put_nowait((meeting_id, segment))
-                for segment in self._segmenter.flush():
-                    self._queue.put_nowait((meeting_id, segment))
+                    self._enqueue(meeting_id, self._segmenter.feed(self._denoiser.process(mixed)))
+                self._enqueue(meeting_id, self._segmenter.flush())
             self._queue.put_nowait(_STOP)
             if self._consumer:
                 try:

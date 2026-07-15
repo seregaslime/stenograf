@@ -97,3 +97,44 @@ def test_dominance_single_active_channel(cfg):
     mixer = ChannelMixer(cfg)
     mixer.feed("mic", const_chunk(0.2, 1000))
     assert mixer.dominance(0.0, 0.05) == "mic"
+
+
+def _feed_interleaved(mixer, mic: np.ndarray, system: np.ndarray) -> None:
+    chunk = 1600  # каналы приходят вперемешку кадрами по 100 мс, как с клиента
+    for i in range(0, len(mic), chunk):
+        mixer.feed("mic", mic[i:i + chunk])
+        mixer.feed("system", system[i:i + chunk])
+
+
+def test_dominance_spans_split_on_channel_flip(cfg):
+    """Ответ без паузы: 1.2 с из звонка, потом 1.2 с в микрофон — сегмент
+    делится на два участка ровно в точке смены канала."""
+    mixer = ChannelMixer(cfg)
+    n = int(1.2 * SAMPLE_RATE)
+    system = np.concatenate([const_chunk(0.5, n), const_chunk(0.01, n)])
+    mic = np.concatenate([const_chunk(0.01, n), const_chunk(0.5, n)])
+    _feed_interleaved(mixer, mic, system)
+
+    spans = mixer.dominance_spans(0.0, 2.4, 0.3, 0.6)
+    assert len(spans) == 2
+    assert spans[0][0] == 0.0 and spans[1][1] == 2.4
+    assert spans[0][1] == pytest.approx(1.2)
+    assert spans[1][0] == pytest.approx(1.2)
+
+
+def test_dominance_spans_ignores_short_blip(cfg):
+    """Кашель в микрофон (одно окно) посреди чужой фразы — не смена говорящего."""
+    mixer = ChannelMixer(cfg)
+    n = int(0.3 * SAMPLE_RATE)
+    mic = np.concatenate([const_chunk(0.01, 4 * n), const_chunk(0.6, n), const_chunk(0.01, 3 * n)])
+    system = const_chunk(0.25, 8 * n)
+    _feed_interleaved(mixer, mic, system)
+
+    assert mixer.dominance_spans(0.0, 2.4, 0.3, 0.6) == [(0.0, 2.4)]
+
+
+def test_dominance_spans_single_channel(cfg):
+    """Второго канала нет — резать не по чему."""
+    mixer = ChannelMixer(cfg)
+    mixer.feed("mic", const_chunk(0.2, SAMPLE_RATE))
+    assert mixer.dominance_spans(0.0, 1.0, 0.3, 0.6) == [(0.0, 1.0)]
