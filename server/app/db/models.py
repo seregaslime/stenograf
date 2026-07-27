@@ -26,16 +26,15 @@ class Speaker(Base):
     is_self: Mapped[bool] = mapped_column(default=False)  # владелец микрофона ("Вы")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    samples: Mapped[list["SpeakerSample"]] = relationship(
-        back_populates="speaker", cascade="all, delete-orphan"
-    )
     voiceprints: Mapped[list["VoicePrint"]] = relationship(
         back_populates="speaker", cascade="all, delete-orphan"
     )
 
 
 class VoicePrint(Base):
-    """Один «отпечаток» голоса — центроид ECAPA-эмбеддингов (float32 bytes).
+    """Одно «звучание» голоса: центроид ECAPA-эмбеддингов (float32 bytes)
+    плюс аудио-фрагмент реплики, из которой отпечаток родился, — его можно
+    прослушать на вкладке «Спикеры».
 
     У человека может быть несколько отпечатков: гарнитура, телефон и ноутбук
     звучат по-разному. При объединении профилей отпечатки не усредняются,
@@ -49,23 +48,11 @@ class VoicePrint(Base):
     speaker_id: Mapped[int] = mapped_column(ForeignKey("speakers.id", ondelete="CASCADE"))
     centroid: Mapped[bytes] = mapped_column(LargeBinary)
     embedding_count: Mapped[int] = mapped_column(default=1)
+    audio_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    audio_duration_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     speaker: Mapped[Speaker] = relationship(back_populates="voiceprints")
-
-
-class SpeakerSample(Base):
-    """Короткий WAV-образец голоса для прослушивания на вкладке «Спикеры»."""
-
-    __tablename__ = "speaker_samples"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    speaker_id: Mapped[int] = mapped_column(ForeignKey("speakers.id", ondelete="CASCADE"))
-    path: Mapped[str] = mapped_column(String(500))
-    duration_s: Mapped[float] = mapped_column(Float)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-    speaker: Mapped[Speaker] = relationship(back_populates="samples")
 
 
 class Meeting(Base):

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/rest";
 import { DEFAULT_SERVER_URL, getSetting, isDebugMode, platform, setSetting } from "../store";
-import type { AsrStateDto, HealthDto } from "../types";
+import type { AsrStateDto, HealthDto, LlmStateDto } from "../types";
 
 const ENGINE_LABELS: Record<string, string> = {
   faster_whisper: "CPU (faster-whisper)",
@@ -31,6 +31,11 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
   const [applying, setApplying] = useState(false);
   const unmounted = useRef(false);
 
+  const [llm, setLlm] = useState<LlmStateDto | null>(null);
+  const [provider, setProvider] = useState<"local" | "api">("local");
+  const [llmError, setLlmError] = useState("");
+  const [applyingLlm, setApplyingLlm] = useState(false);
+
   async function test() {
     setTesting(true);
     setTestError("");
@@ -38,6 +43,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     try {
       setHealth(await api.health());
       await refreshAsr(true);
+      await refreshLlm(true);
     } catch (exc) {
       setTestError((exc as Error).message);
     } finally {
@@ -93,6 +99,33 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
       setAsrError((exc as Error).message);
     } finally {
       setApplying(false);
+    }
+  }
+
+  async function refreshLlm(resetSelect: boolean) {
+    try {
+      const state = await api.llm();
+      setLlm(state);
+      if (resetSelect) setProvider(state.provider);
+      return state;
+    } catch {
+      setLlm(null); // старый сервер без /api/llm — карточку просто не показываем
+      return null;
+    }
+  }
+
+  async function applyLlm() {
+    setApplyingLlm(true);
+    setLlmError("");
+    try {
+      const state = await api.setLlm(provider);
+      setLlm(state);
+      setProvider(state.provider);
+    } catch (exc) {
+      setLlmError((exc as Error).message);
+      if (llm) setProvider(llm.provider); // сервер отклонил выбор — вернуть селект
+    } finally {
+      setApplyingLlm(false);
     }
   }
 
@@ -229,6 +262,56 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
         </div>
       )}
 
+      {llm && (
+        <div className="card settings-block">
+          <h2 style={{ marginBottom: 12 }}>Модель для подсказок и резюме</h2>
+          <label className="field">
+            <span>Провайдер LLM</span>
+            <select
+              className="input"
+              value={provider}
+              onChange={(event) => setProvider(event.target.value as "local" | "api")}
+            >
+              <option value="local">Локальная (Ollama) — данные не покидают контур</option>
+              <option value="api" disabled={!llm.api_configured}>
+                Внешний API (OpenAI-совместимый)
+                {llm.api_configured ? "" : " — не настроен в server/.env"}
+              </option>
+            </select>
+          </label>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <button
+              className="btn primary"
+              onClick={applyLlm}
+              disabled={applyingLlm || provider === llm.provider}
+            >
+              {applyingLlm ? <span className="spinner" /> : "Применить"}
+            </button>
+            <span style={{ color: "var(--muted)", fontSize: 12.5 }}>
+              {llm.provider === "api"
+                ? `сейчас: внешний API${llm.reachable ? " · доступен" : " · недоступен"} · ${
+                    llm.summary_model || "модель не задана"
+                  }`
+                : `сейчас: локальная Ollama${llm.reachable ? " · доступна" : " · недоступна"}`}
+            </span>
+          </div>
+          {!llm.api_configured && (
+            <p style={{ color: "var(--muted)", fontSize: 12.5, marginTop: 10 }}>
+              Чтобы включить внешний API, задайте <code>STENOGRAF_LLM_API_BASE_URL</code>,{" "}
+              <code>STENOGRAF_LLM_API_KEY</code> и модели{" "}
+              <code>STENOGRAF_LLM_API_SUMMARY_MODEL</code> /{" "}
+              <code>STENOGRAF_LLM_API_HINTS_MODEL</code> в <code>server/.env</code> и перезапустите
+              сервер. Ключ остаётся на сервере и на клиент не передаётся.
+            </p>
+          )}
+          {llmError && (
+            <div className="banner error" style={{ marginTop: 12 }}>
+              {llmError}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="card settings-block">
         <h2 style={{ marginBottom: 12 }}>Приложение</h2>
         <label className="check">
@@ -250,9 +333,11 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
       <div className="card settings-block">
         <h2 style={{ marginBottom: 12 }}>Приватность</h2>
         <p style={{ color: "var(--muted)", fontSize: 13.5 }}>
-          Стенограф не использует внешние API: распознавание речи, определение голосов и
-          составление протоколов выполняются локальными моделями (whisper, ECAPA-TDNN, Ollama)
-          на вашей машине или на сервере организации. Записи и транскрипты не покидают контур.
+          Распознавание речи и определение голосов всегда выполняются локальными моделями
+          (whisper/GigaAM, ECAPA-TDNN) — аудио не покидает вашу машину или сервер организации.
+          Составление протоколов и подсказки по умолчанию тоже локальны (Ollama). Внешний
+          LLM-API — отдельная опция, выключенная по умолчанию; при её включении на указанный в
+          настройках сервера endpoint отправляется текст транскрипта (аудио — никогда).
         </p>
       </div>
     </div>

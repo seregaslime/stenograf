@@ -5,14 +5,14 @@ import re
 import httpx
 
 from ..config import Settings
+from .base import LlmError
 
 log = logging.getLogger(__name__)
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
-
-class OllamaError(Exception):
-    """Понятная пользователю ошибка LLM (показывается в UI)."""
+# Ошибка теперь общая для всех провайдеров; алиас — для существующих импортов
+OllamaError = LlmError
 
 
 class OllamaClient:

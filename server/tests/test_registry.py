@@ -4,10 +4,14 @@
 с точно заданной косинусной близостью: так проверяется именно решающая
 логика (порог, дрейф центроида, merge), а не качество ECAPA.
 """
+from pathlib import Path
+
 import numpy as np
 import pytest
+from sqlalchemy import select
 
 from app.db import crud
+from app.db.models import VoicePrint
 from app.diarization.registry import SpeakerRegistry
 
 DIM = 192  # размерность ECAPA-эмбеддинга
@@ -15,6 +19,11 @@ DIM = 192  # размерность ECAPA-эмбеддинга
 
 def unit(vector: np.ndarray) -> np.ndarray:
     return (vector / np.linalg.norm(vector)).astype(np.float32)
+
+
+def long_audio(seconds: float = 2.5) -> np.ndarray:
+    """Реплика достаточной длины, чтобы породить новый отпечаток «со скидкой»."""
+    return np.zeros(int(seconds * 16_000), dtype=np.float32)
 
 
 def vec_with_similarity(base: np.ndarray, sim: float, rng: np.random.Generator) -> np.ndarray:
@@ -143,7 +152,7 @@ def test_self_bonus_keeps_owner_below_threshold(registry, db_session, cfg, rng):
     voice = unit(rng.standard_normal(DIM))
     registry.match_all(db_session, voice, mic_dominant=True)  # энролл
     drifted = vec_with_similarity(voice, cfg.speaker_match_threshold - 0.05, rng)
-    match = registry.match_all(db_session, drifted, mic_dominant=True)
+    match = registry.match_all(db_session, drifted, mic_dominant=True, audio=long_audio())
     assert match.is_self, "голос владельца ниже порога, но из микрофона — должен остаться «Вы»"
     assert len(registry._prints[registry.self_id]) == 2  # новое «звучание» — новый отпечаток
     # без микрофонного приора тот же вектор владельцу бы не достался
@@ -176,8 +185,39 @@ def test_prints_capped_per_speaker(registry, db_session, cfg, rng):
     registry.match_all(db_session, voice, mic_dominant=True)
     for _ in range(cfg.speaker_max_prints + 3):
         wobble = vec_with_similarity(voice, cfg.speaker_match_threshold - 0.05, rng)
-        registry.match_all(db_session, wobble, mic_dominant=True)
+        registry.match_all(db_session, wobble, mic_dominant=True, audio=long_audio())
     assert len(registry._prints[registry.self_id]) <= cfg.speaker_max_prints
+
+
+def test_borderline_short_segment_leaves_no_print(registry, db_session, cfg, rng):
+    """Пограничный коротыш («ага», узнанное со скидкой) не рождает отпечаток
+    и не двигает существующий — источник мусорных отпечатков закрыт."""
+    voice = unit(rng.standard_normal(DIM))
+    registry.match_all(db_session, voice, mic_dominant=True)  # энролл
+    wobble = vec_with_similarity(voice, cfg.speaker_match_threshold - 0.05, rng)
+    short = np.zeros(int(0.5 * 16_000), dtype=np.float32)
+    match = registry.match_all(db_session, wobble, mic_dominant=True, audio=short)
+    assert match.is_self  # узнан со скидкой
+    prints = registry._prints[registry.self_id]
+    assert len(prints) == 1, "коротыш породил отпечаток"
+    assert prints[0].count == 1, "коротыш сдвинул главный отпечаток"
+
+
+def test_print_audio_saved_and_removed(registry, db_session, rng):
+    """«Звучание» сохраняет аудио своей реплики (его можно прослушать);
+    удаление отпечатка удаляет и файл."""
+    voice = unit(rng.standard_normal(DIM))
+    match = registry.match_all(db_session, voice, mic_dominant=False, audio=long_audio(3.0))
+    row = db_session.scalars(
+        select(VoicePrint).where(VoicePrint.speaker_id == match.speaker_id)
+    ).one()
+    assert row.audio_path is not None
+    path = Path(row.audio_path)
+    assert path.exists()
+    assert row.audio_duration_s == pytest.approx(3.0, abs=0.1)
+
+    registry.remove_print(db_session, match.speaker_id, row.id)
+    assert not path.exists()
 
 
 def test_centroid_drifts_toward_recent_voice(registry, db_session, rng):

@@ -1,0 +1,11 @@
+# В образ идёт только app/ + requirements.txt — остальное из контекста сборки исключаем.
+# Важно: data/ (модели, БД — гигабайты) и .env (ключ API!) НЕ должны попасть в образ.
+data/
+.env
+.venv/
+tests/
+scripts/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db

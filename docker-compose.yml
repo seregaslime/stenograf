@@ -1,0 +1,41 @@
+# Серверная часть Стенографа в контейнерах — сценарий «сервер организации»:
+# тяжёлые модели крутятся здесь, сотрудники подключаются лёгким клиентом.
+#
+#   docker compose up -d --build
+#   docker compose exec ollama ollama pull qwen3:4b     # протоколы   (один раз)
+#   docker compose exec ollama ollama pull qwen3:1.7b   # подсказки   (один раз)
+#
+# В клиенте: Настройки → Адрес сервера → http://<хост>:8765
+# По умолчанию ASR — GigaAM v3 (скачается при первом запуске в том stenograf-data).
+services:
+  server:
+    build: ./server
+    ports:
+      - "8765:8765"
+    environment:
+      STENOGRAF_DATA_DIR: /data
+      STENOGRAF_OLLAMA_URL: http://ollama:11434
+      # Слабый сервер — модель полегче:
+      # STENOGRAF_ASR_ENGINE: faster_whisper
+      # STENOGRAF_ASR_MODEL: small
+      # Внешний/внутренний LLM по API вместо Ollama (ключ задаётся здесь, не в образе):
+      # STENOGRAF_LLM_PROVIDER: api
+      # STENOGRAF_LLM_API_BASE_URL: https://api.groq.com/openai/v1
+      # STENOGRAF_LLM_API_KEY: sk-...
+      # STENOGRAF_LLM_API_SUMMARY_MODEL: openai/gpt-oss-120b
+      # STENOGRAF_LLM_API_HINTS_MODEL: openai/gpt-oss-20b
+    volumes:
+      - stenograf-data:/data
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  stenograf-data:
+  ollama-models:

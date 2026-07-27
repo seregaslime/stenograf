@@ -11,6 +11,8 @@
     "web": "vite",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:cov": "vitest run --coverage",
     "dist:mac": "npm run build && electron-builder --mac dmg",
     "dist:win": "npm run build && electron-builder --win nsis --x64"
   },
@@ -60,6 +62,9 @@
     "electron-builder": "^26.15.3",
     "typescript": "^5.6.0",
     "vite": "^6.0.0",
+    "vitest": "^2.1.8",
+    "@vitest/coverage-v8": "^2.1.8",
+    "jsdom": "^25.0.1",
     "wait-on": "^8.0.0"
   }
 }

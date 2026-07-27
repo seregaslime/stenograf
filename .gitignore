@@ -5,6 +5,12 @@ __pycache__/
 server/data/
 server/.env
 
+# Тесты / покрытие (генерируется прогонами)
+.pytest_cache/
+.coverage
+htmlcov/
+client/coverage/
+
 # Node / Electron
 client/node_modules/
 client/dist/

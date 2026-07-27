@@ -40,7 +40,12 @@ export class LiveClient {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
-  start(options: { title: string; record_audio: boolean; hints: boolean }): void {
+  start(options: {
+    title: string;
+    record_audio: boolean;
+    hints: boolean;
+    summarize: boolean;
+  }): void {
     this.sendJson({ type: "start", ...options });
   }
 
@@ -50,6 +55,11 @@ export class LiveClient {
 
   setHints(enabled: boolean): void {
     this.sendJson({ type: "hints", enabled });
+  }
+
+  /** «Подсказать сейчас» — мгновенная подсказка по запросу, в обход таймера. */
+  requestHint(): void {
+    this.sendJson({ type: "hint_now" });
   }
 
   sendAudio(channel: Channel, pcm: ArrayBuffer): void {

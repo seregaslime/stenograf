@@ -1,7 +1,7 @@
 """Живая сессия встречи поверх WebSocket.
 
 Клиент шлёт бинарные кадры: [1 байт канала (0=mic, 1=system)] + PCM16LE 16 кГц mono,
-и JSON-команды (start / stop / hints). Сервер отвечает JSON-событиями:
+и JSON-команды (start / stop / hints / hint_now). Сервер отвечает JSON-событиями:
 ready, segment, speaker_new, hint, stopped, error.
 
 Конвейер из обособленных этапов (каждый заменяем независимо):
@@ -17,8 +17,10 @@ ready, segment, speaker_new, hint, stopped, error.
 выполняться параллельно (важно для 8 ГБ RAM).
 """
 import asyncio
+import difflib
 import json
 import logging
+import time
 import wave
 from collections import deque
 from typing import Optional
@@ -36,7 +38,8 @@ from .db.database import session_scope
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import MatchResult, SpeakerRegistry
 from .llm import prompts
-from .llm.ollama_client import OllamaClient, OllamaError
+from .llm.base import LlmError
+from .llm.router import LlmRouter
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +55,7 @@ class LiveSession:
         transcriber: Transcriber,
         embedder: VoiceEmbedder,
         registry: SpeakerRegistry,
-        ollama: OllamaClient,
+        llm: LlmRouter,
         on_meeting_ended,  # callback(meeting_id) — запускает суммаризацию
     ):
         self._ws = ws
@@ -60,7 +63,7 @@ class LiveSession:
         self._transcriber = transcriber
         self._embedder = embedder
         self._registry = registry
-        self._ollama = ollama
+        self._llm = llm
         self._on_meeting_ended = on_meeting_ended
 
         self._meeting_id: Optional[int] = None
@@ -73,8 +76,15 @@ class LiveSession:
         self._consumer: Optional[asyncio.Task] = None
         self._hints_task: Optional[asyncio.Task] = None
         self._hints_enabled = False
+        self._summarize = True  # составлять ли резюме по завершении (выбор при старте)
         self._recent: deque[str] = deque(maxlen=60)  # последние реплики для подсказок
-        self._new_text_since_hint = False
+        # Состояние адаптивных подсказок (см. _hints_loop / _emit_hint)
+        self._chars_since_hint = 0        # сколько нового текста с прошлой подсказки
+        self._last_hint_at = 0.0          # time.monotonic() последней подсказки
+        self._recent_hints: deque[str] = deque(maxlen=cfg.hints_memory)  # против повторов
+        self._hint_in_flight = False      # идёт генерация — не запускать вторую
+        self._hint_fail_streak = 0        # ошибок LLM подряд
+        self._hint_backoff_until = 0.0    # до этого времени не пробовать (бэкофф)
         # Короткие сегменты без эмбеддинга приписываем последнему говорившему,
         # но только из того же канала: быстрое «да» из звонка сразу после фразы
         # владельца — другой человек. Доминанта → (кто, когда закончил)
@@ -112,6 +122,8 @@ class LiveSession:
             await self._start(command)
         elif kind == "hints":
             self._hints_enabled = bool(command.get("enabled"))
+        elif kind == "hint_now":
+            await self._emit_hint(force=True)  # «подсказать сейчас» — в обход триггера
         else:
             await self._send({"type": "error", "message": f"Неизвестная команда: {kind}"})
 
@@ -141,6 +153,7 @@ class LiveSession:
         self._denoiser = create_denoiser(self._cfg)
         self._segmenter = SpeechSegmenter(self._cfg)
         self._hints_enabled = bool(command.get("hints"))
+        self._summarize = bool(command.get("summarize", True))
         self._consumer = asyncio.create_task(self._consume())
         self._hints_task = asyncio.create_task(self._hints_loop())
         log.info("Встреча #%d «%s» началась", self._meeting_id, title)
@@ -214,7 +227,6 @@ class LiveSession:
             match = await self._match_speaker(db, segment, dominance)
             self._last_by_channel[dominance] = (match, segment.end_s)
             self._recent_speakers[match.speaker_id] = segment.end_s
-            self._registry.maybe_save_sample(db, match.speaker_id, segment.audio)
             row = crud.add_segment(
                 db, meeting_id, match.speaker_id, dominance,
                 segment.start_s, segment.end_s, text, match.similarity,
@@ -222,7 +234,7 @@ class LiveSession:
             segment_id = row.id
 
         self._recent.append(f"{match.name}: {text}")
-        self._new_text_since_hint = True
+        self._chars_since_hint += len(text)
 
         if match.is_new:
             await self._send({
@@ -261,7 +273,8 @@ class LiveSession:
             if segment.start_s - end_s <= self._cfg.speaker_recent_window_s
         )
         return self._registry.match_all(
-            db, embedding, mic_dominant=dominance == "mic", recent_ids=recent
+            db, embedding, mic_dominant=dominance == "mic", recent_ids=recent,
+            audio=segment.audio,
         )
 
     def _short_segment_donor(self, dominance: str, start_s: float) -> Optional[MatchResult]:
@@ -281,26 +294,72 @@ class LiveSession:
     # ------------------------------------------------------------------ подсказки (демо)
 
     async def _hints_loop(self) -> None:
+        """Подсказку выдаём не по таймеру, а когда накопилось достаточно нового
+        разговора и прошёл минимальный интервал (быстрый API это позволяет)."""
         while self._meeting_id is not None:
-            await asyncio.sleep(self._cfg.hints_interval_s)
-            if not self._hints_enabled or not self._new_text_since_hint:
-                continue
-            window = "\n".join(self._recent)[-self._cfg.hints_window_chars:]
-            if len(window) < 80:  # слишком мало контекста — рано подсказывать
-                continue
-            self._new_text_since_hint = False
-            try:
-                hint = await self._ollama.generate(
-                    self._cfg.hints_model,
-                    prompts.HINTS_TEMPLATE.format(transcript=window),
-                    system=prompts.HINTS_SYSTEM,
-                    temperature=0.5,
-                )
-                if hint:
-                    await self._send({"type": "hint", "text": hint})
-            except OllamaError as exc:
+            await asyncio.sleep(self._cfg.hints_poll_s)
+            if self._hints_enabled and self._should_hint(time.monotonic()):
+                await self._emit_hint()
+
+    def _should_hint(self, now: float) -> bool:
+        """Пора ли подсказывать: не в периоде бэкоффа, накопилось нового текста
+        и прошёл минимальный интервал с прошлой подсказки."""
+        return (
+            now >= self._hint_backoff_until
+            and self._chars_since_hint >= self._cfg.hints_min_new_chars
+            and now - self._last_hint_at >= self._cfg.hints_min_gap_s
+        )
+
+    def _is_duplicate(self, hint: str) -> bool:
+        """Почти-дубль недавней подсказки (сравнение без учёта регистра)."""
+        candidate = hint.casefold()
+        return any(
+            difflib.SequenceMatcher(None, candidate, prev.casefold()).ratio()
+            >= self._cfg.hints_dup_ratio
+            for prev in self._recent_hints
+        )
+
+    async def _emit_hint(self, force: bool = False) -> None:
+        """Единая точка генерации подсказки — из адаптивного цикла и из кнопки
+        «подсказать сейчас» (force=True, в обход триггера и флага включённости).
+        Флаг _hint_in_flight не даёт запустить два запроса к LLM разом."""
+        if self._hint_in_flight:
+            return
+        window = "\n".join(self._recent)[-self._cfg.hints_window_chars:]
+        if len(window) < 80:  # слишком мало контекста — рано подсказывать
+            return
+        self._hint_in_flight = True
+        self._chars_since_hint = 0
+        self._last_hint_at = time.monotonic()
+        try:
+            previous = "\n".join(self._recent_hints) or "—"
+            hint = await self._llm.hint(
+                prompts.HINTS_TEMPLATE.format(transcript=window, previous=previous),
+                system=prompts.HINTS_SYSTEM,
+                temperature=0.5,
+            )
+            self._hint_fail_streak = 0
+            if hint and not self._is_duplicate(hint):
+                self._recent_hints.append(hint)
+                await self._send({"type": "hint", "text": hint})
+        except LlmError as exc:
+            # Один сбой не выключает подсказки: наращиваем бэкофф и гасим только
+            # после нескольких ошибок подряд (важно при нестабильной сети).
+            self._hint_fail_streak += 1
+            self._hint_backoff_until = time.monotonic() + min(
+                self._cfg.hints_min_gap_s * 2 ** self._hint_fail_streak,
+                self._cfg.hints_max_backoff_s,
+            )
+            if self._hint_fail_streak >= self._cfg.hints_max_fails:
                 self._hints_enabled = False
+                await self._send({
+                    "type": "hint_error",
+                    "message": "Подсказки приостановлены после нескольких ошибок связи с LLM.",
+                })
+            elif self._hint_fail_streak == 1:
                 await self._send({"type": "hint_error", "message": str(exc)})
+        finally:
+            self._hint_in_flight = False
 
     # ------------------------------------------------------------------ завершение
 
@@ -332,10 +391,14 @@ class LiveSession:
         finally:
             # ВАЖНО: встреча завершается в БД даже если consumer упал
             with session_scope() as db:
-                crud.end_meeting(db, meeting_id)
+                crud.end_meeting(
+                    db, meeting_id,
+                    status="summarizing" if self._summarize else "done",
+                )
             log.info("Встреча #%d завершена", meeting_id)
             await self._send({"type": "stopped", "meeting_id": meeting_id})
-            self._on_meeting_ended(meeting_id)
+            if self._summarize:
+                self._on_meeting_ended(meeting_id)
 
     async def _send(self, payload: dict) -> None:
         try:

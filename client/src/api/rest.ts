@@ -1,5 +1,12 @@
 import { getServerUrl } from "../store";
-import type { AsrStateDto, HealthDto, MeetingDetail, MeetingListItem, SpeakerDto } from "../types";
+import type {
+  AsrStateDto,
+  HealthDto,
+  LlmStateDto,
+  MeetingDetail,
+  MeetingListItem,
+  SpeakerDto,
+} from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(getServerUrl() + path, {
@@ -27,6 +34,13 @@ export const api = {
     request<AsrStateDto>("/api/asr", {
       method: "POST",
       body: JSON.stringify({ engine, model }),
+    }),
+
+  llm: () => request<LlmStateDto>("/api/llm"),
+  setLlm: (provider: string) =>
+    request<LlmStateDto>("/api/llm", {
+      method: "POST",
+      body: JSON.stringify({ provider }),
     }),
 
   meetings: () => request<MeetingListItem[]>("/api/meetings"),
@@ -57,7 +71,6 @@ export const api = {
       "/api/speakers/merge",
       { method: "POST", body: JSON.stringify({ speaker_ids: ids }) },
     ),
-  sampleUrl: (sampleId: number) => `${getServerUrl()}/api/samples/${sampleId}`,
-  deleteSample: (sampleId: number) =>
-    request<{ deleted: number }>(`/api/samples/${sampleId}`, { method: "DELETE" }),
+  voiceprintAudioUrl: (speakerId: number, printId: number) =>
+    `${getServerUrl()}/api/speakers/${speakerId}/voiceprints/${printId}/audio`,
 };

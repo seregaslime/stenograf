@@ -2,12 +2,12 @@
 import logging
 from collections import Counter
 
-from ..config import Settings
 from ..db import crud
 from ..db.database import session_scope
 from ..db.models import Meeting
 from . import prompts
-from .ollama_client import OllamaClient, OllamaError
+from .base import LlmError
+from .router import LlmRouter
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ def build_transcript(segments) -> tuple[str, str]:
     return transcript, participants
 
 
-async def generate_summary(cfg: Settings, ollama: OllamaClient, meeting_id: int) -> None:
+async def generate_summary(llm: LlmRouter, meeting_id: int) -> None:
     with session_scope() as db:
         meeting = db.get(Meeting, meeting_id)
         if meeting is None:
@@ -54,11 +54,11 @@ async def generate_summary(cfg: Settings, ollama: OllamaClient, meeting_id: int)
         title=title, date=date, participants=participants, transcript=transcript
     )
     try:
-        summary = await ollama.generate(
-            cfg.summary_model, prompt, system=prompts.SUMMARY_SYSTEM, temperature=0.3
+        summary = await llm.summarize(
+            prompt, system=prompts.SUMMARY_SYSTEM, temperature=0.3
         )
         error = None
-    except OllamaError as exc:
+    except LlmError as exc:
         summary, error = None, str(exc)
         log.warning("Резюме встречи #%d не создано: %s", meeting_id, exc)
 
@@ -68,7 +68,7 @@ async def generate_summary(cfg: Settings, ollama: OllamaClient, meeting_id: int)
             return
         meeting.status = "done"
         meeting.summary = summary
-        meeting.summary_model = cfg.summary_model if summary else None
+        meeting.summary_model = llm.summary_model_name if summary else None
         meeting.summary_error = error
     if summary:
         log.info("Резюме встречи #%d готово", meeting_id)

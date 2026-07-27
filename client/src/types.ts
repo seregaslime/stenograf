@@ -38,9 +38,10 @@ export interface MeetingDetail {
   segments: SegmentDto[];
 }
 
-export interface SpeakerSampleDto {
+export interface VoiceprintDto {
   id: number;
-  duration_s: number;
+  count: number; // из скольких реплик усреднён
+  audio_duration_s: number | null; // null — отпечаток без аудио (создан до v0.4)
 }
 
 export interface SpeakerDto {
@@ -51,8 +52,7 @@ export interface SpeakerDto {
   segments_count: number;
   voiceprints_count: number;
   created_at: string | null;
-  samples: SpeakerSampleDto[];
-  voiceprints: { id: number; count: number }[];
+  voiceprints: VoiceprintDto[];
 }
 
 export interface HealthDto {
@@ -61,6 +61,17 @@ export interface HealthDto {
   asr: { engine: string; model: string; loaded: boolean };
   diarization: { loaded: boolean };
   ollama: { reachable: boolean; models: string[] };
+  llm: { provider: "local" | "api"; api_configured: boolean };
+  summary_model: string;
+  hints_model: string;
+}
+
+export interface LlmStateDto {
+  provider: "local" | "api";
+  api_configured: boolean;
+  api_base_url: string;
+  reachable: boolean;
+  models: string[];
   summary_model: string;
   hints_model: string;
 }

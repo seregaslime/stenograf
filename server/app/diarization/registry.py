@@ -9,10 +9,12 @@ ECAPA-эмбеддингов): гарнитура, телефон и ноутб�
 отпечатки, а переносит их под одного спикера — данные не теряются.
 """
 import logging
+import shutil
 import threading
 import uuid
 import wave
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -21,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from ..config import SAMPLE_RATE, Settings
 from ..db import crud
-from ..db.models import Segment, Speaker, SpeakerSample, VoicePrint
+from ..db.models import Segment, Speaker, VoicePrint
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +81,7 @@ class SpeakerRegistry:
         embedding: np.ndarray,
         mic_dominant: bool,
         recent_ids: frozenset[int] = frozenset(),
+        audio: Optional[np.ndarray] = None,
     ) -> MatchResult:
         """Ищет владельца голоса по отпечаткам ВСЕХ спикеров, включая «Вы».
 
@@ -91,15 +94,19 @@ class SpeakerRegistry:
           и сейчас — склеивает монолог, который иначе рассыпался бы на
           «Спикер N» на каждой просадке близости.
 
-        Если голос узнан со скидкой (ниже основного порога), его «звучание»
-        добавляется отдельным отпечатком — так профиль набирает варианты
-        (гарнитура, комната, простуда), а не размывает главный отпечаток.
+        Если голос узнан со скидкой (ниже основного порога) в достаточно
+        длинной реплике, её «звучание» добавляется отдельным отпечатком — так
+        профиль набирает варианты (гарнитура, комната, простуда), не размывая
+        главный отпечаток. Пограничные коротыши отпечатков не оставляют.
+
+        audio — реплика сегмента: сохраняется рядом с новым отпечатком, чтобы
+        «звучание» можно было прослушать на вкладке «Спикеры».
         """
         cfg = self._cfg
         with self._lock:
             self_prints = self._prints.get(self._self_id, [])
             if mic_dominant and not self_prints:
-                self._add_print(db, self._self_id, embedding)
+                self._add_print(db, self._self_id, embedding, audio)
                 speaker = db.get(Speaker, self._self_id)
                 log.info("Профиль «Вы» обучен по первому голосу из микрофона")
                 return MatchResult(self._self_id, speaker.name, True, None, False)
@@ -129,17 +136,21 @@ class SpeakerRegistry:
                 # Отпечатки «Вы» пополняем только голосом из микрофона, чтобы не
                 # размывать их звуком из звонка (и наоборот для остальных)
                 if is_self == mic_dominant:
-                    if sim < cfg.speaker_match_threshold and \
-                            len(self._prints[speaker_id]) < cfg.speaker_max_prints:
-                        # узнали со скидкой — это другое «звучание», новый отпечаток
-                        self._add_print(db, speaker_id, embedding)
-                    else:
+                    if sim >= cfg.speaker_match_threshold:
                         self._update_print(db, print_, embedding)
+                    elif (
+                        len(self._prints[speaker_id]) < cfg.speaker_max_prints
+                        and audio is not None
+                        and len(audio) / SAMPLE_RATE >= cfg.speaker_print_min_s
+                    ):
+                        # узнали со скидкой в длинной реплике — другое «звучание»,
+                        # новый отпечаток; пограничный коротыш не меняет профиль
+                        self._add_print(db, speaker_id, embedding, audio)
                 speaker = db.get(Speaker, speaker_id)
                 return MatchResult(speaker_id, speaker.name, is_self, round(sim, 3), False)
 
             speaker = crud.create_speaker(db)
-            self._add_print(db, speaker.id, embedding)
+            self._add_print(db, speaker.id, embedding, audio)
             log.info("Новый профиль голоса: %s (лучшая близость была %.3f)", speaker.name, best_sim)
             return MatchResult(speaker.id, speaker.name, False,
                                round(best_sim, 3) if best_sim > -1 else None, True)
@@ -158,29 +169,27 @@ class SpeakerRegistry:
         row.centroid = print_.vector.tobytes()
         row.embedding_count = print_.count
 
-    def _add_print(self, db: Session, speaker_id: int, embedding: np.ndarray) -> None:
+    def _add_print(
+        self, db: Session, speaker_id: int, embedding: np.ndarray,
+        audio: Optional[np.ndarray] = None,
+    ) -> None:
         row = VoicePrint(
             speaker_id=speaker_id,
             centroid=embedding.astype(np.float32).tobytes(),
             embedding_count=1,
         )
+        if audio is not None:
+            row.audio_path, row.audio_duration_s = self._save_print_audio(speaker_id, audio)
         db.add(row)
         db.flush()
         self._prints.setdefault(speaker_id, []).append(
             _Print(row.id, embedding.astype(np.float32), 1)
         )
 
-    # --- аудио-образцы голоса ---
-
-    def maybe_save_sample(self, db: Session, speaker_id: int, audio: np.ndarray) -> None:
-        duration = len(audio) / SAMPLE_RATE
-        if not (self._cfg.speaker_sample_min_s <= duration <= self._cfg.speaker_sample_max_s):
-            return
-        existing = db.scalar(
-            select(func.count(SpeakerSample.id)).where(SpeakerSample.speaker_id == speaker_id)
-        )
-        if existing >= self._cfg.speaker_max_samples:
-            return
+    def _save_print_audio(self, speaker_id: int, audio: np.ndarray) -> tuple[str, float]:
+        """Пишет wav-фрагмент реплики, из которой родился отпечаток, — чтобы
+        «звучание» можно было прослушать. Длинные реплики обрезаются."""
+        audio = audio[: int(self._cfg.speaker_print_audio_max_s * SAMPLE_RATE)]
         directory = self._cfg.samples_dir / f"spk_{speaker_id}"
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{uuid.uuid4().hex[:8]}.wav"
@@ -190,7 +199,7 @@ class SpeakerRegistry:
             f.setsampwidth(2)
             f.setframerate(SAMPLE_RATE)
             f.writeframes(pcm.tobytes())
-        db.add(SpeakerSample(speaker_id=speaker_id, path=str(path), duration_s=duration))
+        return str(path), len(audio) / SAMPLE_RATE
 
     # --- ручные операции (вкладка «Спикеры») ---
 
@@ -220,11 +229,16 @@ class SpeakerRegistry:
             self._prints.setdefault(target.id, []).extend(moved_prints)
         # Переприсваиваем родителя: объект атомарно переезжает между
         # коллекциями, и cascade delete-orphan при удалении source его не тронет
+        target_dir = self._cfg.samples_dir / f"spk_{target.id}"
         for print_row in list(source.voiceprints):
+            if print_row.audio_path and Path(print_row.audio_path).exists():
+                target_dir.mkdir(parents=True, exist_ok=True)
+                new_path = target_dir / Path(print_row.audio_path).name
+                shutil.move(print_row.audio_path, new_path)
+                print_row.audio_path = str(new_path)
             print_row.speaker = target
-        for sample in list(source.samples):
-            sample.speaker = target
         db.flush()
+        shutil.rmtree(self._cfg.samples_dir / f"spk_{source.id}", ignore_errors=True)
         moved = crud.reassign_segments(db, source.id, target.id)
         source_name = source.name
         db.delete(source)
@@ -256,6 +270,8 @@ class SpeakerRegistry:
                 else:
                     self._prints.pop(speaker_id, None)
         if found_db:
+            if row.audio_path:
+                Path(row.audio_path).unlink(missing_ok=True)
             db.delete(row)
         if found_db or found_memory:
             log.info("Удалён отпечаток #%d спикера #%d", print_id, speaker_id)

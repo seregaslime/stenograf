@@ -6,7 +6,7 @@ from typing import Optional, Sequence
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
-from .models import Meeting, Segment, Speaker, SpeakerSample, VoicePrint
+from .models import Meeting, Segment, Speaker, VoicePrint
 
 
 # --- Спикеры ---
@@ -60,11 +60,13 @@ def list_speakers(db: Session) -> list[dict]:
                 "segments_count": segments,
                 "voiceprints_count": prints,
                 "created_at": speaker.created_at.isoformat() if speaker.created_at else None,
-                "samples": [
-                    {"id": s.id, "duration_s": round(s.duration_s, 1)} for s in speaker.samples
-                ],
                 "voiceprints": [
-                    {"id": p.id, "count": p.embedding_count}
+                    {
+                        "id": p.id,
+                        "count": p.embedding_count,
+                        "audio_duration_s": round(p.audio_duration_s, 1)
+                        if p.audio_duration_s is not None else None,
+                    }
                     for p in sorted(speaker.voiceprints, key=lambda p: p.id)
                 ],
             }

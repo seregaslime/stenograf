@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -20,6 +21,7 @@ def init_db() -> None:
     models.Base.metadata.create_all(engine)
     _migrate_voiceprints(models.Base.metadata)
     _migrate_autoincrement(models.Base.metadata)
+    _migrate_samples_into_prints()
 
 
 def _migrate_voiceprints(metadata) -> None:
@@ -75,6 +77,44 @@ def _migrate_autoincrement(metadata) -> None:
                 f"INSERT INTO {table_name} ({columns}) SELECT {columns} FROM _migration"
             )
             conn.exec_driver_sql("DROP TABLE _migration")
+
+
+def _migrate_samples_into_prints() -> None:
+    """Сливает аудио-образцы с отпечатками (базы до v0.4).
+
+    Раньше образец голоса и отпечаток были отдельными сущностями: образец
+    можно слушать, отпечаток решает узнавание. Теперь это одно «звучание»:
+    у отпечатка появляется аудио. Существующие образцы прикрепляются к
+    отпечаткам того же спикера (старейший образец — старейшему отпечатку
+    без аудио), лишние файлы удаляются, таблица speaker_samples исчезает.
+    """
+    with engine.begin() as conn:
+        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(voiceprints)")]
+        if "audio_path" not in columns:
+            conn.exec_driver_sql("ALTER TABLE voiceprints ADD COLUMN audio_path VARCHAR(500)")
+            conn.exec_driver_sql("ALTER TABLE voiceprints ADD COLUMN audio_duration_s FLOAT")
+        has_samples = conn.exec_driver_sql(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='speaker_samples'"
+        ).fetchone()
+        if has_samples is None:
+            return
+        samples = conn.exec_driver_sql(
+            "SELECT speaker_id, path, duration_s FROM speaker_samples ORDER BY speaker_id, id"
+        ).fetchall()
+        for speaker_id, path, duration in samples:
+            target = conn.exec_driver_sql(
+                "SELECT id FROM voiceprints WHERE speaker_id = ? AND audio_path IS NULL "
+                "ORDER BY id LIMIT 1",
+                (speaker_id,),
+            ).fetchone()
+            if target is not None and Path(path).exists():
+                conn.exec_driver_sql(
+                    "UPDATE voiceprints SET audio_path = ?, audio_duration_s = ? WHERE id = ?",
+                    (path, duration, target[0]),
+                )
+            else:  # прикрепить некуда — файл больше не нужен
+                Path(path).unlink(missing_ok=True)
+        conn.exec_driver_sql("DROP TABLE speaker_samples")
 
 
 @contextmanager

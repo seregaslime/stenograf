@@ -83,19 +83,20 @@ def collect_from_dir(root: Path) -> dict[str, list[Path]]:
 
 
 def collect_from_samples(cfg: Settings) -> dict[str, list[Path]]:
-    """Образцы голосов, которые сервер сохранял на встречах (вкладка «Спикеры»)."""
+    """Аудио «звучаний» голоса, сохранённых при создании отпечатков (вкладка «Спикеры»)."""
     from sqlalchemy import create_engine, select
     from sqlalchemy.orm import sessionmaker
 
-    from app.db.models import Speaker, SpeakerSample
+    from app.db.models import Speaker, VoicePrint
 
     engine = create_engine(f"sqlite:///{cfg.db_path}")
     session = sessionmaker(bind=engine)()
     people: dict[str, list[Path]] = {}
     try:
         for speaker in session.scalars(select(Speaker)):
-            paths = [Path(s.path) for s in session.scalars(
-                select(SpeakerSample).where(SpeakerSample.speaker_id == speaker.id))]
+            paths = [Path(p.audio_path) for p in session.scalars(
+                select(VoicePrint).where(VoicePrint.speaker_id == speaker.id))
+                if p.audio_path]
             paths = [p for p in paths if p.exists()]
             if paths:
                 people[speaker.name] = paths

@@ -5,6 +5,15 @@
 загружаются — реальный звук проверяется интеграционными тестами (-m integration)
 и скриптом scripts/eval_voices.py.
 """
+import os
+import tempfile
+
+# ДО импорта app.config: уводим data_dir во временную папку (функциональные тесты
+# через TestClient используют глобальные синглтоны app.main — рабочая БД не должна
+# пострадать) и не грузим ASR-модель при старте приложения.
+os.environ.setdefault("STENOGRAF_DATA_DIR", tempfile.mkdtemp(prefix="stenograf_test_"))
+os.environ.setdefault("STENOGRAF_PRELOAD_ASR", "false")
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

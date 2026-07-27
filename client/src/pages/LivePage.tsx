@@ -38,6 +38,7 @@ export default function LivePage({
   const [phase, setPhase] = useState<Phase>("setup");
   const [title, setTitle] = useState("");
   const [recordAudio, setRecordAudio] = useState(false);
+  const [summarizeWanted, setSummarizeWanted] = useState(true);
   const [hintsWanted, setHintsWanted] = useState(false);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [micId, setMicId] = useState("");
@@ -48,6 +49,7 @@ export default function LivePage({
   const [segments, setSegments] = useState<SegmentDto[]>([]);
   const [hintList, setHintList] = useState<{ text: string; at: string }[]>([]);
   const [hintError, setHintError] = useState("");
+  const [hintsOn, setHintsOn] = useState(false); // подсказки включены прямо сейчас (тумблер)
   const [micLevel, setMicLevel] = useState(0);
   const [sysLevel, setSysLevel] = useState(0);
   const [sysActive, setSysActive] = useState(false);
@@ -127,6 +129,7 @@ export default function LivePage({
         setSegments((previous) => [...previous, event.segment]);
         break;
       case "hint":
+        setHintError(""); // подсказка пришла — снимаем баннер прошлой ошибки
         setHintList((previous) => [
           ...previous,
           { text: event.text, at: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) },
@@ -185,6 +188,7 @@ export default function LivePage({
     setHintError("");
     setSegments([]);
     setHintList([]);
+    setHintsOn(hintsWanted); // стартовое состояние тумблера = выбор на экране настройки
     setElapsed(0);
     finishedRef.current = false;
     meetingIdRef.current = null;
@@ -223,6 +227,7 @@ export default function LivePage({
       title: title.trim() || "Встреча",
       record_audio: recordAudio,
       hints: hintsWanted,
+      summarize: summarizeWanted,
     });
   }
 
@@ -338,6 +343,16 @@ export default function LivePage({
               <label className="check">
                 <input
                   type="checkbox"
+                  checked={summarizeWanted}
+                  onChange={(event) => setSummarizeWanted(event.target.checked)}
+                />
+                <span className="box">✓</span>
+                Составить протокол по завершении
+                <span className="hint">если выключить — резюме можно создать позже на странице встречи</span>
+              </label>
+              <label className="check">
+                <input
+                  type="checkbox"
                   checked={hintsWanted}
                   onChange={(event) => setHintsWanted(event.target.checked)}
                 />
@@ -415,6 +430,23 @@ export default function LivePage({
           <div className="hints-panel">
             <div className="hints-title">
               💡 Подсказки ИИ <span className="chip live">демо</span>
+            </div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", margin: "8px 0 12px" }}>
+              <label className="check" style={{ margin: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={hintsOn}
+                  onChange={(event) => {
+                    setHintsOn(event.target.checked);
+                    clientRef.current?.setHints(event.target.checked);
+                  }}
+                />
+                <span className="box">✓</span>
+                Включены
+              </label>
+              <button className="btn small" onClick={() => clientRef.current?.requestHint()}>
+                Подсказать сейчас
+              </button>
             </div>
             {hintError && <div className="banner warn">{hintError}</div>}
             {hintList.length === 0 && !hintError && (

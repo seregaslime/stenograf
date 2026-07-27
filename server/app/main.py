@@ -17,14 +17,14 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from .asr.transcriber import GIGAAM_AVAILABLE, MLX_AVAILABLE, Transcriber
-from .config import ASR_ENGINES, ASR_MODELS, save_asr_choice, settings
+from .config import ASR_ENGINES, ASR_MODELS, save_asr_choice, save_llm_choice, settings
 from .db import crud
 from .db.database import init_db, session_scope
-from .db.models import Meeting, Speaker, SpeakerSample
+from .db.models import Meeting, Speaker, VoicePrint
 from datetime import datetime, timezone
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import SpeakerRegistry
-from .llm.ollama_client import OllamaClient
+from .llm.router import LlmRouter
 from .llm.summary import build_transcript, generate_summary
 from .ws import LiveSession
 
@@ -42,7 +42,7 @@ if (settings.asr_engine == "gigaam" and not GIGAAM_AVAILABLE) or (
 transcriber = Transcriber(settings)
 embedder = VoiceEmbedder(settings)
 registry = SpeakerRegistry(settings)
-ollama = OllamaClient(settings)
+llm = LlmRouter(settings)
 
 # Задачи суммаризации по id встречи — чтобы отменять их при удалении встречи
 # (иначе задача удалённой встречи допишет резюме в новую встречу с тем же id)
@@ -53,7 +53,7 @@ def _schedule_summary(meeting_id: int) -> None:
     previous = _summary_tasks.pop(meeting_id, None)
     if previous is not None:
         previous.cancel()
-    task = asyncio.create_task(generate_summary(settings, ollama, meeting_id))
+    task = asyncio.create_task(generate_summary(llm, meeting_id))
     _summary_tasks[meeting_id] = task
 
     def _cleanup(done: asyncio.Task, mid: int = meeting_id) -> None:
@@ -119,9 +119,13 @@ async def health():
             "loaded": transcriber.loaded,
         },
         "diarization": {"loaded": embedder.loaded},
-        "ollama": await ollama.status(),
-        "summary_model": settings.summary_model,
-        "hints_model": settings.hints_model,
+        "ollama": await llm.local_status(),
+        "llm": {
+            "provider": llm.provider,
+            "api_configured": bool(settings.llm_api_base_url and settings.llm_api_key),
+        },
+        "summary_model": llm.summary_model_name,
+        "hints_model": llm.hints_model_name,
     }
 
 
@@ -170,6 +174,41 @@ async def set_asr(body: AsrBody):
     save_asr_choice(body.engine, body.model)
     threading.Thread(target=_warm_models, daemon=True).start()
     return _asr_state()
+
+
+# ---------------------------------------------------------------- LLM-провайдер
+
+class LlmBody(BaseModel):
+    provider: str
+
+
+async def _llm_state() -> dict:
+    status = await llm.status()
+    return {
+        "provider": llm.provider,
+        "api_configured": bool(settings.llm_api_base_url and settings.llm_api_key),
+        "api_base_url": settings.llm_api_base_url,  # адрес не секрет; ключ не отдаём
+        "reachable": status.get("reachable", False),
+        "models": status.get("models", []),
+        "summary_model": llm.summary_model_name,
+        "hints_model": llm.hints_model_name,
+    }
+
+
+@app.get("/api/llm")
+async def get_llm():
+    return await _llm_state()
+
+
+@app.post("/api/llm")
+async def set_llm(body: LlmBody):
+    # Провайдера можно менять и во время встречи: подсказки читают выбор на лету,
+    # перезагрузка модели (в отличие от ASR) не нужна.
+    try:
+        save_llm_choice(body.provider)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return await _llm_state()
 
 
 # ---------------------------------------------------------------- встречи
@@ -304,12 +343,25 @@ def delete_speaker(speaker_id: int):
 
 @app.delete("/api/speakers/{speaker_id}/voiceprints/{print_id}")
 def delete_voiceprint(speaker_id: int, print_id: int):
-    """Удаляет один отпечаток голоса — например, «испорченный» чужим звуком.
-    Профиль и его реплики остаются."""
+    """Удаляет одно «звучание» голоса (отпечаток и его аудио) — например,
+    «испорченное» чужим звуком. Профиль и его реплики остаются."""
     with session_scope() as db:
         if not registry.remove_print(db, speaker_id, print_id):
             raise HTTPException(404, "Отпечаток не найден")
     return {"deleted": print_id, "speaker_id": speaker_id}
+
+
+@app.get("/api/speakers/{speaker_id}/voiceprints/{print_id}/audio")
+def get_voiceprint_audio(speaker_id: int, print_id: int):
+    """Аудио-фрагмент реплики, из которой родился отпечаток."""
+    with session_scope() as db:
+        row = db.get(VoicePrint, print_id)
+        if (
+            row is None or row.speaker_id != speaker_id
+            or not row.audio_path or not Path(row.audio_path).exists()
+        ):
+            raise HTTPException(404, "Аудио отпечатка не найдено")
+        return FileResponse(row.audio_path, media_type="audio/wav")
 
 
 @app.post("/api/speakers/merge")
@@ -324,35 +376,12 @@ def merge_speakers(body: MergeBody):
     return result
 
 
-@app.get("/api/samples/{sample_id}")
-def get_sample(sample_id: int):
-    with session_scope() as db:
-        sample = db.get(SpeakerSample, sample_id)
-        if sample is None or not Path(sample.path).exists():
-            raise HTTPException(404, "Образец не найден")
-        return FileResponse(sample.path, media_type="audio/wav")
-
-
-@app.delete("/api/samples/{sample_id}")
-def delete_sample(sample_id: int):
-    """Удаляет аудио-образец голоса (файл и запись). На узнавание не влияет —
-    за него отвечают отпечатки; на месте удалённого сервер со временем
-    сохранит новый образец из свежих встреч."""
-    with session_scope() as db:
-        sample = db.get(SpeakerSample, sample_id)
-        if sample is None:
-            raise HTTPException(404, "Образец не найден")
-        Path(sample.path).unlink(missing_ok=True)
-        db.delete(sample)
-    return {"deleted": sample_id}
-
-
 # ---------------------------------------------------------------- live
 
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket):
     session = LiveSession(
-        ws, settings, transcriber, embedder, registry, ollama,
+        ws, settings, transcriber, embedder, registry, llm,
         on_meeting_ended=_schedule_summary,
     )
     await session.run()

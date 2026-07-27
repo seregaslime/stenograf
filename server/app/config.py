@@ -61,10 +61,9 @@ class Settings(BaseSettings):
     speaker_recent_window_s: float = 30.0  # сколько секунд спикер считается «недавним»
     speaker_max_prints: int = 5            # отпечатков на человека (разные «звучания» голоса)
     speaker_min_embed_s: float = 0.4       # короче — не считаем эмбеддинг, берём последнего спикера
-    speaker_max_samples: int = 1           # аудио-образцов на профиль (узнать голос ухом
-                                           # хватает одного; при merge образцы суммируются)
-    speaker_sample_min_s: float = 0.8
-    speaker_sample_max_s: float = 8.0
+    speaker_print_min_s: float = 2.0       # новый отпечаток «со скидкой» — только из реплики
+                                           # такой длины: пограничные коротыши следа не оставляют
+    speaker_print_audio_max_s: float = 8.0  # сколько секунд аудио отпечатка хранить для прослушивания
     speaker_centroid_max_count: int = 200  # ограничение веса центроида (чтобы профиль мог "дрейфовать")
 
     # --- LLM (Ollama) ---
@@ -74,8 +73,29 @@ class Settings(BaseSettings):
     # спокойно живёт в памяти рядом с ASR на 8 ГБ RAM
     hints_model: str = "qwen3:1.7b"
     llm_keep_alive: str = "2m"      # сколько Ollama держит модель в RAM после запроса
-    hints_interval_s: float = 25.0  # период подсказок в демо-режиме
+
+    # --- Подсказки во время встречи ---
+    # Подсказка выдаётся не по таймеру, а когда накопилось достаточно нового
+    # разговора и прошёл минимальный интервал (быстрый API это позволяет).
     hints_window_chars: int = 2500  # сколько последних символов транскрипта видит LLM
+    hints_poll_s: float = 3.0       # как часто цикл проверяет, не пора ли подсказать
+    hints_min_gap_s: float = 15.0   # минимум между подсказками (чтобы не частить)
+    hints_min_new_chars: int = 200  # сколько нового текста накопить перед подсказкой
+    hints_memory: int = 3           # сколько последних подсказок помнить (против повторов)
+    hints_dup_ratio: float = 0.8    # похожесть [0..1], при которой подсказка — дубль
+    hints_max_fails: int = 5        # столько ошибок подряд — подсказки выключаются
+    hints_max_backoff_s: float = 120.0  # потолок паузы между повторами после ошибок
+
+    # --- LLM: провайдер (локальная модель ↔ внешний API) ---
+    # local — локальная Ollama (по умолчанию; данные не покидают контур).
+    # api — OpenAI-совместимый сервер (внутренний сервер организации или внешний
+    # сервис). Адрес/ключ/модели берутся ТОЛЬКО из env/.env и на клиент не уходят;
+    # переключается тумблером в настройках (см. load_llm_choice/save_llm_choice).
+    llm_provider: str = "local"      # local | api
+    llm_api_base_url: str = ""       # напр. https://api.openai.com/v1 или http://ai.corp.local:8000/v1
+    llm_api_key: str = ""
+    llm_api_summary_model: str = ""  # модель API для резюме (напр. gpt-4o-mini)
+    llm_api_hints_model: str = ""    # модель API для подсказок (можно ту же)
 
     @property
     def db_path(self) -> Path:
@@ -120,7 +140,42 @@ def save_asr_choice(engine: str, model: str) -> None:
     settings.asr_model = model
 
 
+LLM_PROVIDERS = ("local", "api")
+
+
+def _llm_choice_path() -> Path:
+    return settings.data_dir / "llm.json"
+
+
+def load_llm_choice() -> None:
+    """Выбор провайдера из приложения важнее env-дефолта (адрес/ключ — из env).
+    Если сохранён 'api', но конфигурация подключения пропала, остаёмся на 'local'."""
+    try:
+        data = json.loads(_llm_choice_path().read_text())
+    except (OSError, ValueError):
+        return
+    provider = data.get("provider")
+    if provider == "api" and not (settings.llm_api_base_url and settings.llm_api_key):
+        return
+    if provider in LLM_PROVIDERS:
+        settings.llm_provider = provider
+
+
+def save_llm_choice(provider: str) -> None:
+    if provider not in LLM_PROVIDERS:
+        raise ValueError(f"Неизвестный провайдер LLM: {provider}")
+    if provider == "api" and not (settings.llm_api_base_url and settings.llm_api_key):
+        raise ValueError(
+            "API не настроен: задайте STENOGRAF_LLM_API_BASE_URL и "
+            "STENOGRAF_LLM_API_KEY в server/.env."
+        )
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    _llm_choice_path().write_text(json.dumps({"provider": provider}))
+    settings.llm_provider = provider
+
+
 load_asr_choice()
+load_llm_choice()
 
 # mlx-whisper качает модели через huggingface_hub — держим кэш рядом с остальными
 # моделями в data/models, а не в ~/.cache
