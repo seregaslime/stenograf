@@ -92,6 +92,14 @@ class LiveSession:
         self._hint_backoff_until = 0.0    # до этого времени не пробовать (бэкофф)
         self._skip_streak = 0             # сколько раз подряд модель промолчала
         self._hint_gap_s = cfg.hints_min_gap_s  # текущая пауза (после SKIP — короче)
+        # Граница «модель это уже видела». Счётчик монотонный, а не индекс в
+        # _recent: дека переполняется и выбрасывает старое слева, из-за чего
+        # сохранённый индекс через 400 реплик указывал бы не туда.
+        self._lines_total = 0             # всего реплик за встречу
+        self._hinted_at_line = 0          # сколько их было на момент прошлой подсказки
+        # Где именно ассистент подсказывал: (номер реплики, текст). Вплетаем в
+        # контекст, чтобы модель видела свои ответы и не отвечала повторно.
+        self._hint_log: deque[tuple[int, str]] = deque(maxlen=20)
         # Короткие сегменты без эмбеддинга приписываем последнему говорившему,
         # но только из того же канала: быстрое «да» из звонка сразу после фразы
         # владельца — другой человек. Доминанта → (кто, когда закончил)
@@ -248,6 +256,7 @@ class LiveSession:
             segment_id = row.id
 
         self._recent.append(f"{match.name}: {text}")
+        self._lines_total += 1
         self._participants[match.name] += 1
         self._chars_since_hint += len(text)
 
@@ -342,6 +351,38 @@ class LiveSession:
             self._cfg.hints_skip_max_gap_s,
         )
 
+    def _split_window(self, budget_chars: int, force: bool) -> tuple[str, str]:
+        """Делит разговор на (контекст, новое) по границе прошлой подсказки.
+
+        Возвращает пустой контекст, если границы нет (первая подсказка) или если
+        нажата кнопка: там пользователь просит посмотреть на разговор целиком.
+
+        Новое отдаём целиком, контекстом добираем остаток бюджета — реагировать
+        надо на свежее, а старое нужно лишь чтобы понимать, о чём речь.
+        """
+        lines = list(self._recent)
+        first_no = self._lines_total - len(lines)  # номер самой старой реплики в деке
+        if force or self._hinted_at_line <= first_no:
+            return "", "\n".join(lines)[-budget_chars:]
+
+        cut = self._hinted_at_line - first_no
+        old, new = lines[:cut], lines[cut:]
+
+        # Вплетаем подсказки туда, где они прозвучали: подсказка с номером n была
+        # выдана после всех реплик с номерами < n.
+        pending = [(no, text) for no, text in self._hint_log if no > first_no]
+        rendered: list[str] = []
+        for offset, line in enumerate(old):
+            no = first_no + offset
+            while pending and pending[0][0] <= no:
+                rendered.append(f"  [ты подсказал: {pending.pop(0)[1]}]")
+            rendered.append(line)
+        rendered.extend(f"  [ты подсказал: {text}]" for _, text in pending)
+
+        new_text = "\n".join(new)[-budget_chars:]
+        left = max(0, budget_chars - len(new_text))
+        return ("\n".join(rendered)[-left:] if left else ""), new_text
+
     def _participants_line(self) -> str:
         return ", ".join(
             f"{name} ({n} реплик)" for name, n in self._participants.most_common()
@@ -372,8 +413,8 @@ class LiveSession:
                 })
             return
         budget = self._llm.budget  # читаем на каждый вызов — провайдера могли сменить
-        window = "\n".join(self._recent)[-budget.hints_chars:]
-        if len(window) < self._cfg.hints_min_context_chars:
+        earlier, window = self._split_window(budget.hints_chars, force)
+        if len(window) + len(earlier) < self._cfg.hints_min_context_chars:
             if force:
                 await self._send({
                     "type": "hint_error",
@@ -387,6 +428,7 @@ class LiveSession:
             system, prompt = prompts.build_hint_prompt(
                 mode=self._mode,
                 transcript=window,
+                earlier=earlier,
                 previous="\n".join(self._recent_hints) or "—",
                 title=self._meeting_title,
                 participants=self._participants_line(),
@@ -398,6 +440,11 @@ class LiveSession:
             )
             self._hint_fail_streak = 0
             hint = prompts.parse_hint(raw, min_chars=self._cfg.hints_min_len_chars)
+            # Модель этот текст посмотрела — двигаем границу, что бы она ни
+            # ответила. Иначе отвергнутый фрагмент вернётся на следующей попытке,
+            # и так по кругу, пока модель не надумает подсказку на пустом месте.
+            # Не двигаем только при ошибке связи (ниже): там она текста не видела.
+            self._hinted_at_line = self._lines_total
             if hint is None:  # модель промолчала
                 if force:
                     await self._send({
@@ -411,6 +458,7 @@ class LiveSession:
             self._hint_gap_s = self._cfg.hints_min_gap_s
             if force or not self._is_duplicate(hint):
                 self._recent_hints.append(hint)
+                self._hint_log.append((self._lines_total, hint))
                 await self._send({"type": "hint", "text": hint})
         except LlmError as exc:
             # Один сбой не выключает подсказки: наращиваем бэкофф и гасим только

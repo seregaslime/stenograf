@@ -179,6 +179,7 @@ def build_hint_prompt(
     mode: str,
     transcript: str,
     previous: str,
+    earlier: str = "",
     title: str = "",
     participants: str = "",
     detailed: bool = False,
@@ -186,6 +187,10 @@ def build_hint_prompt(
 ) -> tuple[str, str]:
     """Возвращает (system, prompt) для подсказки.
 
+    transcript — то, на что НАДО реагировать (новое с прошлой подсказки).
+    earlier — что было до этого: нужно, чтобы понимать разговор, но реагировать
+        не надо. Внутри отмечено, где ассистент уже подсказывал, — иначе модель
+        видит старый вопрос как открытый и отвечает на него второй раз.
     detailed — развёрнутый вариант для API (контекст не жалеем);
     allow_skip=False — кнопка «Подсказать сейчас», ответ обязателен.
     """
@@ -214,7 +219,17 @@ def build_hint_prompt(
     prompt_parts = ["Примеры.\n\n" + "\n\n".join(examples)]
     if header:
         prompt_parts.append("\n".join(header))
-    prompt_parts.append(f"Последний фрагмент обсуждения:\n\n{transcript}")
+    if earlier:
+        prompt_parts.append(
+            "Ранее в разговоре — только для понимания контекста, реагировать на это "
+            "НЕ надо (в квадратных скобках — что ты уже подсказывал):\n\n"
+            f"{earlier}"
+        )
+        prompt_parts.append(
+            f"НОВОЕ с прошлой подсказки — реагируй только на это:\n\n{transcript}"
+        )
+    else:
+        prompt_parts.append(f"Последний фрагмент обсуждения:\n\n{transcript}")
     prompt_parts.append(
         "Ты уже давал такие подсказки — не повторяй их и не пиши похожее по смыслу:\n"
         f"{previous}"

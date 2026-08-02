@@ -262,3 +262,106 @@ def test_window_follows_provider_budget(cfg):
     _, prompt = llm.seen[-1]
     assert len(prompt) < 20_000  # local-бюджет 2500 символов транскрипта
     assert "реплика 299" in prompt  # берётся хвост разговора
+
+
+def test_short_question_reaches_the_trigger(cfg):
+    """Регрессия на живой сценарий: человек задаёт короткий вопрос и замолкает,
+    ожидая подсказку. При старом пороге 200 символов счётчик вставал на 16 и
+    подсказка не приходила никогда — самый ценный повод оказывался недостижим.
+    """
+    s = _session(cfg)
+    s._last_hint_at = 0.0
+    s._chars_since_hint = len("а что такое SLA?")
+    assert s._should_hint(cfg.hints_min_gap_s + 1)
+
+
+def test_backchannel_does_not_trigger(cfg):
+    """Поддакивания подсказку не запускают — иначе модель дёргалась бы на «угу»."""
+    s = _session(cfg)
+    s._last_hint_at = 0.0
+    for filler in ("угу", "да", "ага, понятно"):
+        s._chars_since_hint = len(filler)
+        assert not s._should_hint(cfg.hints_min_gap_s + 1), filler
+
+
+def test_gap_still_limits_rate(cfg):
+    """Порог символов НЕ управляет частотой — её держит пауза. Иначе низкий
+    порог означал бы запрос на каждую реплику."""
+    s = _session(cfg)
+    s._chars_since_hint = cfg.hints_min_new_chars * 10  # текста накопилось с избытком
+    s._last_hint_at = 1000.0
+    assert not s._should_hint(1000.0 + cfg.hints_min_gap_s / 2)  # рано
+    assert s._should_hint(1000.0 + cfg.hints_min_gap_s)          # пора
+
+
+# ------------------------------------------------------------------ граница «уже отвечено»
+
+def _say(s, line: str) -> None:
+    """Реплика в транскрипт — как это делает _process_segment."""
+    s._recent.append(line)
+    s._lines_total += 1
+
+
+def test_second_hint_reacts_only_to_new_text(cfg):
+    """Регрессия на живой сценарий: задал вопрос — получил ответ, задал второй —
+    получил ответы на ОБА. Модель не знала, что первый уже закрыт, потому что
+    её собственные подсказки в транскрипт не попадают."""
+    llm = _FakeLLM("SLA — соглашение об уровне сервиса, около 43 минут простоя.")
+    s = _session(cfg, llm)
+    _say(s, "Сергей: коллеги, обсудим надёжность сервиса в следующем квартале")
+    _say(s, "Сергей: а что такое SLA? часто слышу термин, но не понимаю точно")
+    asyncio.run(s._emit_hint(force=True))
+
+    _say(s, "Сергей: ладно, поехали дальше по задачам на эту неделю")
+    _say(s, "Сергей: слушайте, а что такое CI/CD? тоже постоянно всплывает")
+    asyncio.run(s._emit_hint())
+
+    _, prompt = llm.seen[-1]
+    context, new = prompt.split("НОВОЕ с прошлой подсказки")
+    assert "что такое SLA" in context      # старый вопрос ушёл в контекст
+    assert "ты подсказал:" in context      # и помечен как уже отвеченный
+    assert "что такое CI/CD" in new        # реагировать надо только на новый
+    assert "что такое SLA" not in new
+
+
+def test_skip_moves_the_boundary(cfg):
+    """Модель промолчала — значит текст посмотрела. Не сдвинуть границу означало
+    бы гонять отвергнутый фрагмент по кругу, пока она не надумает подсказку."""
+    s = _session(cfg, _FakeLLM("SKIP"))
+    _fill_context(s)
+    asyncio.run(s._emit_hint())
+    assert s._hinted_at_line == s._lines_total
+
+
+def test_llm_error_keeps_the_boundary(cfg):
+    """При сбое связи модель текста не видела — граница обязана остаться,
+    иначе реплики молча выпадут из рассмотрения навсегда."""
+    s = _session(cfg, _FakeLLM(fail=True))
+    _fill_context(s)
+    before = s._hinted_at_line
+    asyncio.run(s._emit_hint())
+    assert s._hinted_at_line == before
+
+
+def test_force_looks_at_whole_conversation(cfg):
+    """Кнопка «Подсказать сейчас» игнорирует границу: человек попросил явно,
+    значит смотрим на разговор целиком, даже если нового ничего не было."""
+    llm = _FakeLLM("Стоит зафиксировать срок и ответственного по задаче.")
+    s = _session(cfg, llm)
+    _fill_context(s)
+    asyncio.run(s._emit_hint())          # авто — сдвинет границу
+    asyncio.run(s._emit_hint(force=True))  # кнопка — без деления
+    assert "НОВОЕ с прошлой подсказки" not in llm.seen[-1][1]
+
+
+def test_boundary_survives_deque_overflow(cfg):
+    """Дека реплик переполняется и теряет старое слева. Счётчик монотонный,
+    поэтому граница не съезжает — сохранённый индекс указывал бы не туда."""
+    s = _session(cfg)
+    for i in range(cfg.hints_recent_maxlen + 50):
+        _say(s, f"Спикер: реплика номер {i} с достаточным объёмом текста")
+    s._hinted_at_line = s._lines_total - 3   # подсказка была три реплики назад
+    earlier, new = s._split_window(budget_chars=100_000, force=False)
+    assert new.count("\n") == 2              # ровно три последние реплики
+    assert f"реплика номер {s._lines_total - 1}" in new
+    assert f"реплика номер {s._lines_total - 4}" in earlier
