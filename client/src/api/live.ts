@@ -1,5 +1,5 @@
 import { getServerUrl } from "../store";
-import type { LiveEvent } from "../types";
+import type { LiveEvent, MeetingMode } from "../types";
 
 export type Channel = 0 | 1; // 0 = микрофон, 1 = системный звук
 
@@ -45,6 +45,7 @@ export class LiveClient {
     record_audio: boolean;
     hints: boolean;
     summarize: boolean;
+    meeting_mode: MeetingMode;
   }): void {
     this.sendJson({ type: "start", ...options });
   }

@@ -1,7 +1,10 @@
 # Сервер Стенографа: FastAPI + GigaAM/whisper + silero-vad + ECAPA.
 # Сценарий: сервер организации (Linux), клиенты подключаются по сети.
-# Сборка/запуск — из корня репозитория: `docker compose up -d --build`.
-FROM python:3.12-slim
+#
+# Рабочий образ:   docker compose up -d --build
+# Прогон тестов:   docker build --target test -t stenograf-test ./server
+#                  docker run --rm stenograf-test
+FROM python:3.12-slim AS base
 
 WORKDIR /srv
 
@@ -23,3 +26,26 @@ VOLUME /data
 
 EXPOSE 8765
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8765"]
+
+
+# --- Стадия тестов -----------------------------------------------------------
+# Отдельный образ: те же зависимости и тот же код, но плюс pytest и сами тесты.
+# Смысл — доказать, что тесты и покрытие воспроизводятся на чистой Linux-машине,
+# а не только на макбуке разработчика. В рабочий образ это не попадает.
+FROM base AS test
+
+COPY requirements-dev.txt .
+RUN pip install --no-cache-dir -r requirements-dev.txt
+
+COPY pytest.ini .coveragerc ./
+COPY tests ./tests
+COPY scripts ./scripts
+
+# Модели не качаем: медленные уровни (integration/e2e/load) требуют весов и
+# живого сервера, здесь гоняется быстрый набор с покрытием.
+ENV STENOGRAF_PRELOAD_ASR=false
+CMD ["python", "scripts/test_report.py", "--out", "/srv/reports/TEST_REPORT.md"]
+
+
+# --- Рабочий образ (стадия по умолчанию) -------------------------------------
+FROM base AS runtime

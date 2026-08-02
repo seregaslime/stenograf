@@ -1,11 +1,14 @@
-# В образ идёт только app/ + requirements.txt — остальное из контекста сборки исключаем.
+# В рабочий образ идёт только app/ + requirements.txt.
 # Важно: data/ (модели, БД — гигабайты) и .env (ключ API!) НЕ должны попасть в образ.
+# tests/ и scripts/ остаются в контексте сборки — они нужны стадии `test`
+# (см. Dockerfile), но в финальный рабочий образ не копируются.
 data/
 .env
 .venv/
-tests/
-scripts/
 __pycache__/
 *.pyc
 .pytest_cache/
+reports/
+htmlcov/
+.coverage
 *.db

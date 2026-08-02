@@ -4,6 +4,8 @@ from app.db.models import Meeting, Speaker
 
 
 def test_self_speaker_created_once(db_session):
+    """Профиль владельца «Вы» создаётся один раз: повторный вызов возвращает тот же id, а не плодит дубли.
+    """
     a = crud.get_or_create_self_speaker(db_session)
     assert a.is_self and a.name == "Вы"
     b = crud.get_or_create_self_speaker(db_session)
@@ -11,12 +13,15 @@ def test_self_speaker_created_once(db_session):
 
 
 def test_create_speaker_default_name(db_session):
+    """Новому спикеру даётся имя-заглушка «Спикер N» и он не помечается владельцем."""
     s = crud.create_speaker(db_session)
     assert s.name == f"Спикер {s.id}"
     assert s.is_self is False
 
 
 def test_rename_speaker(db_session):
+    """Переименование обрезает пробелы по краям и сохраняется в БД; для несуществующего id возвращается None.
+    """
     s = crud.create_speaker(db_session)
     assert crud.rename_speaker(db_session, s.id, "  Иван  ").name == "Иван"  # обрезка
     crud.rename_speaker(db_session, s.id, "   ")  # пустое имя не затирает
@@ -25,6 +30,8 @@ def test_rename_speaker(db_session):
 
 
 def test_create_and_end_meeting(db_session):
+    """Встреча создаётся в статусе live с фолбэком названия; завершение проставляет время один раз и повторно его не сдвигает.
+    """
     m = crud.create_meeting(db_session, title="   ", record_audio=True)
     assert m.title == "Встреча"  # фолбэк на пустом названии
     assert m.status == "live" and m.ended_at is None
@@ -38,6 +45,7 @@ def test_create_and_end_meeting(db_session):
 
 
 def test_add_segment_and_list_meetings(db_session):
+    """Список встреч отдаёт название, число реплик и признак наличия резюме."""
     m = crud.create_meeting(db_session, "Планёрка", False)
     s = crud.create_speaker(db_session)
     crud.add_segment(db_session, m.id, s.id, "mic", 0.0, 1.0, "привет", 0.9)
@@ -49,6 +57,8 @@ def test_add_segment_and_list_meetings(db_session):
 
 
 def test_meeting_segments_ordered_and_dict(db_session):
+    """Реплики возвращаются по возрастанию времени; в словаре близость округлена до 3 знаков, а спикер может быть None.
+    """
     m = crud.create_meeting(db_session, "M", False)
     s = crud.get_or_create_self_speaker(db_session)
     crud.add_segment(db_session, m.id, s.id, "mic", 2.0, 3.0, "второй")
@@ -63,6 +73,8 @@ def test_meeting_segments_ordered_and_dict(db_session):
 
 
 def test_reassign_segments(db_session):
+    """Перенос реплик между спикерами возвращает число перенесённых; повторный перенос уже ничего не двигает.
+    """
     m = crud.create_meeting(db_session, "M", False)
     a, b = crud.create_speaker(db_session), crud.create_speaker(db_session)
     crud.add_segment(db_session, m.id, a.id, "mic", 0.0, 1.0, "1")
@@ -73,6 +85,8 @@ def test_reassign_segments(db_session):
 
 
 def test_list_speakers_counts_and_order(db_session):
+    """Владелец «Вы» идёт первым в списке; у каждого спикера считаются реплики,
+    встречи и число отпечатков голоса."""
     self_sp = crud.get_or_create_self_speaker(db_session)
     guest = crud.create_speaker(db_session)
     m = crud.create_meeting(db_session, "M", False)

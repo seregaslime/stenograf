@@ -1,0 +1,69 @@
+# Прогон тестов и замер покрытия на чистой машине.
+# Смысл: числа в TEST_REPORT.md должен подтверждать не разработчик на своём
+# макбуке, а независимый прогон. Артефакты (HTML-покрытие, JUnit XML) можно
+# скачать из вкладки Actions и посмотреть глазами.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  server:
+    name: Сервер (pytest + покрытие)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # torch ставим CPU-сборкой: иначе тянется CUDA и раздувает прогон
+      - name: Зависимости
+        run: |
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+            -r requirements.txt -r requirements-dev.txt
+
+      # Медленные уровни (integration/e2e/load) требуют весов моделей и живого
+      # сервера — в CI гоняется быстрый набор. Полный прогон: локально с --all.
+      - name: Тесты и отчёт
+        run: python scripts/test_report.py --out ../TEST_REPORT.ci.md
+
+      - name: Отчёт в сводку Actions
+        if: always()
+        run: cat ../TEST_REPORT.ci.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-html
+          path: server/reports/htmlcov
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-xml
+          path: server/reports/junit
+
+  client:
+    name: Клиент (typecheck + vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test

@@ -10,7 +10,13 @@ import {
 } from "../audio/capture";
 import Transcript, { formatTime } from "../components/Transcript";
 import { isDebugMode, platform } from "../store";
-import type { HealthDto, LiveEvent, SegmentDto } from "../types";
+import {
+  MEETING_MODE_LABELS,
+  type HealthDto,
+  type LiveEvent,
+  type MeetingMode,
+  type SegmentDto,
+} from "../types";
 
 type Phase = "setup" | "starting" | "live" | "stopping";
 
@@ -40,6 +46,7 @@ export default function LivePage({
   const [recordAudio, setRecordAudio] = useState(false);
   const [summarizeWanted, setSummarizeWanted] = useState(true);
   const [hintsWanted, setHintsWanted] = useState(false);
+  const [meetingMode, setMeetingMode] = useState<MeetingMode>("work");
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [micId, setMicId] = useState("");
   // "auto" — автозахват через Electron (без драйверов), "" — выключен, иначе deviceId
@@ -228,6 +235,7 @@ export default function LivePage({
       record_audio: recordAudio,
       hints: hintsWanted,
       summarize: summarizeWanted,
+      meeting_mode: meetingMode,
     });
   }
 
@@ -330,6 +338,23 @@ export default function LivePage({
                 <li>Здесь выберите «BlackHole 2ch» как источник системного звука.</li>
               </ol>
             </details>
+            <label className="field" style={{ marginTop: 14 }}>
+              <span>Тип встречи</span>
+              <select
+                className="input"
+                value={meetingMode}
+                onChange={(event) => setMeetingMode(event.target.value as MeetingMode)}
+              >
+                {(Object.keys(MEETING_MODE_LABELS) as MeetingMode[]).map((mode) => (
+                  <option key={mode} value={mode}>
+                    {MEETING_MODE_LABELS[mode]}
+                  </option>
+                ))}
+              </select>
+              <span className="hint">
+                влияет на то, что подсказывает ИИ и из каких разделов состоит протокол
+              </span>
+            </label>
             <div style={{ marginTop: 10 }}>
               <label className="check">
                 <input
@@ -388,6 +413,9 @@ export default function LivePage({
       <div className="live-header">
         <span className="rec-dot" />
         <span className="live-title">{liveTitle}</span>
+        {meetingMode !== "work" && (
+          <span className="chip">{MEETING_MODE_LABELS[meetingMode].split(" (")[0]}</span>
+        )}
         <span className="live-timer">{formatTime(elapsed)}</span>
         <LevelMeter label="Микрофон" value={micLevel} />
         {sysActive && <LevelMeter label="Система" value={sysLevel} />}
@@ -429,7 +457,10 @@ export default function LivePage({
         {hintsWanted && (
           <div className="hints-panel">
             <div className="hints-title">
-              💡 Подсказки ИИ <span className="chip live">демо</span>
+              💡 Подсказки ИИ
+              <span className="hint" style={{ fontWeight: 400, marginLeft: 8 }}>
+                молчит, когда сказать нечего
+              </span>
             </div>
             <div style={{ display: "flex", gap: 10, alignItems: "center", margin: "8px 0 12px" }}>
               <label className="check" style={{ margin: 0 }}>

@@ -25,6 +25,15 @@ export interface MeetingListItem {
   has_summary: boolean;
 }
 
+/** Тип встречи: под каждый свой фокус подсказок и свои секции протокола. */
+export type MeetingMode = "work" | "interview" | "negotiation";
+
+export const MEETING_MODE_LABELS: Record<MeetingMode, string> = {
+  work: "Рабочая встреча / планёрка",
+  interview: "Собеседование (подсказки вам как соискателю)",
+  negotiation: "Переговоры",
+};
+
 export interface MeetingDetail {
   id: number;
   title: string;
@@ -32,6 +41,7 @@ export interface MeetingDetail {
   started_at: string | null;
   ended_at: string | null;
   record_audio: boolean;
+  meeting_mode: MeetingMode;
   summary: string | null;
   summary_model: string | null;
   summary_error: string | null;
@@ -72,8 +82,23 @@ export interface LlmStateDto {
   api_base_url: string;
   reachable: boolean;
   models: string[];
-  summary_model: string;
+  summary_model: string; // модели активного провайдера (строка статуса)
   hints_model: string;
+  api_summary_model: string; // модели API — отдельно, для формы настроек
+  api_hints_model: string;
+}
+
+export interface LlmModelsDto {
+  reachable: boolean;
+  models: string[];
+}
+
+export interface LlmSettings {
+  provider: string;
+  api_base_url?: string;
+  api_key?: string;
+  summary_model?: string;
+  hints_model?: string;
 }
 
 export interface AsrStateDto {
@@ -87,7 +112,7 @@ export interface AsrStateDto {
 }
 
 export type LiveEvent =
-  | { type: "ready"; meeting_id: number; title: string }
+  | { type: "ready"; meeting_id: number; title: string; meeting_mode?: MeetingMode }
   | { type: "segment"; segment: SegmentDto }
   | { type: "speaker_new"; speaker: { id: number; name: string } }
   | { type: "hint"; text: string }

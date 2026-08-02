@@ -24,6 +24,7 @@ from .db.models import Meeting, Speaker, VoicePrint
 from datetime import datetime, timezone
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import SpeakerRegistry
+from .llm.openai_client import OpenAIClient
 from .llm.router import LlmRouter
 from .llm.summary import build_transcript, generate_summary
 from .ws import LiveSession
@@ -180,6 +181,18 @@ async def set_asr(body: AsrBody):
 
 class LlmBody(BaseModel):
     provider: str
+    # Для provider="api" — вводятся в настройках приложения. None-поля не меняются;
+    # пустой api_key не затирает сохранённый (см. save_llm_choice).
+    api_base_url: str | None = None
+    api_key: str | None = None
+    summary_model: str | None = None
+    hints_model: str | None = None
+
+
+class ModelsProbeBody(BaseModel):
+    """Проверка ещё не сохранённых кредов: запрос списка моделей у API."""
+    api_base_url: str
+    api_key: str | None = None
 
 
 async def _llm_state() -> dict:
@@ -190,8 +203,12 @@ async def _llm_state() -> dict:
         "api_base_url": settings.llm_api_base_url,  # адрес не секрет; ключ не отдаём
         "reachable": status.get("reachable", False),
         "models": status.get("models", []),
+        # модели активного провайдера (для строки статуса)
         "summary_model": llm.summary_model_name,
         "hints_model": llm.hints_model_name,
+        # модели API отдельно: форма настроек показывает их и когда активен local
+        "api_summary_model": settings.llm_api_summary_model,
+        "api_hints_model": settings.llm_api_hints_model,
     }
 
 
@@ -205,10 +222,27 @@ async def set_llm(body: LlmBody):
     # Провайдера можно менять и во время встречи: подсказки читают выбор на лету,
     # перезагрузка модели (в отличие от ASR) не нужна.
     try:
-        save_llm_choice(body.provider)
+        save_llm_choice(
+            body.provider,
+            api_base_url=body.api_base_url,
+            api_key=body.api_key,
+            summary_model=body.summary_model,
+            hints_model=body.hints_model,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return await _llm_state()
+
+
+@app.post("/api/llm/models")
+async def probe_llm_models(body: ModelsProbeBody):
+    """Список моделей у API по введённым (ещё не сохранённым) кредам — для
+    выпадающего списка в настройках. Пустой ключ → берём уже сохранённый."""
+    cfg = settings.model_copy(update={
+        "llm_api_base_url": body.api_base_url.strip(),
+        "llm_api_key": body.api_key or settings.llm_api_key,
+    })
+    return await OpenAIClient(cfg).status()  # {"reachable": bool, "models": [...]}
 
 
 # ---------------------------------------------------------------- встречи
@@ -233,6 +267,7 @@ def get_meeting(meeting_id: int):
             "started_at": meeting.started_at.isoformat() if meeting.started_at else None,
             "ended_at": meeting.ended_at.isoformat() if meeting.ended_at else None,
             "record_audio": meeting.record_audio,
+            "meeting_mode": meeting.meeting_mode or "work",
             "summary": meeting.summary,
             "summary_model": meeting.summary_model,
             "summary_error": meeting.summary_error,
@@ -279,7 +314,9 @@ def export_meeting(meeting_id: int, fmt: str = "md"):
         if meeting is None:
             raise HTTPException(404, "Встреча не найдена")
         segments = crud.meeting_segments(db, meeting_id)
-        transcript, participants = build_transcript(segments)
+        # max_chars=0 — в выгрузке нужен полный транскрипт: усечение «головы с
+        # хвостом» нужно только чтобы уместить встречу в контекст LLM
+        transcript, participants = build_transcript(segments, 0)
         date = meeting.started_at.strftime("%d.%m.%Y %H:%M") if meeting.started_at else ""
         if fmt == "md":
             parts = [f"# {meeting.title}", f"*{date}*", f"**Участники:** {participants}", ""]

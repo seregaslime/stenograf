@@ -14,6 +14,8 @@ sys.path.insert(0, str(SERVER_DIR / "scripts"))
 
 
 def test_two_concurrent_meetings_survive():
+    """Две одновременные встречи проходят целиком без ошибок, память измерима — дымовая проверка перед полноценной нагрузкой.
+    """
     if not (SERVER_DIR / "data" / "models").exists():
         pytest.skip("нет кэша моделей server/data/models — сначала запустите сервер")
     import loadtest

@@ -94,8 +94,15 @@ def reassign_segments(db: Session, from_speaker_id: int, to_speaker_id: Optional
 
 # --- Встречи ---
 
-def create_meeting(db: Session, title: str, record_audio: bool) -> Meeting:
-    meeting = Meeting(title=title.strip() or "Встреча", record_audio=record_audio)
+def create_meeting(
+    db: Session, title: str, record_audio: bool, meeting_mode: str = "work"
+) -> Meeting:
+    # meeting_mode последним и с дефолтом — есть позиционные вызовы в тестах
+    meeting = Meeting(
+        title=title.strip() or "Встреча",
+        record_audio=record_audio,
+        meeting_mode=meeting_mode,
+    )
     db.add(meeting)
     db.flush()
     return meeting

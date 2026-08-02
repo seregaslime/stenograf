@@ -26,6 +26,8 @@ def _cfg(tmp_path):
 
 
 def test_generate_success_builds_request(tmp_path, monkeypatch):
+    """Запрос к Ollama уходит на /api/generate с нужной моделью, системным промптом и температурой; ответ разбирается.
+    """
     cap = {}
 
     def handler(req):
@@ -45,17 +47,20 @@ def test_generate_success_builds_request(tmp_path, monkeypatch):
 
 
 def test_generate_strips_think(tmp_path, monkeypatch):
+    """Блок рассуждений <think> вырезается из ответа qwen3 и не попадает пользователю."""
     _patch(monkeypatch, lambda req: httpx.Response(200, json={"response": "<think> х</think>итог"}))
     assert asyncio.run(OllamaClient(_cfg(tmp_path)).generate("m", "p")) == "итог"
 
 
 def test_generate_404_model_missing(tmp_path, monkeypatch):
+    """Отсутствующая в Ollama модель даёт понятную ошибку с подсказкой `ollama pull`."""
     _patch(monkeypatch, lambda req: httpx.Response(404, text="not found"))
     with pytest.raises(LlmError):
         asyncio.run(OllamaClient(_cfg(tmp_path)).generate("missing", "p"))
 
 
 def test_generate_connect_error(tmp_path, monkeypatch):
+    """Недоступный Ollama даёт понятную ошибку с адресом, а не трейсбек."""
     def handler(req):
         raise httpx.ConnectError("down")
 
@@ -65,6 +70,7 @@ def test_generate_connect_error(tmp_path, monkeypatch):
 
 
 def test_status_reachable_lists_models(tmp_path, monkeypatch):
+    """Статус возвращает признак доступности и список скачанных моделей."""
     _patch(monkeypatch, lambda req: httpx.Response(
         200, json={"models": [{"name": "qwen3:4b"}, {"name": "qwen3:1.7b"}]}))
     st = asyncio.run(OllamaClient(_cfg(tmp_path)).status())
@@ -73,6 +79,7 @@ def test_status_reachable_lists_models(tmp_path, monkeypatch):
 
 
 def test_status_unreachable(tmp_path, monkeypatch):
+    """Недоступный сервер даёт reachable=False и пустой список вместо исключения."""
     def handler(req):
         raise httpx.ConnectError("down")
 

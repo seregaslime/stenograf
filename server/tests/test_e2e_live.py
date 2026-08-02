@@ -46,6 +46,11 @@ def server(tmp_path_factory):
     (data_dir / "models").symlink_to(SERVER_DIR / "data" / "models")
     env = os.environ | {
         "STENOGRAF_DATA_DIR": str(data_dir),
+        # ОБЯЗАТЕЛЬНО переопределить: conftest.py глушит прогрев моделей ради
+        # быстрых юнит-тестов, а этот флаг наследуется дочерним uvicorn. Без
+        # прогрева transcriber.loaded навсегда False и _wait_loaded падает по
+        # таймауту — сервер при этом жив и здоров.
+        "STENOGRAF_PRELOAD_ASR": "true",
         "STENOGRAF_OLLAMA_URL": "http://127.0.0.1:1",  # резюме должно честно падать
         # Порог теста ≠ рабочему 0.35: синтетические голоса macOS между собой
         # ближе живых (женские пары до ~0.38 — первый прогон честно поймал

@@ -2,6 +2,8 @@ import { getServerUrl } from "../store";
 import type {
   AsrStateDto,
   HealthDto,
+  LlmModelsDto,
+  LlmSettings,
   LlmStateDto,
   MeetingDetail,
   MeetingListItem,
@@ -37,10 +39,16 @@ export const api = {
     }),
 
   llm: () => request<LlmStateDto>("/api/llm"),
-  setLlm: (provider: string) =>
+  setLlm: (settings: LlmSettings) =>
     request<LlmStateDto>("/api/llm", {
       method: "POST",
-      body: JSON.stringify({ provider }),
+      body: JSON.stringify(settings),
+    }),
+  // Список моделей у API по введённым (ещё не сохранённым) кредам
+  probeModels: (api_base_url: string, api_key?: string) =>
+    request<LlmModelsDto>("/api/llm/models", {
+      method: "POST",
+      body: JSON.stringify({ api_base_url, api_key }),
     }),
 
   meetings: () => request<MeetingListItem[]>("/api/meetings"),

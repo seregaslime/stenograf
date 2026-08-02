@@ -22,7 +22,7 @@ import json
 import logging
 import time
 import wave
-from collections import deque
+from collections import Counter, deque
 from typing import Optional
 
 import numpy as np
@@ -77,7 +77,12 @@ class LiveSession:
         self._hints_task: Optional[asyncio.Task] = None
         self._hints_enabled = False
         self._summarize = True  # составлять ли резюме по завершении (выбор при старте)
-        self._recent: deque[str] = deque(maxlen=60)  # последние реплики для подсказок
+        self._meeting_title = ""          # уходит в промпт: модель должна видеть тему
+        self._mode = prompts.DEFAULT_MODE  # тип встречи (планёрка/собеседование/…)
+        self._participants: Counter[str] = Counter()  # имя → число реплик, для промпта
+        # Историю держим большой всегда: окно режется срезом по бюджету провайдера,
+        # маленькая дека обнулила бы большое API-окно.
+        self._recent: deque[str] = deque(maxlen=cfg.hints_recent_maxlen)
         # Состояние адаптивных подсказок (см. _hints_loop / _emit_hint)
         self._chars_since_hint = 0        # сколько нового текста с прошлой подсказки
         self._last_hint_at = 0.0          # time.monotonic() последней подсказки
@@ -85,6 +90,8 @@ class LiveSession:
         self._hint_in_flight = False      # идёт генерация — не запускать вторую
         self._hint_fail_streak = 0        # ошибок LLM подряд
         self._hint_backoff_until = 0.0    # до этого времени не пробовать (бэкофф)
+        self._skip_streak = 0             # сколько раз подряд модель промолчала
+        self._hint_gap_s = cfg.hints_min_gap_s  # текущая пауза (после SKIP — короче)
         # Короткие сегменты без эмбеддинга приписываем последнему говорившему,
         # но только из того же канала: быстрое «да» из звонка сразу после фразы
         # владельца — другой человек. Доминанта → (кто, когда закончил)
@@ -131,11 +138,14 @@ class LiveSession:
         if self._meeting_id is not None:
             await self._send({"type": "error", "message": "Встреча уже идёт"})
             return
+        # Старый клиент поля не шлёт — normalize_mode вернёт режим по умолчанию
+        self._mode = prompts.normalize_mode(command.get("meeting_mode"))
         with session_scope() as db:
             meeting = crud.create_meeting(
                 db,
                 title=command.get("title", "Встреча"),
                 record_audio=bool(command.get("record_audio")),
+                meeting_mode=self._mode,
             )
             self._meeting_id = meeting.id
             if meeting.record_audio:
@@ -149,6 +159,7 @@ class LiveSession:
                     writer.setframerate(SAMPLE_RATE)
                     self._recorders[channel] = writer
             title = meeting.title
+        self._meeting_title = title  # уходит в промпт подсказок — модель видит тему
         self._mixer = ChannelMixer(self._cfg)
         self._denoiser = create_denoiser(self._cfg)
         self._segmenter = SpeechSegmenter(self._cfg)
@@ -156,8 +167,11 @@ class LiveSession:
         self._summarize = bool(command.get("summarize", True))
         self._consumer = asyncio.create_task(self._consume())
         self._hints_task = asyncio.create_task(self._hints_loop())
-        log.info("Встреча #%d «%s» началась", self._meeting_id, title)
-        await self._send({"type": "ready", "meeting_id": self._meeting_id, "title": title})
+        log.info("Встреча #%d «%s» началась (%s)", self._meeting_id, title, self._mode)
+        await self._send({
+            "type": "ready", "meeting_id": self._meeting_id,
+            "title": title, "meeting_mode": self._mode,
+        })
 
     # ------------------------------------------------------------------ аудио
 
@@ -234,6 +248,7 @@ class LiveSession:
             segment_id = row.id
 
         self._recent.append(f"{match.name}: {text}")
+        self._participants[match.name] += 1
         self._chars_since_hint += len(text)
 
         if match.is_new:
@@ -303,11 +318,33 @@ class LiveSession:
 
     def _should_hint(self, now: float) -> bool:
         """Пора ли подсказывать: не в периоде бэкоффа, накопилось нового текста
-        и прошёл минимальный интервал с прошлой подсказки."""
+        и прошёл минимальный интервал с прошлой подсказки (_hint_gap_s растёт
+        при серии SKIP — см. _on_skip)."""
         return (
             now >= self._hint_backoff_until
             and self._chars_since_hint >= self._cfg.hints_min_new_chars
-            and now - self._last_hint_at >= self._cfg.hints_min_gap_s
+            and now - self._last_hint_at >= self._hint_gap_s
+        )
+
+    def _on_skip(self) -> None:
+        """Модель промолчала — это не ошибка, а норма.
+
+        Счётчик текста уже сброшен (материал модель посмотрела и признала
+        непригодным — повторять после +50 символов бессмысленно и дорого), но
+        _recent не трогаем: на следующей попытке модель увидит и старое, и новое.
+        Пауза после SKIP короче обычной — разговор в любой момент может дойти до
+        важного; серия SKIP подряд растит её линейно, чтобы болтовня ни о чём не
+        жгла CPU. Бэкофф по ошибкам здесь намеренно не участвует.
+        """
+        self._skip_streak += 1
+        self._hint_gap_s = min(
+            self._cfg.hints_skip_gap_s * self._skip_streak,
+            self._cfg.hints_skip_max_gap_s,
+        )
+
+    def _participants_line(self) -> str:
+        return ", ".join(
+            f"{name} ({n} реплик)" for name, n in self._participants.most_common()
         )
 
     def _is_duplicate(self, hint: str) -> bool:
@@ -322,24 +359,57 @@ class LiveSession:
     async def _emit_hint(self, force: bool = False) -> None:
         """Единая точка генерации подсказки — из адаптивного цикла и из кнопки
         «подсказать сейчас» (force=True, в обход триггера и флага включённости).
-        Флаг _hint_in_flight не даёт запустить два запроса к LLM разом."""
+
+        В авто-режиме модель вправе промолчать (вернуть SKIP) — тогда клиенту
+        ничего не уходит. По кнопке молчать нельзя: пользователь спросил явно,
+        поэтому allow_skip=False, дедуп отключён, а на каждый отказ он получает
+        внятный ответ вместо тишины.
+        """
         if self._hint_in_flight:
+            if force:
+                await self._send({
+                    "type": "hint_error", "message": "Подсказка уже готовится…",
+                })
             return
-        window = "\n".join(self._recent)[-self._cfg.hints_window_chars:]
-        if len(window) < 80:  # слишком мало контекста — рано подсказывать
-            return
+        budget = self._llm.budget  # читаем на каждый вызов — провайдера могли сменить
+        window = "\n".join(self._recent)[-budget.hints_chars:]
+        if len(window) < self._cfg.hints_min_context_chars:
+            if force:
+                await self._send({
+                    "type": "hint_error",
+                    "message": "Пока слишком мало разговора для подсказки.",
+                })
+            return  # счётчики не трогаем — контекст копится дальше
         self._hint_in_flight = True
         self._chars_since_hint = 0
         self._last_hint_at = time.monotonic()
         try:
-            previous = "\n".join(self._recent_hints) or "—"
-            hint = await self._llm.hint(
-                prompts.HINTS_TEMPLATE.format(transcript=window, previous=previous),
-                system=prompts.HINTS_SYSTEM,
-                temperature=0.5,
+            system, prompt = prompts.build_hint_prompt(
+                mode=self._mode,
+                transcript=window,
+                previous="\n".join(self._recent_hints) or "—",
+                title=self._meeting_title,
+                participants=self._participants_line(),
+                detailed=budget.detailed,
+                allow_skip=not force,
+            )
+            raw = await self._llm.hint(
+                prompt, system=system, temperature=self._cfg.hints_temperature
             )
             self._hint_fail_streak = 0
-            if hint and not self._is_duplicate(hint):
+            hint = prompts.parse_hint(raw, min_chars=self._cfg.hints_min_len_chars)
+            if hint is None:  # модель промолчала
+                if force:
+                    await self._send({
+                        "type": "hint_error",
+                        "message": "Модель не нашла, что подсказать. Попробуйте позже.",
+                    })
+                else:
+                    self._on_skip()
+                return
+            self._skip_streak = 0
+            self._hint_gap_s = self._cfg.hints_min_gap_s
+            if force or not self._is_duplicate(hint):
                 self._recent_hints.append(hint)
                 await self._send({"type": "hint", "text": hint})
         except LlmError as exc:

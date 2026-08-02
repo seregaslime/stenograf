@@ -77,14 +77,33 @@ class Settings(BaseSettings):
     # --- Подсказки во время встречи ---
     # Подсказка выдаётся не по таймеру, а когда накопилось достаточно нового
     # разговора и прошёл минимальный интервал (быстрый API это позволяет).
-    hints_window_chars: int = 2500  # сколько последних символов транскрипта видит LLM
     hints_poll_s: float = 3.0       # как часто цикл проверяет, не пора ли подсказать
     hints_min_gap_s: float = 15.0   # минимум между подсказками (чтобы не частить)
     hints_min_new_chars: int = 200  # сколько нового текста накопить перед подсказкой
     hints_memory: int = 3           # сколько последних подсказок помнить (против повторов)
-    hints_dup_ratio: float = 0.8    # похожесть [0..1], при которой подсказка — дубль
+    hints_dup_ratio: float = 0.85   # похожесть [0..1], при которой подсказка — дубль
     hints_max_fails: int = 5        # столько ошибок подряд — подсказки выключаются
     hints_max_backoff_s: float = 120.0  # потолок паузы между повторами после ошибок
+    hints_temperature: float = 0.4  # ниже прежних 0.5 — лучше слушается правило SKIP
+    hints_min_context_chars: int = 80   # меньше разговора — рано подсказывать
+    # История реплик для подсказок. Держим большой всегда: окно режется срезом по
+    # бюджету провайдера, и маленькая дека обнулила бы большое API-окно.
+    hints_recent_maxlen: int = 400
+
+    # Право промолчать: модель отвечает SKIP, если полезного нет (см. llm/prompts.py).
+    # После SKIP ждём меньше обычного — разговор в любой момент может дойти до
+    # важного; но серия SKIP подряд линейно растит паузу, чтобы не жечь CPU.
+    hints_skip_gap_s: float = 8.0
+    hints_skip_max_gap_s: float = 45.0
+    hints_min_len_chars: int = 12   # короче — считаем, что модель промолчала
+
+    # --- Бюджет контекста (зависит от провайдера) ---
+    # local: qwen3 с 8k контекста на 8 ГБ RAM — экономим жёстко.
+    # api: контекст не жалеем, качество важнее (0 = без ограничения).
+    hints_window_chars: int = 2500       # local: сколько символов транскрипта видит LLM
+    hints_window_chars_api: int = 40_000  # api: ~10k токенов хвоста разговора
+    summary_max_chars_local: int = 12_000
+    summary_max_chars_api: int = 0        # 0 = весь транскрипт целиком
 
     # --- LLM: провайдер (локальная модель ↔ внешний API) ---
     # local — локальная Ollama (по умолчанию; данные не покидают контур).
@@ -148,12 +167,23 @@ def _llm_choice_path() -> Path:
 
 
 def load_llm_choice() -> None:
-    """Выбор провайдера из приложения важнее env-дефолта (адрес/ключ — из env).
-    Если сохранён 'api', но конфигурация подключения пропала, остаёмся на 'local'."""
+    """Выбор из приложения важнее env-дефолтов. В llm.json теперь лежит не только
+    провайдер, но и адрес/ключ/модели API (их вводят в настройках приложения).
+    Если сохранён 'api', но подключение неполно (нет адреса или ключа), остаёмся
+    на 'local'."""
     try:
         data = json.loads(_llm_choice_path().read_text())
     except (OSError, ValueError):
         return
+    # Креды/модели из файла перекрывают env-дефолты (как у ASR-выбора)
+    if data.get("api_base_url"):
+        settings.llm_api_base_url = data["api_base_url"]
+    if data.get("api_key"):
+        settings.llm_api_key = data["api_key"]
+    if data.get("summary_model"):
+        settings.llm_api_summary_model = data["summary_model"]
+    if data.get("hints_model"):
+        settings.llm_api_hints_model = data["hints_model"]
     provider = data.get("provider")
     if provider == "api" and not (settings.llm_api_base_url and settings.llm_api_key):
         return
@@ -161,16 +191,40 @@ def load_llm_choice() -> None:
         settings.llm_provider = provider
 
 
-def save_llm_choice(provider: str) -> None:
+def save_llm_choice(
+    provider: str,
+    *,
+    api_base_url: str | None = None,
+    api_key: str | None = None,
+    summary_model: str | None = None,
+    hints_model: str | None = None,
+) -> None:
+    """Сохраняет провайдера и (для 'api') креды/модели, введённые в приложении.
+    None-поля не трогаются; пустой api_key НЕ затирает сохранённый (клиент
+    присылает ключ только когда его меняют — прежний обратно не отдаётся)."""
     if provider not in LLM_PROVIDERS:
         raise ValueError(f"Неизвестный провайдер LLM: {provider}")
+    if api_base_url is not None:
+        settings.llm_api_base_url = api_base_url.strip()
+    if api_key:  # пустой/None — оставляем прежний ключ
+        settings.llm_api_key = api_key
+    if summary_model is not None:
+        settings.llm_api_summary_model = summary_model.strip()
+    if hints_model is not None:
+        settings.llm_api_hints_model = hints_model.strip()
     if provider == "api" and not (settings.llm_api_base_url and settings.llm_api_key):
         raise ValueError(
-            "API не настроен: задайте STENOGRAF_LLM_API_BASE_URL и "
-            "STENOGRAF_LLM_API_KEY в server/.env."
+            "API не настроен: укажите адрес и ключ API в настройках приложения "
+            "(или STENOGRAF_LLM_API_BASE_URL / STENOGRAF_LLM_API_KEY в server/.env)."
         )
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    _llm_choice_path().write_text(json.dumps({"provider": provider}))
+    _llm_choice_path().write_text(json.dumps({
+        "provider": provider,
+        "api_base_url": settings.llm_api_base_url,
+        "api_key": settings.llm_api_key,
+        "summary_model": settings.llm_api_summary_model,
+        "hints_model": settings.llm_api_hints_model,
+    }))
     settings.llm_provider = provider
 
 

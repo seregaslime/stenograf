@@ -19,8 +19,12 @@ def _mmss(seconds: float) -> str:
     return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
 
 
-def build_transcript(segments) -> tuple[str, str]:
-    """Возвращает (текст транскрипта, строка со статистикой участников)."""
+def build_transcript(segments, max_chars: int = MAX_TRANSCRIPT_CHARS) -> tuple[str, str]:
+    """Возвращает (текст транскрипта, строка со статистикой участников).
+
+    max_chars=0 — не усекать (для API с большим контекстом и для экспорта, где
+    выбрасывать середину нельзя: пользователь скачивает полную расшифровку).
+    """
     lines = []
     counter: Counter[str] = Counter()
     for segment in segments:
@@ -28,9 +32,9 @@ def build_transcript(segments) -> tuple[str, str]:
         counter[name] += 1
         lines.append(f"[{_mmss(segment.start_s)}] {name}: {segment.text}")
     transcript = "\n".join(lines)
-    if len(transcript) > MAX_TRANSCRIPT_CHARS:
-        head = transcript[: MAX_TRANSCRIPT_CHARS // 4]
-        tail = transcript[-(MAX_TRANSCRIPT_CHARS - len(head)):]
+    if max_chars and len(transcript) > max_chars:
+        head = transcript[: max_chars // 4]
+        tail = transcript[-(max_chars - len(head)):]
         transcript = head + "\n[... часть транскрипта опущена из-за длины ...]\n" + tail
     participants = ", ".join(f"{name} ({n} реплик)" for name, n in counter.most_common())
     return transcript, participants
@@ -43,20 +47,24 @@ async def generate_summary(llm: LlmRouter, meeting_id: int) -> None:
             return
         segments = crud.meeting_segments(db, meeting_id)
         title = meeting.title
+        mode = meeting.meeting_mode
         date = meeting.started_at.strftime("%d.%m.%Y %H:%M") if meeting.started_at else ""
         if not segments:
             meeting.status = "done"
             meeting.summary_error = "Встреча не содержит распознанной речи."
             return
 
-    transcript, participants = build_transcript(segments)
-    prompt = prompts.SUMMARY_TEMPLATE.format(
-        title=title, date=date, participants=participants, transcript=transcript
+    # Бюджет читается здесь, а не в __init__: провайдера могли переключить
+    # уже после встречи (резюме перегенерируют кнопкой в истории).
+    budget = llm.budget
+    transcript, participants = build_transcript(segments, budget.summary_chars)
+    system, prompt = prompts.build_summary_prompt(
+        mode=mode, title=title, date=date,
+        participants=participants, transcript=transcript,
+        detailed=budget.detailed,
     )
     try:
-        summary = await llm.summarize(
-            prompt, system=prompts.SUMMARY_SYSTEM, temperature=0.3
-        )
+        summary = await llm.summarize(prompt, system=system, temperature=0.3)
         error = None
     except LlmError as exc:
         summary, error = None, str(exc)

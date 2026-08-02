@@ -6,6 +6,8 @@ from app.config import Settings, load_asr_choice, save_asr_choice
 
 
 def test_defaults():
+    """Дефолты конфига соответствуют заявленным в README (движок ASR, провайдер LLM, пути к данным).
+    """
     s = Settings(_env_file=None)
     assert s.asr_engine == "gigaam"
     assert s.llm_provider == "local"
@@ -15,6 +17,8 @@ def test_defaults():
 
 
 def test_save_and_load_asr_choice(tmp_path, monkeypatch):
+    """Выбор движка и модели ASR переживает перезапуск: пишется в asr.json и читается обратно.
+    """
     monkeypatch.setattr(config.settings, "data_dir", tmp_path)
     monkeypatch.setattr(config.settings, "asr_engine", "gigaam")
     monkeypatch.setattr(config.settings, "asr_model", "v3_e2e_rnnt")

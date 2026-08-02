@@ -8,8 +8,13 @@ server/.env
 # Тесты / покрытие (генерируется прогонами)
 .pytest_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 client/coverage/
+# Артефакты прогона (JUnit XML, базы покрытия, HTML-отчёт).
+# Сами TEST_REPORT.md и TESTS.md коммитятся — они генерируются из этих артефактов.
+server/reports/
 
 # Node / Electron
 client/node_modules/

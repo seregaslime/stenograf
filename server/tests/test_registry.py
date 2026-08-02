@@ -47,12 +47,14 @@ def registry(cfg, db_session) -> SpeakerRegistry:
 
 
 def test_first_voice_creates_new_profile(registry, db_session, rng):
+    """Первый услышанный голос создаёт новый профиль спикера."""
     match = registry.match_all(db_session, unit(rng.standard_normal(DIM)), mic_dominant=False)
     assert match.is_new
     assert not match.is_self
 
 
 def test_same_voice_matches_same_profile(registry, db_session, rng):
+    """Повторное появление того же голоса попадает в уже существующий профиль."""
     voice = unit(rng.standard_normal(DIM))
     first = registry.match_all(db_session, voice, mic_dominant=False)
     second = registry.match_all(db_session, voice, mic_dominant=False)
@@ -62,6 +64,7 @@ def test_same_voice_matches_same_profile(registry, db_session, rng):
 
 
 def test_below_threshold_creates_new_profile(registry, db_session, cfg, rng):
+    """Голос, непохожий сильнее порога, заводит отдельный профиль, а не приписывается чужому."""
     base = unit(rng.standard_normal(DIM))
     first = registry.match_all(db_session, base, mic_dominant=False)
     near_miss = vec_with_similarity(base, cfg.speaker_match_threshold - 0.03, rng)
@@ -71,6 +74,7 @@ def test_below_threshold_creates_new_profile(registry, db_session, cfg, rng):
 
 
 def test_above_threshold_matches(registry, db_session, cfg, rng):
+    """Похожий выше порога голос узнаётся как тот же человек."""
     base = unit(rng.standard_normal(DIM))
     first = registry.match_all(db_session, base, mic_dominant=False)
     close = vec_with_similarity(base, cfg.speaker_match_threshold + 0.03, rng)
@@ -272,6 +276,7 @@ def test_remove_print_forgets_voice(registry, db_session, rng):
 
 
 def test_forget_removes_profile(registry, db_session, rng):
+    """Удалённый профиль убирается из памяти реестра и больше не участвует в сопоставлении."""
     voice = unit(rng.standard_normal(DIM))
     first = registry.match_all(db_session, voice, mic_dominant=False)
     registry.forget(first.speaker_id)

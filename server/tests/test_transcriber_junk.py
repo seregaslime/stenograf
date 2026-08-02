@@ -24,20 +24,25 @@ def _tr(tmp_path, parts):
 
 
 def test_junk_exact_dropped(tmp_path):
+    """Типичная галлюцинация ASR на тишине («Продолжение следует...») выбрасывается."""
     assert _tr(tmp_path, ["Продолжение следует..."])._transcribe_sync(AUDIO) == ""
 
 
 def test_junk_case_and_punctuation_dropped(tmp_path):
+    """Фильтр галлюцинаций не зависит от регистра и знаков препинания."""
     assert _tr(tmp_path, ["СПАСИБО ЗА ПРОСМОТР!"])._transcribe_sync(AUDIO) == ""
 
 
 def test_real_text_kept(tmp_path):
+    """Осмысленная речь фильтром не трогается."""
     assert _tr(tmp_path, ["Привет, коллеги"])._transcribe_sync(AUDIO) == "Привет, коллеги"
 
 
 def test_parts_joined_and_empties_dropped(tmp_path):
+    """Куски распознавания склеиваются через пробел, пустые пропускаются."""
     assert _tr(tmp_path, ["привет", "", "мир"])._transcribe_sync(AUDIO) == "привет мир"
 
 
 def test_no_parts_is_empty(tmp_path):
+    """Если распознавать нечего — результат пустая строка, а не ошибка."""
     assert _tr(tmp_path, [])._transcribe_sync(AUDIO) == ""

@@ -18,12 +18,15 @@ def _segmenter(cfg, buffer, buffer_offset=0, processed=0, speech_start=None):
 
 
 def test_cut_rejects_too_short(cfg):
+    """Фрагмент короче порога речи не становится сегментом (щелчки и вздохи отбрасываются)."""
     n = int(cfg.vad_min_speech_ms * SAMPLE_RATE / 1000) - 1
     s = _segmenter(cfg, np.ones(SAMPLE_RATE, dtype=np.float32))
     assert s._cut(0, n) is None
 
 
 def test_cut_returns_segment_with_timestamps(cfg):
+    """У вырезанного сегмента корректные метки времени, а аудио — копия, а не вид на общий буфер.
+    """
     buf = np.arange(SAMPLE_RATE, dtype=np.float32)  # 1 c, offset 0
     seg = _segmenter(cfg, buf, buffer_offset=0)._cut(0, SAMPLE_RATE)
     assert seg is not None
@@ -33,12 +36,15 @@ def test_cut_returns_segment_with_timestamps(cfg):
 
 
 def test_cut_clamps_to_buffer(cfg):
+    """Запрос за границу буфера обрезается по факту имеющихся данных, а не падает."""
     buf = np.ones(SAMPLE_RATE, dtype=np.float32)  # буфер = сэмплы [1..2) c
     seg = _segmenter(cfg, buf, buffer_offset=SAMPLE_RATE)._cut(SAMPLE_RATE, 2 * SAMPLE_RATE)
     assert seg is not None and len(seg.audio) == SAMPLE_RATE
 
 
 def test_trim_buffer_during_speech_keeps_from_start(cfg):
+    """Во время речи буфер подрезается от начала фразы с запасом паддинга — начало реплики не теряется.
+    """
     total = 5 * SAMPLE_RATE
     speech_start = 3 * SAMPLE_RATE
     s = _segmenter(cfg, np.arange(total, dtype=np.float32),
@@ -50,6 +56,7 @@ def test_trim_buffer_during_speech_keeps_from_start(cfg):
 
 
 def test_trim_buffer_idle_keeps_recent(cfg):
+    """В тишине буфер не растёт бесконечно: хранятся только последние секунды."""
     total = 10 * SAMPLE_RATE
     s = _segmenter(cfg, np.zeros(total, dtype=np.float32),
                    buffer_offset=0, processed=total, speech_start=None)

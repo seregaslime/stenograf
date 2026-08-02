@@ -32,3 +32,29 @@ describe("LiveClient.sendAudio", () => {
     expect(sent).toHaveLength(0);
   });
 });
+
+describe("LiveClient.start", () => {
+  it("передаёт тип встречи серверу (от него зависят промпты)", () => {
+    const client = new LiveClient(
+      () => {},
+      () => {},
+    );
+    const sent: string[] = [];
+    (client as unknown as { ws: unknown }).ws = {
+      readyState: WebSocket.OPEN,
+      send: (text: string) => sent.push(text),
+    };
+    client.start({
+      title: "Собес",
+      record_audio: false,
+      hints: true,
+      summarize: true,
+      meeting_mode: "interview",
+    });
+    expect(JSON.parse(sent[0])).toMatchObject({
+      type: "start",
+      title: "Собес",
+      meeting_mode: "interview",
+    });
+  });
+});

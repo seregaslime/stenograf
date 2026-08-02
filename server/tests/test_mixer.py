@@ -65,6 +65,7 @@ def test_lagging_channel_padded_and_late_samples_dropped(cfg):
 
 
 def test_flush_drains_remainder(mixer):
+    """Финальный flush отдаёт остаток буфера — хвост встречи не теряется."""
     mixer.feed("mic", const_chunk(0.1, 700))
     mixer.feed("system", const_chunk(0.1, 300))
     drained_before = drain_all(mixer.flush())
@@ -73,12 +74,14 @@ def test_flush_drains_remainder(mixer):
 
 
 def test_clipping_protection(mixer):
+    """Сумма громких каналов не выходит за пределы диапазона (нет клиппинга)."""
     mixer.feed("mic", const_chunk(0.8, 100))
     out = mixer.feed("system", const_chunk(0.8, 100))
     assert float(drain_all(out).max()) <= 1.0
 
 
 def test_dominance_mic_system_mixed(cfg):
+    """Когда оба канала звучат сопоставимо громко, доминанта помечается как mixed."""
     mixer = ChannelMixer(cfg)
     second = SAMPLE_RATE
     # 1-я секунда: громкий mic, тихий system; 2-я: наоборот; 3-я: поровну
@@ -94,6 +97,7 @@ def test_dominance_mic_system_mixed(cfg):
 
 
 def test_dominance_single_active_channel(cfg):
+    """Если звучит только один канал, он и объявляется доминантой."""
     mixer = ChannelMixer(cfg)
     mixer.feed("mic", const_chunk(0.2, 1000))
     assert mixer.dominance(0.0, 0.05) == "mic"

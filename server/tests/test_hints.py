@@ -5,6 +5,7 @@
 import asyncio
 
 from app.llm.base import LlmError
+from app.llm.router import Budget
 from app.ws import LiveSession
 
 
@@ -23,13 +24,23 @@ def _session(cfg, llm=None):
 
 
 class _FakeLLM:
-    def __init__(self, reply="Подсказка", fail=False):
+    # Ответ по умолчанию — правдоподобная подсказка: короче hints_min_len_chars
+    # parse_hint считает молчанием, и тест проверял бы не то.
+    def __init__(self, reply="Уточните срок задачи и ответственного.", fail=False,
+                 detailed=False):
         self.reply = reply
         self.fail = fail
         self.calls = 0
+        self.seen: list[tuple[str, str]] = []  # (system, prompt) последних вызовов
+        self._detailed = detailed
+
+    @property
+    def budget(self) -> Budget:
+        return Budget(12_000, 2500, self._detailed)
 
     async def hint(self, prompt, system=None, temperature=0.5):
         self.calls += 1
+        self.seen.append((system or "", prompt))
         if self.fail:
             raise LlmError("нет связи с LLM")
         return self.reply
@@ -42,6 +53,8 @@ def _fill_context(s):
 # ------------------------------------------------------------------ чистые функции
 
 def test_is_duplicate_catches_near_repeat(cfg):
+    """Почти дословный повтор недавней подсказки считается дублем (регистр и знаки не важны), а другая по смыслу — нет.
+    """
     s = _session(cfg)
     s._recent_hints.append("Уточните сроки запуска беты и критерии готовности.")
     assert s._is_duplicate("уточните Сроки запуска беты и критерии готовности!")
@@ -49,10 +62,12 @@ def test_is_duplicate_catches_near_repeat(cfg):
 
 
 def test_is_duplicate_empty_memory(cfg):
+    """При пустой памяти подсказок дублей быть не может."""
     assert not _session(cfg)._is_duplicate("Любая подсказка")
 
 
 def test_should_hint_needs_enough_new_text(cfg):
+    """Подсказка не запускается, пока не накопилось достаточно нового разговора."""
     s = _session(cfg)
     s._last_hint_at = 1000.0 - cfg.hints_min_gap_s
     s._chars_since_hint = cfg.hints_min_new_chars - 1
@@ -62,6 +77,7 @@ def test_should_hint_needs_enough_new_text(cfg):
 
 
 def test_should_hint_respects_min_gap(cfg):
+    """Между подсказками выдерживается минимальный интервал, даже если текста много."""
     s = _session(cfg)
     s._chars_since_hint = cfg.hints_min_new_chars * 5
     s._last_hint_at = 1000.0 - cfg.hints_min_gap_s / 2
@@ -69,6 +85,7 @@ def test_should_hint_respects_min_gap(cfg):
 
 
 def test_should_hint_respects_backoff(cfg):
+    """В период бэкоффа после ошибок LLM подсказки не запрашиваются."""
     s = _session(cfg)
     s._chars_since_hint = cfg.hints_min_new_chars * 5
     s._last_hint_at = 0.0
@@ -80,6 +97,7 @@ def test_should_hint_respects_backoff(cfg):
 # ------------------------------------------------------------------ поведение _emit_hint
 
 def test_emit_hint_sends_then_dedups(cfg):
+    """Первая подсказка доходит до клиента, повторная с тем же текстом отсеивается дедупом."""
     llm = _FakeLLM("Уточните сроки и ответственных.")
     s = _session(cfg, llm)
     _fill_context(s)
@@ -91,6 +109,7 @@ def test_emit_hint_sends_then_dedups(cfg):
 
 
 def test_emit_hint_error_is_not_permanent(cfg):
+    """Одна ошибка LLM не выключает подсказки: наращивается бэкофф и шлётся одно уведомление."""
     s = _session(cfg, _FakeLLM(fail=True))
     _fill_context(s)
     s._hints_enabled = True
@@ -102,6 +121,7 @@ def test_emit_hint_error_is_not_permanent(cfg):
 
 
 def test_emit_hint_disables_after_max_fails(cfg):
+    """После серии ошибок подряд подсказки отключаются, чтобы не долбить недоступный сервис."""
     s = _session(cfg, _FakeLLM(fail=True))
     _fill_context(s)
     s._hints_enabled = True
@@ -111,8 +131,134 @@ def test_emit_hint_disables_after_max_fails(cfg):
 
 
 def test_hint_now_forces_even_when_disabled(cfg):
+    """Кнопка «Подсказать сейчас» срабатывает даже при выключенных подсказках."""
     s = _session(cfg, _FakeLLM("Мгновенная подсказка."))
     _fill_context(s)
     s._hints_enabled = False
     asyncio.run(s._on_command({"type": "hint_now"}))
     assert any(m["type"] == "hint" for m in s._sent)
+
+
+# ------------------------------------------------------------------ право промолчать (SKIP)
+
+def test_skip_is_not_sent_to_client(cfg):
+    """Модель промолчала — клиент не должен увидеть ничего."""
+    s = _session(cfg, _FakeLLM("SKIP"))
+    _fill_context(s)
+    asyncio.run(s._emit_hint())
+    assert not [m for m in s._sent if m["type"] == "hint"]
+    assert not s._recent_hints  # молчание не занимает память подсказок
+
+
+def test_skip_shortens_then_grows_the_gap(cfg):
+    """После молчания пауза короче обычной, но серия молчаний наращивает её до потолка."""
+    s = _session(cfg, _FakeLLM("SKIP"))
+    _fill_context(s)
+    asyncio.run(s._emit_hint())
+    assert s._skip_streak == 1
+    assert s._hint_gap_s == cfg.hints_skip_gap_s  # после SKIP ждём меньше обычного
+
+    for _ in range(20):  # серия SKIP растит паузу, но не выше потолка
+        asyncio.run(s._emit_hint())
+    assert s._hint_gap_s == cfg.hints_skip_max_gap_s
+
+
+def test_skip_does_not_spam_llm(cfg):
+    """Сразу после SKIP новый запрос не уходит: нужна свежая порция текста."""
+    s = _session(cfg, _FakeLLM("SKIP"))
+    _fill_context(s)
+    asyncio.run(s._emit_hint())
+    now = s._last_hint_at
+    assert not s._should_hint(now)
+    s._chars_since_hint = cfg.hints_min_new_chars
+    assert not s._should_hint(now)  # текст есть, но пауза не вышла
+    assert s._should_hint(now + cfg.hints_skip_gap_s)
+
+
+def test_skip_keeps_context_and_error_state(cfg):
+    """SKIP — не ошибка: бэкофф не трогается, история реплик остаётся,
+    подсказки не выключаются даже после длинной серии молчания."""
+    s = _session(cfg, _FakeLLM("SKIP"))
+    _fill_context(s)
+    s._hints_enabled = True
+    before = list(s._recent)
+    for _ in range(cfg.hints_max_fails + 3):
+        asyncio.run(s._emit_hint())
+    assert list(s._recent) == before          # контекст жив
+    assert s._hint_fail_streak == 0 and s._hint_backoff_until == 0.0
+    assert s._hints_enabled is True           # молчание ≠ сбой связи
+
+
+def test_real_hint_resets_skip_streak(cfg):
+    """Первая же реальная подсказка обнуляет счётчик молчаний и возвращает обычную паузу."""
+    llm = _FakeLLM("SKIP")
+    s = _session(cfg, llm)
+    _fill_context(s)
+    asyncio.run(s._emit_hint())
+    assert s._skip_streak == 1
+    llm.reply = "Уточните срок задачи и ответственного."
+    asyncio.run(s._emit_hint())
+    assert s._skip_streak == 0 and s._hint_gap_s == cfg.hints_min_gap_s
+
+
+# ------------------------------------------------------------------ кнопка «Подсказать сейчас»
+
+def test_force_prompt_has_no_skip_rule(cfg):
+    """В промпте по кнопке слова SKIP нет вовсе — на явный запрос модель молчать не вправе."""
+    llm = _FakeLLM("Подсказка по кнопке для проверки.")
+    s = _session(cfg, llm)
+    _fill_context(s)
+    asyncio.run(s._emit_hint(force=True))
+    system, prompt = llm.seen[-1]
+    assert "SKIP" not in system and "SKIP" not in prompt
+
+
+def test_force_reports_instead_of_staying_silent(cfg):
+    """Раньше кнопка молча ничего не делала — теперь всегда отвечает."""
+    s = _session(cfg, _FakeLLM("SKIP"))
+    _fill_context(s)
+    asyncio.run(s._emit_hint(force=True))
+    assert any(m["type"] == "hint_error" for m in s._sent)
+
+    empty = _session(cfg, _FakeLLM())  # контекста нет вовсе
+    asyncio.run(empty._emit_hint(force=True))
+    assert any(m["type"] == "hint_error" for m in empty._sent)
+
+
+def test_force_bypasses_dedup(cfg):
+    """По кнопке подсказка доставляется, даже если совпадает с предыдущей."""
+    s = _session(cfg, _FakeLLM("Одна и та же подсказка про сроки."))
+    _fill_context(s)
+    asyncio.run(s._emit_hint())            # авто — доставлено
+    asyncio.run(s._emit_hint())            # авто-дубль — отсеян
+    asyncio.run(s._emit_hint(force=True))  # по кнопке — доставлено несмотря на дубль
+    assert sum(m["type"] == "hint" for m in s._sent) == 2
+
+
+# ------------------------------------------------------------------ контекст промпта
+
+def test_prompt_carries_meeting_context(cfg):
+    """В промпт уходят название встречи, участники и режим — без этого модель не понимает темы.
+    """
+    llm = _FakeLLM("Уточните срок задачи и ответственного.")
+    s = _session(cfg, llm)
+    s._meeting_title = "Планёрка отдела"
+    s._mode = "interview"
+    s._participants.update({"Вы": 3, "Интервьюер": 5})
+    _fill_context(s)
+    asyncio.run(s._emit_hint())
+    system, prompt = llm.seen[-1]
+    assert "Планёрка отдела" in prompt
+    assert "Интервьюер (5 реплик)" in prompt
+    assert "кандидат" in system  # режим собеседования доехал до промпта
+
+
+def test_window_follows_provider_budget(cfg):
+    """Окно режется бюджетом провайдера, а не размером деки."""
+    llm = _FakeLLM("Уточните срок задачи и ответственного.")
+    s = _session(cfg, llm)
+    s._recent.extend(f"Спикер: реплика {i} с текстом подлиннее" for i in range(300))
+    asyncio.run(s._emit_hint())
+    _, prompt = llm.seen[-1]
+    assert len(prompt) < 20_000  # local-бюджет 2500 символов транскрипта
+    assert "реплика 299" in prompt  # берётся хвост разговора

@@ -67,6 +67,9 @@ class Meeting(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     record_audio: Mapped[bool] = mapped_column(default=False)
+    # Тип встречи (см. llm/prompts.py MODES): планёрка / собеседование / переговоры.
+    # nullable — у баз до v0.5 колонки не было; нормализует prompts.normalize_mode
+    meeting_mode: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, default="work")
     audio_dir: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     summary_model: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)

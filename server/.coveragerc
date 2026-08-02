@@ -1,0 +1,51 @@
+# Единый конфиг покрытия: число должно получаться одинаковым у всех и всегда.
+# Раньше покрытие считалось «на глаз» командой `pytest --cov=app`, а результат
+# вписывался в отчёт руками — проверить его было нельзя. Теперь состав замера
+# зафиксирован здесь, а отчёт генерируется scripts/test_report.py.
+
+[run]
+source = app
+
+# Мерим ветки, а не только строки: объявления полей и колонок БД ветвей
+# не имеют и больше не раздувают процент «бесплатным» покрытием от импорта.
+branch = True
+
+# Каждый уровень тестов пишет свою базу, потом coverage combine складывает.
+parallel = True
+
+# e2e поднимает сервер отдельным процессом и гасит его SIGTERM. Без этого флага
+# покрытие подпроцесса теряется, и ws.py/transcriber.py выглядят непокрытыми,
+# хотя e2e гоняет их вдоль и поперёк.
+sigterm = True
+
+# Пути одинаковы локально и внутри контейнера.
+relative_files = True
+
+omit =
+    app/__init__.py
+    */__pycache__/*
+
+[paths]
+# Локальный прогон и прогон в Docker (/srv/app) — это один и тот же код.
+source =
+    app
+    /srv/app
+
+[report]
+show_missing = True
+skip_covered = False
+precision = 1
+
+exclude_lines =
+    pragma: no cover
+    ^\s*\.\.\.$
+    raise NotImplementedError
+    if TYPE_CHECKING:
+    if __name__ == .__main__.:
+
+[html]
+directory = htmlcov
+title = Стенограф — покрытие серверного кода
+
+[xml]
+output = coverage.xml

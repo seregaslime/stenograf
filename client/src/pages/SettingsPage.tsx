@@ -35,6 +35,14 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
   const [provider, setProvider] = useState<"local" | "api">("local");
   const [llmError, setLlmError] = useState("");
   const [applyingLlm, setApplyingLlm] = useState(false);
+  // Настройки внешнего API (вводятся здесь; ключ обратно с сервера не приходит)
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [apiModels, setApiModels] = useState<string[]>([]);
+  const [summaryModel, setSummaryModel] = useState("");
+  const [hintsModel, setHintsModel] = useState("");
+  const [probing, setProbing] = useState(false);
+  const [probeError, setProbeError] = useState("");
 
   async function test() {
     setTesting(true);
@@ -102,11 +110,22 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     }
   }
 
+  function fillLlmForm(state: LlmStateDto) {
+    setProvider(state.provider);
+    setBaseUrl(state.api_base_url ?? "");
+    // именно API-модели: при активном local здесь не должны оказаться имена Ollama
+    setSummaryModel(state.api_summary_model ?? "");
+    setHintsModel(state.api_hints_model ?? "");
+    setApiKey(""); // ключ с сервера не приходит — пустое поле = «оставить прежний»
+    // models из status() (для api — уже запрошенный список моделей)
+    setApiModels(state.models ?? []);
+  }
+
   async function refreshLlm(resetSelect: boolean) {
     try {
       const state = await api.llm();
       setLlm(state);
-      if (resetSelect) setProvider(state.provider);
+      if (resetSelect) fillLlmForm(state);
       return state;
     } catch {
       setLlm(null); // старый сервер без /api/llm — карточку просто не показываем
@@ -114,13 +133,40 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     }
   }
 
+  async function probe() {
+    setProbing(true);
+    setProbeError("");
+    try {
+      const res = await api.probeModels(baseUrl.trim(), apiKey || undefined);
+      if (!res.reachable) {
+        setProbeError("API недоступен или отклонил ключ — проверьте адрес и ключ.");
+        return;
+      }
+      setApiModels(res.models);
+      if (res.models.length) {
+        if (!summaryModel || !res.models.includes(summaryModel)) setSummaryModel(res.models[0]);
+        if (!hintsModel || !res.models.includes(hintsModel)) setHintsModel(res.models[0]);
+      }
+    } catch (exc) {
+      setProbeError((exc as Error).message);
+    } finally {
+      setProbing(false);
+    }
+  }
+
   async function applyLlm() {
     setApplyingLlm(true);
     setLlmError("");
     try {
-      const state = await api.setLlm(provider);
+      const state = await api.setLlm({
+        provider,
+        api_base_url: baseUrl.trim(),
+        api_key: apiKey || undefined, // пусто — сервер оставит сохранённый ключ
+        summary_model: summaryModel,
+        hints_model: hintsModel,
+      });
       setLlm(state);
-      setProvider(state.provider);
+      fillLlmForm(state);
     } catch (exc) {
       setLlmError((exc as Error).message);
       if (llm) setProvider(llm.provider); // сервер отклонил выбор — вернуть селект
@@ -273,17 +319,97 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
               onChange={(event) => setProvider(event.target.value as "local" | "api")}
             >
               <option value="local">Локальная (Ollama) — данные не покидают контур</option>
-              <option value="api" disabled={!llm.api_configured}>
-                Внешний API (OpenAI-совместимый)
-                {llm.api_configured ? "" : " — не настроен в server/.env"}
-              </option>
+              <option value="api">Внешний API (OpenAI-совместимый)</option>
             </select>
           </label>
+
+          {provider === "api" && (
+            <>
+              <label className="field">
+                <span>Адрес API (base URL, OpenAI-совместимый — напр. https://api.groq.com/openai/v1)</span>
+                <input
+                  className="input"
+                  value={baseUrl}
+                  onChange={(event) => setBaseUrl(event.target.value)}
+                  placeholder="https://api.openai.com/v1"
+                />
+              </label>
+              <label className="field">
+                <span>API-ключ</span>
+                <input
+                  className="input"
+                  type="password"
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                  placeholder={llm.api_configured ? "•••• сохранён (оставьте пустым)" : "sk-…"}
+                />
+              </label>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 6 }}>
+                <button className="btn" onClick={probe} disabled={probing || !baseUrl.trim()}>
+                  {probing ? <span className="spinner" /> : "Запросить модели"}
+                </button>
+                <span style={{ color: "var(--muted)", fontSize: 12.5 }}>
+                  {apiModels.length
+                    ? `доступно моделей: ${apiModels.length}`
+                    : "введите адрес и ключ, затем запросите список"}
+                </span>
+              </div>
+              {probeError && (
+                <div className="banner error" style={{ marginBottom: 10 }}>
+                  {probeError}
+                </div>
+              )}
+              <label className="field">
+                <span>Модель для протокола (резюме)</span>
+                <select
+                  className="input"
+                  value={summaryModel}
+                  onChange={(event) => setSummaryModel(event.target.value)}
+                >
+                  {summaryModel && !apiModels.includes(summaryModel) && (
+                    <option value={summaryModel}>{summaryModel}</option>
+                  )}
+                  {!summaryModel && <option value="">— выберите модель —</option>}
+                  {apiModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Модель для подсказок (можно ту же; полегче — быстрее)</span>
+                <select
+                  className="input"
+                  value={hintsModel}
+                  onChange={(event) => setHintsModel(event.target.value)}
+                >
+                  {hintsModel && !apiModels.includes(hintsModel) && (
+                    <option value={hintsModel}>{hintsModel}</option>
+                  )}
+                  {!hintsModel && <option value="">— выберите модель —</option>}
+                  {apiModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
+          )}
+
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <button
               className="btn primary"
               onClick={applyLlm}
-              disabled={applyingLlm || provider === llm.provider}
+              disabled={
+                applyingLlm ||
+                (provider === "api" &&
+                  (!baseUrl.trim() ||
+                    !summaryModel ||
+                    !hintsModel ||
+                    !(apiKey || llm.api_configured)))
+              }
             >
               {applyingLlm ? <span className="spinner" /> : "Применить"}
             </button>
@@ -295,15 +421,11 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
                 : `сейчас: локальная Ollama${llm.reachable ? " · доступна" : " · недоступна"}`}
             </span>
           </div>
-          {!llm.api_configured && (
-            <p style={{ color: "var(--muted)", fontSize: 12.5, marginTop: 10 }}>
-              Чтобы включить внешний API, задайте <code>STENOGRAF_LLM_API_BASE_URL</code>,{" "}
-              <code>STENOGRAF_LLM_API_KEY</code> и модели{" "}
-              <code>STENOGRAF_LLM_API_SUMMARY_MODEL</code> /{" "}
-              <code>STENOGRAF_LLM_API_HINTS_MODEL</code> в <code>server/.env</code> и перезапустите
-              сервер. Ключ остаётся на сервере и на клиент не передаётся.
-            </p>
-          )}
+          <p style={{ color: "var(--muted)", fontSize: 12.5, marginTop: 10 }}>
+            Ключ хранится на сервере (<code>server/data/llm.json</code>) и обратно на клиент не
+            отдаётся. При включённом API на указанный endpoint отправляется текст транскрипта
+            (аудио — никогда).
+          </p>
           {llmError && (
             <div className="banner error" style={{ marginTop: 12 }}>
               {llmError}
