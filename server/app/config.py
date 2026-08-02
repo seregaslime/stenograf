@@ -180,6 +180,11 @@ LLM_PROVIDERS = ("local", "api")
 # пользователь узнает о проблеме только когда встреча уже идёт.
 LLM_API_ALLOWED_HOSTS = ("api.groq.com",)
 
+# Единственный источник правды для адреса: сервер отдаёт его клиенту в
+# GET /api/llm, чтобы поле в настройках было заполнено сразу и не разъехалось
+# со списком разрешённых хостов.
+LLM_API_DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
+
 
 def api_host_supported(base_url: str) -> bool:
     from urllib.parse import urlparse
@@ -187,7 +192,7 @@ def api_host_supported(base_url: str) -> bool:
 
 
 API_HOST_HINT = (
-    "Пока поддерживается только Groq (https://api.groq.com/openai/v1): только он "
+    f"Пока поддерживается только Groq ({LLM_API_DEFAULT_BASE_URL}): только он "
     "сообщает размер контекста модели, без которого нельзя проверить, что "
     "выбранная модель потянет наши промпты."
 )

@@ -80,6 +80,8 @@ export interface LlmStateDto {
   provider: "local" | "api";
   api_configured: boolean;
   api_base_url: string;
+  /** Чем заполнить поле адреса, если ничего не сохранено (задаётся сервером). */
+  api_base_url_default: string;
   reachable: boolean;
   models: string[];
   models_info: LlmModelInfo[];

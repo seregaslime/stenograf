@@ -114,7 +114,9 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
 
   function fillLlmForm(state: LlmStateDto) {
     setProvider(state.provider);
-    setBaseUrl(state.api_base_url ?? "");
+    // Ничего не сохранено — подставляем адрес поддерживаемого провайдера,
+    // чтобы не заставлять человека печатать его руками
+    setBaseUrl(state.api_base_url || state.api_base_url_default || "");
     // именно API-модели: при активном local здесь не должны оказаться имена Ollama
     setSummaryModel(state.api_summary_model ?? "");
     setHintsModel(state.api_hints_model ?? "");
@@ -365,7 +367,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
                   type="password"
                   value={apiKey}
                   onChange={(event) => setApiKey(event.target.value)}
-                  placeholder={llm.api_configured ? "•••• сохранён (оставьте пустым)" : "sk-…"}
+                  placeholder={llm.api_configured ? "•••• сохранён (оставьте пустым)" : "gsk_…"}
                 />
               </label>
               <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 6 }}>

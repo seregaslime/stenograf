@@ -18,8 +18,8 @@ from pydantic import BaseModel
 
 from .asr.transcriber import GIGAAM_AVAILABLE, MLX_AVAILABLE, Transcriber
 from .config import (
-    API_HOST_HINT, ASR_ENGINES, ASR_MODELS, api_host_supported,
-    save_asr_choice, save_llm_choice, settings,
+    API_HOST_HINT, ASR_ENGINES, ASR_MODELS, LLM_API_DEFAULT_BASE_URL,
+    api_host_supported, save_asr_choice, save_llm_choice, settings,
 )
 from .db import crud
 from .db.database import init_db, session_scope
@@ -204,6 +204,8 @@ async def _llm_state() -> dict:
         "provider": llm.provider,
         "api_configured": bool(settings.llm_api_base_url and settings.llm_api_key),
         "api_base_url": settings.llm_api_base_url,  # адрес не секрет; ключ не отдаём
+        # чем заполнить поле адреса, если ничего не сохранено
+        "api_base_url_default": LLM_API_DEFAULT_BASE_URL,
         "reachable": status.get("reachable", False),
         "models": status.get("models", []),
         # только для api: размер контекста у каждой модели и сколько отсеяли

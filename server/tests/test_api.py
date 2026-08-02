@@ -292,3 +292,14 @@ def test_llm_probe_filters_models(client, monkeypatch):
     assert body["models"] == ["good"]
     assert body["models_rejected"] == 2
     assert body["models_info"][0]["context_window"] == 131072
+
+
+def test_llm_state_offers_default_base_url(client):
+    """Клиент подставляет адрес в поле из ответа сервера, а не хранит свою
+    копию — иначе она однажды разъедется со списком разрешённых хостов."""
+    from app.config import LLM_API_DEFAULT_BASE_URL, api_host_supported
+
+    body = client.get("/api/llm").json()
+    assert body["api_base_url_default"] == LLM_API_DEFAULT_BASE_URL
+    # предлагаемый адрес обязан проходить собственную же валидацию
+    assert api_host_supported(body["api_base_url_default"])
