@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/rest";
 import { DEFAULT_SERVER_URL, getSetting, isDebugMode, platform, setSetting } from "../store";
-import type { AsrStateDto, HealthDto, LlmStateDto } from "../types";
+import type { AsrStateDto, HealthDto, LlmModelInfo, LlmStateDto } from "../types";
 
 const ENGINE_LABELS: Record<string, string> = {
   faster_whisper: "CPU (faster-whisper)",
@@ -39,6 +39,8 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [apiModels, setApiModels] = useState<string[]>([]);
+  const [modelsInfo, setModelsInfo] = useState<LlmModelInfo[]>([]);
+  const [modelsRejected, setModelsRejected] = useState(0);
   const [summaryModel, setSummaryModel] = useState("");
   const [hintsModel, setHintsModel] = useState("");
   const [probing, setProbing] = useState(false);
@@ -117,8 +119,17 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     setSummaryModel(state.api_summary_model ?? "");
     setHintsModel(state.api_hints_model ?? "");
     setApiKey(""); // ключ с сервера не приходит — пустое поле = «оставить прежний»
-    // models из status() (для api — уже запрошенный список моделей)
+    // models из status() (для api — уже отфильтрованный список пригодных моделей)
     setApiModels(state.models ?? []);
+    setModelsInfo(state.models_info ?? []);
+    setModelsRejected(state.models_rejected ?? 0);
+  }
+
+  /** «llama-3.3-70b — 131k» — чтобы было видно, что модель потянет наши промпты. */
+  function modelLabel(id: string): string {
+    const context = modelsInfo.find((m) => m.id === id)?.context_window;
+    if (!context) return id;
+    return `${id} — ${Math.round(context / 1024)}k контекст`;
   }
 
   async function refreshLlm(resetSelect: boolean) {
@@ -143,6 +154,15 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
         return;
       }
       setApiModels(res.models);
+      setModelsInfo(res.models_info ?? []);
+      setModelsRejected(res.models_rejected ?? 0);
+      if (!res.models.length) {
+        setProbeError(
+          "Подходящих моделей не нашлось: у всех либо слишком маленькое контекстное " +
+            "окно, либо они работают не с текстом.",
+        );
+        return;
+      }
       if (res.models.length) {
         if (!summaryModel || !res.models.includes(summaryModel)) setSummaryModel(res.models[0]);
         if (!hintsModel || !res.models.includes(hintsModel)) setHintsModel(res.models[0]);
@@ -326,13 +346,17 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
           {provider === "api" && (
             <>
               <label className="field">
-                <span>Адрес API (base URL, OpenAI-совместимый — напр. https://api.groq.com/openai/v1)</span>
+                <span>Адрес API (пока поддерживается только Groq)</span>
                 <input
                   className="input"
                   value={baseUrl}
                   onChange={(event) => setBaseUrl(event.target.value)}
-                  placeholder="https://api.openai.com/v1"
+                  placeholder="https://api.groq.com/openai/v1"
                 />
+                <span className="hint">
+                  Groq сообщает размер контекста каждой модели — без этого нельзя
+                  проверить, потянет ли модель наши промпты
+                </span>
               </label>
               <label className="field">
                 <span>API-ключ</span>
@@ -350,7 +374,10 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
                 </button>
                 <span style={{ color: "var(--muted)", fontSize: 12.5 }}>
                   {apiModels.length
-                    ? `доступно моделей: ${apiModels.length}`
+                    ? `подходящих моделей: ${apiModels.length}` +
+                      (modelsRejected
+                        ? ` · ${modelsRejected} скрыто (мало контекста или не текст)`
+                        : "")
                     : "введите адрес и ключ, затем запросите список"}
                 </span>
               </div>
@@ -372,7 +399,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
                   {!summaryModel && <option value="">— выберите модель —</option>}
                   {apiModels.map((m) => (
                     <option key={m} value={m}>
-                      {m}
+                      {modelLabel(m)}
                     </option>
                   ))}
                 </select>
@@ -390,7 +417,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
                   {!hintsModel && <option value="">— выберите модель —</option>}
                   {apiModels.map((m) => (
                     <option key={m} value={m}>
-                      {m}
+                      {modelLabel(m)}
                     </option>
                   ))}
                 </select>

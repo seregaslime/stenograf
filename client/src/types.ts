@@ -82,15 +82,26 @@ export interface LlmStateDto {
   api_base_url: string;
   reachable: boolean;
   models: string[];
+  models_info: LlmModelInfo[];
+  models_rejected: number;
   summary_model: string; // модели активного провайдера (строка статуса)
   hints_model: string;
   api_summary_model: string; // модели API — отдельно, для формы настроек
   api_hints_model: string;
 }
 
+/** Модель API с размером контекстного окна (его сообщает сам провайдер). */
+export interface LlmModelInfo {
+  id: string;
+  context_window: number | null;
+}
+
 export interface LlmModelsDto {
   reachable: boolean;
   models: string[];
+  models_info: LlmModelInfo[];
+  /** Сколько моделей провайдера не подошло — их в списке нет. */
+  models_rejected: number;
 }
 
 export interface LlmSettings {

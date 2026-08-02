@@ -19,6 +19,10 @@ from app.db.database import session_scope
 from app.llm import openai_client as openai_mod
 
 
+# Поддерживается только Groq: остальные провайдеры не сообщают контекст модели
+GROQ = "https://api.groq.com/openai/v1"
+
+
 def _mock_openai(monkeypatch, handler):
     """Подменяет httpx у OpenAI-клиента на MockTransport (без сети)."""
     real = httpx.AsyncClient
@@ -107,7 +111,7 @@ def test_llm_probe_models(client, monkeypatch):
     _mock_openai(monkeypatch, handler)
     body = client.post(
         "/api/llm/models",
-        json={"api_base_url": "http://api.local/v1", "api_key": "probe-key"},
+        json={"api_base_url": GROQ, "api_key": "probe-key"},
     ).json()
     assert body["reachable"] is True
     assert body["models"] == ["m1", "m2"]
@@ -123,11 +127,11 @@ def test_llm_set_api_with_creds(client, monkeypatch):
     _mock_openai(monkeypatch, lambda r: httpx.Response(200, json={"data": []}))
     try:
         body = client.post("/api/llm", json={
-            "provider": "api", "api_base_url": "http://api.local/v1",
+            "provider": "api", "api_base_url": GROQ,
             "api_key": "secret", "summary_model": "m1", "hints_model": "m2",
         }).json()
         assert body["provider"] == "api"
-        assert body["api_base_url"] == "http://api.local/v1"
+        assert body["api_base_url"] == GROQ
         assert body["summary_model"] == "m1" and body["hints_model"] == "m2"
         assert "api_key" not in body  # ключ клиенту не отдаём
     finally:
@@ -259,3 +263,32 @@ def test_meeting_detail_reports_mode(client, done_meeting):
 def test_export_unknown_meeting_404(client):
     """Выгрузка несуществующей встречи даёт 404."""
     assert client.get("/api/meetings/999999/export?fmt=md").status_code == 404
+
+
+def test_llm_probe_rejects_unsupported_host(client):
+    """Чужой провайдер не сообщает размер контекста — принять его значит
+    пустить пользователя выбирать модель вслепую."""
+    resp = client.post("/api/llm/models",
+                       json={"api_base_url": "https://api.openai.com/v1", "api_key": "k"})
+    assert resp.status_code == 400
+    assert "Groq" in resp.json()["detail"]
+
+
+def test_llm_probe_filters_models(client, monkeypatch):
+    """В списке выбора остаются только пригодные модели, негодные посчитаны."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [
+            {"id": "good", "context_window": 131072,
+             "input_modalities": ["text"], "output_modalities": ["text"]},
+            {"id": "tiny-context", "context_window": 512,
+             "input_modalities": ["text"], "output_modalities": ["text"]},
+            {"id": "speech-out", "context_window": 131072,
+             "input_modalities": ["text"], "output_modalities": ["speech"]},
+        ]})
+
+    _mock_openai(monkeypatch, handler)
+    body = client.post("/api/llm/models",
+                       json={"api_base_url": GROQ, "api_key": "k"}).json()
+    assert body["models"] == ["good"]
+    assert body["models_rejected"] == 2
+    assert body["models_info"][0]["context_window"] == 131072

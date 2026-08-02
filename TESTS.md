@@ -1,21 +1,21 @@
 # Каталог тестов — Стенограф
 
 > ⚙️ **Сгенерирован автоматически** из кода тестов (`python scripts/test_inventory.py`), руками не редактируется.
-> Обновлён: 02.08.2026 15:48
+> Обновлён: 02.08.2026 16:30
 
-Всего тестовых функций на сервере: **176** (с учётом параметризации — 190 проверок). Клиент: **16**.
+Всего тестовых функций на сервере: **184** (с учётом параметризации — 198 проверок). Клиент: **16**.
 
 Здесь написано, **что именно** проверяет каждый тест. Покрытие кода (сколько строк исполнилось) — отдельная метрика, она в [TEST_REPORT.md](TEST_REPORT.md).
 
 ## Оглавление
 
-- **Юнит** — 134 тестов
+- **Юнит** — 140 тестов
   - [`test_bench_registry.py`](#test-bench-registrypy) —  (5)
   - [`test_config.py`](#test-configpy) — конфигурация и персист выбора движка ASR (2)
   - [`test_crud.py`](#test-crudpy) — операции с БД: встречи, спикеры, сегменты (8)
   - [`test_hints.py`](#test-hintspy) — движок подсказок: триггер, дедуп, бэкофф, SKIP, кнопка «подсказать сейчас» (19)
   - [`test_live_session.py`](#test-live-sessionpy) — живая сессия: разрез сегментов по смене говорящего (5)
-  - [`test_llm_provider.py`](#test-llm-providerpy) — клиент OpenAI-совместимого API, роутер local↔api, бюджет контекста (16)
+  - [`test_llm_provider.py`](#test-llm-providerpy) — клиент OpenAI-совместимого API, роутер local↔api, бюджет контекста (22)
   - [`test_loadtest_metrics.py`](#test-loadtest-metricspy) —  (7)
   - [`test_mixer.py`](#test-mixerpy) — микшер каналов: склейка mic/system и определение доминанты (10)
   - [`test_ollama_client.py`](#test-ollama-clientpy) — клиент локальной Ollama: запросы и обработка ошибок (6)
@@ -25,8 +25,8 @@
   - [`test_summary_generate.py`](#test-summary-generatepy) —  (8)
   - [`test_transcriber_junk.py`](#test-transcriber-junkpy) — фильтр галлюцинаций ASR на тишине (5)
   - [`test_vad.py`](#test-vadpy) — нарезка речи по паузам, отбрасывание коротких фрагментов (5)
-- **Компонентные (API-слой)** — 23 тестов
-  - [`test_api.py`](#test-apipy) — REST-эндпоинты: коды ответов, форма данных, отказы (23)
+- **Компонентные (API-слой)** — 25 тестов
+  - [`test_api.py`](#test-apipy) — REST-эндпоинты: коды ответов, форма данных, отказы (25)
 - **Интеграционные (БД)** — 5 тестов
   - [`test_migrations.py`](#test-migrationspy) — апгрейд старых баз без потери данных (5)
 - **Интеграционные (модели)** — 3 тестов
@@ -134,6 +134,8 @@
 |---|---|
 | `test_budget_switches_with_provider` | Бюджет — свойство, а не поле: провайдера меняют посреди встречи, и глубина подсказок/резюме обязана поменяться сразу. |
 | `test_load_llm_choice_falls_back_when_api_unconfigured` | Если сохранён api, но конфигурация подключения пропала, сервер честно откатывается на локальную модель. |
+| `test_min_context_threshold_is_configurable` | Порог берётся из настроек: поднимаем — модель выпадает из списка. |
+| `test_only_groq_host_is_supported` | only groq host is supported |
 | `test_openai_bad_shape_raises_llmerror` | Ответ неожиданной формы не роняет сервер, а даёт внятную ошибку. |
 | `test_openai_connect_error_raises_llmerror` | Недоступный адрес API даёт понятное сообщение с указанием, что проверить. |
 | `test_openai_generate_builds_request_and_parses` | Запрос к OpenAI-совместимому API уходит на /chat/completions с моделью, ролями и температурой; ответ разбирается и обрезается. |
@@ -147,7 +149,11 @@
 | `test_save_llm_choice_empty_key_keeps_existing` | Пустой ключ при повторном сохранении не затирает сохранённый (клиент присылает ключ только когда его меняют). |
 | `test_save_llm_choice_local_persists` | Выбор локального провайдера сохраняется в llm.json и применяется к настройкам. |
 | `test_save_llm_choice_persists_creds` | Адрес, ключ и обе модели сохраняются в llm.json — их вводят в настройках приложения, а не в .env. |
+| `test_save_llm_choice_rejects_foreign_host` | Чужой провайдер не сообщает контекст — принять его значит пустить пользователя выбирать модель вслепую. |
 | `test_save_llm_choice_rejects_unknown` | Неизвестное имя провайдера отвергается на уровне конфига. |
+| `test_status_filters_unsuitable_models` | Судим по данным провайдера, а не по зашитым именам моделей. Реальный ответ Groq содержит whisper (принимает аудио), orpheus (отдаёт речь), prompt-guard (512 токенов) и allam (4096) — всё это молча сломалось бы на первой встрече, поэтому в список выбора не попадает. |
+| `test_status_keeps_models_without_metadata` | Провайдер не сообщил контекст и модальности — судить не по чему, прятать нельзя: молча урезать список опаснее, чем показать лишнее. |
+| `test_status_reports_context_and_sorts_by_it` | status reports context and sorts by it |
 
 ### `test_loadtest_metrics.py`
 
@@ -320,7 +326,9 @@
 | `test_export_unknown_meeting_404` | Выгрузка несуществующей встречи даёт 404. |
 | `test_health` | /api/health отдаёт статус сервера, состояние ASR, диаризации и выбранного провайдера LLM. |
 | `test_llm_get` | /api/llm отдаёт состояние провайдера LLM — и намеренно не содержит API-ключ. |
+| `test_llm_probe_filters_models` | В списке выбора остаются только пригодные модели, негодные посчитаны. |
 | `test_llm_probe_models` | /api/llm/models запрашивает список моделей по введённым (ещё не сохранённым) кредам — для выпадающего списка в настройках. |
+| `test_llm_probe_rejects_unsupported_host` | Чужой провайдер не сообщает размер контекста — принять его значит пустить пользователя выбирать модель вслепую. |
 | `test_llm_set_api_unconfigured_400` | Включить внешний API без адреса и ключа нельзя — 400 с объяснением. |
 | `test_llm_set_api_with_creds` | Адрес, ключ и модели принимаются из настроек приложения; ключ в ответе не возвращается. |
 | `test_llm_set_local_ok` | Переключение на локальную модель принимается всегда: ей не нужны ни адрес, ни ключ. |

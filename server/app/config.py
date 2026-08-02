@@ -101,9 +101,16 @@ class Settings(BaseSettings):
     # local: qwen3 с 8k контекста на 8 ГБ RAM — экономим жёстко.
     # api: контекст не жалеем, качество важнее (0 = без ограничения).
     hints_window_chars: int = 2500       # local: сколько символов транскрипта видит LLM
-    hints_window_chars_api: int = 40_000  # api: ~10k токенов хвоста разговора
+    hints_window_chars_api: int = 40_000  # api: ~16k токенов хвоста разговора
     summary_max_chars_local: int = 12_000
-    summary_max_chars_api: int = 0        # 0 = весь транскрипт целиком
+    # Не 0 (без лимита): даже при контексте 131k очень длинная встреча выйдет за
+    # предел. 200k символов ≈ 80k токенов — с запасом влезает и покрывает
+    # встречу часов на пять.
+    summary_max_chars_api: int = 200_000
+
+    # Русский текст в современных токенизаторах — примерно 2.5 символа на токен.
+    # Нужно, чтобы прикинуть, влезут ли наши промпты в контекст модели.
+    chars_per_token: float = 2.5
 
     # --- LLM: провайдер (локальная модель ↔ внешний API) ---
     # local — локальная Ollama (по умолчанию; данные не покидают контур).
@@ -111,10 +118,15 @@ class Settings(BaseSettings):
     # сервис). Адрес/ключ/модели берутся ТОЛЬКО из env/.env и на клиент не уходят;
     # переключается тумблером в настройках (см. load_llm_choice/save_llm_choice).
     llm_provider: str = "local"      # local | api
-    llm_api_base_url: str = ""       # напр. https://api.openai.com/v1 или http://ai.corp.local:8000/v1
+    llm_api_base_url: str = ""       # см. LLM_API_ALLOWED_HOSTS
     llm_api_key: str = ""
-    llm_api_summary_model: str = ""  # модель API для резюме (напр. gpt-4o-mini)
+    llm_api_summary_model: str = ""  # модель API для резюме
     llm_api_hints_model: str = ""    # модель API для подсказок (можно ту же)
+    # Модель с маленьким контекстом молча сломается на первой же встрече: окно
+    # подсказок само по себе ~16k токенов. Поэтому в списке выбора показываем
+    # только модели, у которых контекст не меньше — размер берём из ответа
+    # провайдера, а не из зашитых знаний о моделях.
+    llm_api_min_context_tokens: int = 32_768
 
     @property
     def db_path(self) -> Path:
@@ -160,6 +172,25 @@ def save_asr_choice(engine: str, model: str) -> None:
 
 
 LLM_PROVIDERS = ("local", "api")
+
+# Пока поддерживается только Groq — и это не про «любимого вендора», а про то,
+# что мы обязаны знать размер контекста модели. Стандарт OpenAI на /v1/models
+# отдаёт только id/object/created/owned_by; context_window — расширение Groq.
+# Без него нельзя ни отсеять негодные модели, ни посчитать бюджет промпта, и
+# пользователь узнает о проблеме только когда встреча уже идёт.
+LLM_API_ALLOWED_HOSTS = ("api.groq.com",)
+
+
+def api_host_supported(base_url: str) -> bool:
+    from urllib.parse import urlparse
+    return urlparse(base_url).hostname in LLM_API_ALLOWED_HOSTS
+
+
+API_HOST_HINT = (
+    "Пока поддерживается только Groq (https://api.groq.com/openai/v1): только он "
+    "сообщает размер контекста модели, без которого нельзя проверить, что "
+    "выбранная модель потянет наши промпты."
+)
 
 
 def _llm_choice_path() -> Path:
@@ -217,6 +248,8 @@ def save_llm_choice(
             "API не настроен: укажите адрес и ключ API в настройках приложения "
             "(или STENOGRAF_LLM_API_BASE_URL / STENOGRAF_LLM_API_KEY в server/.env)."
         )
+    if provider == "api" and not api_host_supported(settings.llm_api_base_url):
+        raise ValueError(API_HOST_HINT)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     _llm_choice_path().write_text(json.dumps({
         "provider": provider,

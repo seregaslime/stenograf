@@ -17,6 +17,12 @@ from app.llm.openai_client import OpenAIClient
 from app.llm.router import LlmRouter
 
 
+# Сохранять можно только поддерживаемый хост (см. LLM_API_ALLOWED_HOSTS):
+# чужой провайдер не сообщает контекст модели.
+GROQ = "https://api.groq.com/openai/v1"
+GROQ_ALT = "https://api.groq.com/openai/v1/"
+
+
 def _api_cfg(tmp_path, **over) -> Settings:
     base = dict(
         data_dir=tmp_path, _env_file=None, llm_provider="api",
@@ -177,15 +183,15 @@ def test_save_llm_choice_persists_creds(tmp_path, monkeypatch):
     monkeypatch.setattr(config.settings, "llm_api_base_url", "")
     monkeypatch.setattr(config.settings, "llm_api_key", "")
     config.save_llm_choice(
-        "api", api_base_url="http://api.local/v1", api_key="secret",
+        "api", api_base_url=GROQ, api_key="secret",
         summary_model="sum-m", hints_model="hint-m",
     )
     data = json.loads((tmp_path / "llm.json").read_text())
     assert data == {
-        "provider": "api", "api_base_url": "http://api.local/v1",
+        "provider": "api", "api_base_url": GROQ,
         "api_key": "secret", "summary_model": "sum-m", "hints_model": "hint-m",
     }
-    assert config.settings.llm_api_base_url == "http://api.local/v1"
+    assert config.settings.llm_api_base_url == GROQ
     assert config.settings.llm_api_summary_model == "sum-m"
 
 
@@ -193,14 +199,14 @@ def test_save_llm_choice_empty_key_keeps_existing(tmp_path, monkeypatch):
     """Пустой ключ при повторном сохранении не затирает сохранённый (клиент
     присылает ключ только когда его меняют)."""
     monkeypatch.setattr(config.settings, "data_dir", tmp_path)
-    monkeypatch.setattr(config.settings, "llm_api_base_url", "http://x/v1")
+    monkeypatch.setattr(config.settings, "llm_api_base_url", GROQ)
     monkeypatch.setattr(config.settings, "llm_api_key", "kept")
     config.save_llm_choice(
-        "api", api_base_url="http://y/v1", api_key="",
+        "api", api_base_url=GROQ_ALT, api_key="",
         summary_model="s", hints_model="h",
     )
     assert config.settings.llm_api_key == "kept"          # ключ не тронут
-    assert config.settings.llm_api_base_url == "http://y/v1"  # адрес обновлён
+    assert config.settings.llm_api_base_url == GROQ_ALT  # адрес обновлён
     assert json.loads((tmp_path / "llm.json").read_text())["api_key"] == "kept"
 
 
@@ -223,7 +229,7 @@ def test_save_llm_choice_api_requires_config(tmp_path, monkeypatch):
 def test_save_and_load_llm_choice_api_roundtrip(tmp_path, monkeypatch):
     """Выбор api переживает перезапуск: пишется на диск и читается обратно."""
     monkeypatch.setattr(config.settings, "data_dir", tmp_path)
-    monkeypatch.setattr(config.settings, "llm_api_base_url", "http://x/v1")
+    monkeypatch.setattr(config.settings, "llm_api_base_url", GROQ)
     monkeypatch.setattr(config.settings, "llm_api_key", "k")
     monkeypatch.setattr(config.settings, "llm_provider", "local")
     config.save_llm_choice("api")
@@ -262,3 +268,99 @@ def test_budget_switches_with_provider(tmp_path):
     assert router.budget.summary_chars == cfg.summary_max_chars_api  # 0 = без лимита
     assert router.budget.detailed is True
     assert router.budget.hints_chars > cfg.hints_window_chars
+
+
+# ------------------------------------------------------------------ фильтр моделей
+
+def _models_response(*models) -> dict:
+    return {"data": list(models)}
+
+
+def _model(mid, ctx=131072, mi=("text",), mo=("text",)) -> dict:
+    return {"id": mid, "context_window": ctx,
+            "input_modalities": list(mi), "output_modalities": list(mo)}
+
+
+def test_status_filters_unsuitable_models(tmp_path, monkeypatch):
+    """Судим по данным провайдера, а не по зашитым именам моделей.
+
+    Реальный ответ Groq содержит whisper (принимает аудио), orpheus (отдаёт
+    речь), prompt-guard (512 токенов) и allam (4096) — всё это молча сломалось
+    бы на первой встрече, поэтому в список выбора не попадает.
+    """
+    def handler(request):
+        return httpx.Response(200, json=_models_response(
+            _model("llama-3.3-70b-versatile"),
+            _model("openai/gpt-oss-120b"),
+            _model("whisper-large-v3", ctx=448, mi=("audio",), mo=("transcription",)),
+            _model("canopylabs/orpheus-v1-english", ctx=4000, mo=("speech",)),
+            _model("meta-llama/llama-prompt-guard-2-86m", ctx=512),
+            _model("allam-2-7b", ctx=4096),
+        ))
+
+    _patch_transport(monkeypatch, handler)
+    status = asyncio.run(OpenAIClient(_api_cfg(tmp_path)).status())
+
+    assert status["reachable"] is True
+    assert status["models"] == ["llama-3.3-70b-versatile", "openai/gpt-oss-120b"]
+    assert status["models_rejected"] == 4
+
+
+def test_status_keeps_models_without_metadata(tmp_path, monkeypatch):
+    """Провайдер не сообщил контекст и модальности — судить не по чему,
+    прятать нельзя: молча урезать список опаснее, чем показать лишнее."""
+    def handler(request):
+        return httpx.Response(200, json=_models_response(
+            {"id": "gpt-4o-mini"}, {"id": "some-model"},
+        ))
+
+    _patch_transport(monkeypatch, handler)
+    status = asyncio.run(OpenAIClient(_api_cfg(tmp_path)).status())
+    assert set(status["models"]) == {"gpt-4o-mini", "some-model"}
+    assert status["models_rejected"] == 0
+    assert all(m["context_window"] is None for m in status["models_info"])
+
+
+def test_status_reports_context_and_sorts_by_it(tmp_path, monkeypatch):
+    def handler(request):
+        return httpx.Response(200, json=_models_response(
+            _model("small", ctx=32_768), _model("big", ctx=131_072),
+        ))
+
+    _patch_transport(monkeypatch, handler)
+    info = asyncio.run(OpenAIClient(_api_cfg(tmp_path)).status())["models_info"]
+    assert [m["id"] for m in info] == ["big", "small"]  # сначала самые вместительные
+    assert info[0]["context_window"] == 131_072
+
+
+def test_min_context_threshold_is_configurable(tmp_path, monkeypatch):
+    """Порог берётся из настроек: поднимаем — модель выпадает из списка."""
+    def handler(request):
+        return httpx.Response(200, json=_models_response(_model("mid", ctx=32_768)))
+
+    _patch_transport(monkeypatch, handler)
+    cfg = _api_cfg(tmp_path, llm_api_min_context_tokens=65_536)
+    status = asyncio.run(OpenAIClient(cfg).status())
+    assert status["models"] == [] and status["models_rejected"] == 1
+
+
+# ------------------------------------------------------------------ ограничение провайдера
+
+def test_only_groq_host_is_supported():
+    from app.config import api_host_supported
+    assert api_host_supported("https://api.groq.com/openai/v1")
+    assert api_host_supported("https://api.groq.com/openai/v1/")
+    assert not api_host_supported("https://api.openai.com/v1")
+    assert not api_host_supported("http://ai.corp.local:8000/v1")
+    assert not api_host_supported("")
+
+
+def test_save_llm_choice_rejects_foreign_host(tmp_path, monkeypatch):
+    """Чужой провайдер не сообщает контекст — принять его значит пустить
+    пользователя выбирать модель вслепую."""
+    monkeypatch.setattr(config.settings, "data_dir", tmp_path)
+    with pytest.raises(ValueError, match="Groq"):
+        config.save_llm_choice(
+            "api", api_base_url="https://api.openai.com/v1", api_key="k",
+            summary_model="m", hints_model="m",
+        )

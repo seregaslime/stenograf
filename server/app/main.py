@@ -17,7 +17,10 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from .asr.transcriber import GIGAAM_AVAILABLE, MLX_AVAILABLE, Transcriber
-from .config import ASR_ENGINES, ASR_MODELS, save_asr_choice, save_llm_choice, settings
+from .config import (
+    API_HOST_HINT, ASR_ENGINES, ASR_MODELS, api_host_supported,
+    save_asr_choice, save_llm_choice, settings,
+)
 from .db import crud
 from .db.database import init_db, session_scope
 from .db.models import Meeting, Speaker, VoicePrint
@@ -203,6 +206,9 @@ async def _llm_state() -> dict:
         "api_base_url": settings.llm_api_base_url,  # адрес не секрет; ключ не отдаём
         "reachable": status.get("reachable", False),
         "models": status.get("models", []),
+        # только для api: размер контекста у каждой модели и сколько отсеяли
+        "models_info": status.get("models_info", []),
+        "models_rejected": status.get("models_rejected", 0),
         # модели активного провайдера (для строки статуса)
         "summary_model": llm.summary_model_name,
         "hints_model": llm.hints_model_name,
@@ -236,13 +242,19 @@ async def set_llm(body: LlmBody):
 
 @app.post("/api/llm/models")
 async def probe_llm_models(body: ModelsProbeBody):
-    """Список моделей у API по введённым (ещё не сохранённым) кредам — для
-    выпадающего списка в настройках. Пустой ключ → берём уже сохранённый."""
+    """Список ПРИГОДНЫХ моделей по введённым (ещё не сохранённым) кредам — для
+    выпадающего списка в настройках. Пустой ключ → берём уже сохранённый.
+
+    Негодные модели (не текст→текст, слишком маленький контекст) отсеиваются
+    в OpenAIClient.status() по данным самого провайдера."""
+    base_url = body.api_base_url.strip()
+    if not api_host_supported(base_url):
+        raise HTTPException(400, API_HOST_HINT)
     cfg = settings.model_copy(update={
-        "llm_api_base_url": body.api_base_url.strip(),
+        "llm_api_base_url": base_url,
         "llm_api_key": body.api_key or settings.llm_api_key,
     })
-    return await OpenAIClient(cfg).status()  # {"reachable": bool, "models": [...]}
+    return await OpenAIClient(cfg).status()
 
 
 # ---------------------------------------------------------------- встречи
