@@ -362,26 +362,31 @@ class LiveSession:
         """
         lines = list(self._recent)
         first_no = self._lines_total - len(lines)  # номер самой старой реплики в деке
-        if force or self._hinted_at_line <= first_no:
-            return "", "\n".join(lines)[-budget_chars:]
-
-        cut = self._hinted_at_line - first_no
-        old, new = lines[:cut], lines[cut:]
 
         # Вплетаем подсказки туда, где они прозвучали: подсказка с номером n была
-        # выдана после всех реплик с номерами < n.
+        # выдана после всех реплик с номерами < n. Делаем это ВСЕГДА, в том числе
+        # на force: «смотреть на весь разговор» не значит «забыть свои ответы» —
+        # без пометок модель снова видит закрытые вопросы открытыми.
         pending = [(no, text) for no, text in self._hint_log if no > first_no]
         rendered: list[str] = []
-        for offset, line in enumerate(old):
+        new_from: Optional[int] = None  # индекс, с которого начинается «новое»
+        for offset, line in enumerate(lines):
             no = first_no + offset
             while pending and pending[0][0] <= no:
                 rendered.append(f"  [ты подсказал: {pending.pop(0)[1]}]")
+            if new_from is None and no >= self._hinted_at_line:
+                new_from = len(rendered)
             rendered.append(line)
         rendered.extend(f"  [ты подсказал: {text}]" for _, text in pending)
 
-        new_text = "\n".join(new)[-budget_chars:]
+        # Делить не на что: первая подсказка, или нового не появилось, или
+        # нажата кнопка — там человек просит посмотреть на разговор целиком.
+        if force or not new_from:
+            return "", "\n".join(rendered)[-budget_chars:]
+
+        new_text = "\n".join(rendered[new_from:])[-budget_chars:]
         left = max(0, budget_chars - len(new_text))
-        return ("\n".join(rendered)[-left:] if left else ""), new_text
+        return ("\n".join(rendered[:new_from])[-left:] if left else ""), new_text
 
     def _participants_line(self) -> str:
         return ", ".join(
