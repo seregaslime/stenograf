@@ -127,3 +127,18 @@ def test_summary_detailed_adds_instructions():
     assert len(sys_long) > len(sys_short) and len(prompt_long) > len(prompt_short)
     assert "таймкод" in sys_long
     assert "Открытые вопросы" in prompt_long
+
+
+def test_both_prompts_warn_about_asr_noise():
+    """Распознавание русское и коверкает английские термины: «UDP» приходит как
+    «уд». Без предупреждения модель честно объясняет, что такое «уд» — реальный
+    случай с живой встречи.
+    """
+    hint_system, _ = _hint()
+    summary_system, _ = prompts.build_summary_prompt(
+        mode="work", title="T", date="D", participants="P", transcript="X"
+    )
+    for system in (hint_system, summary_system):
+        assert "распознаванием речи" in system
+        assert "UDP" in system          # пример искажения
+        assert "не угадывай" in system  # и защита от выдумывания термина

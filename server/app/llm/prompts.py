@@ -142,6 +142,15 @@ _HINT_RULES = """\
 - Не выдумывай факты. Не уверен в ответе — не отвечай.
 - Не задавай вопрос ради вопроса."""
 
+# Распознавание речи русское и английские термины коверкает. Без этой оговорки
+# модель честно объясняет, что такое «уд», хотя спрашивали про UDP.
+_ASR_NOISE_WARNING = """\
+Важно про транскрипт: он получен русским распознаванием речи, и английские
+термины с аббревиатурами в нём часто искажены — «UDP» может выглядеть как «уд»
+или «юдипи», «API» как «апи», «Kubernetes» как «кубернетес». Если слово похоже
+на исковерканный технический термин, восстанови его по смыслу разговора и
+отвечай про настоящий термин. Если догадаться не получается — не угадывай."""
+
 _HINT_SKIP_RULE = f"""\
 Если ни один из пяти типов не подходит — ответь ровно одним словом: {SKIP_TOKEN}.
 Молчать нормально. {SKIP_TOKEN} лучше, чем бесполезная подсказка."""
@@ -200,6 +209,7 @@ def build_hint_prompt(
         _HINT_CATEGORIES,
         f"Тип встречи: {meeting.label}.\n{meeting.hint_focus}",
         _HINT_RULES,
+        _ASR_NOISE_WARNING,
         _HINT_SKIP_RULE if allow_skip else _HINT_FORCE_RULE,
     ]
     system = "\n\n".join(system_parts)
@@ -303,7 +313,11 @@ def build_summary_prompt(
 ) -> tuple[str, str]:
     """Возвращает (system, prompt) для протокола встречи."""
     meeting = MODES[normalize_mode(mode)]
-    system = _SUMMARY_SYSTEM_BASE + (_SUMMARY_DETAILED_EXTRA if detailed else "")
+    system = (
+        _SUMMARY_SYSTEM_BASE
+        + "\n\n" + _ASR_NOISE_WARNING
+        + (_SUMMARY_DETAILED_EXTRA if detailed else "")
+    )
     sections = meeting.summary_sections + (_SUMMARY_DETAILED_SECTIONS if detailed else "")
     prompt = (
         f"Ниже транскрипт встречи «{title}» ({date}). Тип встречи: {meeting.label}. "
