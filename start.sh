@@ -30,5 +30,5 @@ elif [ -d "client/release/mac-arm64/Стенограф.app" ]; then
     open "client/release/mac-arm64/Стенограф.app"
 else
     echo "Собранного приложения нет — запускаю dev-режим (Ctrl+C для выхода)"
-    cd client && npm run dev
+    cd client && npm run dev:app
 fi

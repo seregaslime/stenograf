@@ -96,7 +96,8 @@ ollama pull qwen3:1.7b  # подсказки в реальном времени 
 
 ```bash
 ./server/run.sh         # только сервер (окружение создаётся автоматически)
-cd client && npm install && npm run dev   # клиент в dev-режиме (Vite + Electron)
+cd client && npm install && npm run dev:app   # приложение в dev-режиме (Vite + Electron)
+# npm run dev — только браузерная версия на http://localhost:5173, без Electron
 ```
 
 При первом запуске сервер скачает модели: GigaAM (~530 МБ), ECAPA (~80 МБ),
