@@ -89,11 +89,22 @@ async def lifespan(_app: FastAPI):
         directory.mkdir(parents=True, exist_ok=True)
     init_db()
     with session_scope() as db:
-        # Чистим зависшие встречи (клиент оборвался, а встреча осталась live)
-        stale = db.scalars(select(Meeting).where(Meeting.status == "live")).all()
+        # Чистим зависшие встречи. Два разных способа зависнуть: клиент оборвался
+        # и встреча осталась live; сервер убили посреди составления резюме и она
+        # осталась summarizing — такую клиент опрашивал бы вечно, потому что
+        # довести её до конца больше некому.
+        stale = db.scalars(
+            select(Meeting).where(Meeting.status.in_(("live", "summarizing")))
+        ).all()
         for meeting in stale:
+            if meeting.status == "summarizing":
+                meeting.summary_error = (
+                    "Сервер перезапустился, пока составлялось резюме. "
+                    "Нажмите «Пересоздать резюме»."
+                )
+            else:  # ended_at у live ещё не проставлен, у summarizing — уже
+                meeting.ended_at = datetime.now(timezone.utc)
             meeting.status = "done"
-            meeting.ended_at = datetime.now(timezone.utc)
             log.info("Зависшая встреча #%d «%s» принудительно завершена", meeting.id, meeting.title)
         registry.load(db)
     if settings.preload_asr:

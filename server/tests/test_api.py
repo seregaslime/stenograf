@@ -15,7 +15,8 @@ from fastapi.testclient import TestClient
 import app.main as main
 from app import config
 from app.db import crud
-from app.db.database import session_scope
+from app.db.database import init_db, session_scope
+from app.db.models import Meeting
 from app.llm import openai_client as openai_mod
 
 
@@ -54,6 +55,33 @@ def done_meeting():
 def live_meeting():
     with session_scope() as db:
         return crud.create_meeting(db, "Идёт встреча", False).id  # статус live
+
+
+def test_startup_closes_meetings_stuck_in_summarizing():
+    """Сервер убили посреди резюме — при следующем старте встреча не висит.
+
+    Довести её до конца больше некому: фоновая задача умерла вместе с процессом,
+    а клиент опрашивал бы статус «summarizing» до бесконечности.
+    """
+    init_db()  # тест может идти первым в файле — схемы ещё нет, lifespan не поднимался
+    with session_scope() as db:
+        meeting = crud.create_meeting(db, "Прерванная", False)
+        speaker = crud.get_or_create_self_speaker(db)
+        crud.add_segment(db, meeting.id, speaker.id, "mic", 0.0, 1.0, "привет")
+        crud.end_meeting(db, meeting.id, status="summarizing")
+        meeting_id, ended_at = meeting.id, meeting.ended_at
+
+    with TestClient(main.app):  # вход в контекст прогоняет lifespan
+        pass
+
+    with session_scope() as db:
+        meeting = db.get(Meeting, meeting_id)
+        assert meeting.status == "done"
+        assert "перезапустился" in meeting.summary_error
+        # Встреча кончилась раньше — время окончания не переписываем.
+        # tzinfo снимаем с обеих сторон: SQLite часовой пояс не хранит, и
+        # прочитанное из базы значение всегда naive.
+        assert meeting.ended_at.replace(tzinfo=None) == ended_at.replace(tzinfo=None)
 
 
 # ------------------------------------------------------------------ health / asr / llm

@@ -1,4 +1,5 @@
 """Итог встречи от локальной LLM: краткий итог → темы → решения → задачи."""
+import asyncio
 import logging
 from collections import Counter
 
@@ -69,6 +70,26 @@ async def generate_summary(llm: LlmRouter, meeting_id: int) -> None:
     except LlmError as exc:
         summary, error = None, str(exc)
         log.warning("Резюме встречи #%d не создано: %s", meeting_id, exc)
+    except asyncio.CancelledError:
+        # Статус НАМЕРЕННО не трогаем. Отменяют нас только из _schedule_summary,
+        # и сразу за отменой стартует новая задача — она статус и разрешит.
+        # Поставив здесь "done", мы затёрли бы "summarizing" уже запущенной
+        # замены: клиент перестал бы опрашивать посреди живой генерации.
+        log.info("Резюме встречи #%d отменено — статус разрешит новая задача", meeting_id)
+        raise
+    except Exception as exc:
+        # Ловим всё остальное: раньше любое исключение кроме LlmError (таймаут
+        # по VPN, обрыв связи, ошибка БД) убивало фоновую задачу молча, встреча
+        # навсегда оставалась "summarizing", а клиент опрашивал её каждые 4
+        # секунды и показывал спиннер до бесконечности.
+        # Текст исключения на клиент не отдаём: в сообщениях httpx попадается
+        # адрес API, а он не должен покидать сервер. Имени класса хватает, чтобы
+        # понять характер сбоя; подробности — в журнале.
+        summary, error = None, (
+            f"Не удалось создать резюме ({type(exc).__name__}). "
+            "Подробности в журнале сервера."
+        )
+        log.exception("Резюме встречи #%d упало неожиданно", meeting_id)
 
     with session_scope() as db:
         meeting = db.get(Meeting, meeting_id)
