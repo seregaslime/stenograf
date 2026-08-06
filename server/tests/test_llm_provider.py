@@ -106,6 +106,49 @@ def test_openai_connect_error_raises_llmerror(tmp_path, monkeypatch):
         asyncio.run(OpenAIClient(_api_cfg(tmp_path)).generate("m", "p"))
 
 
+@pytest.mark.parametrize("status", [413, 429])
+def test_openai_rate_limit_explains_what_to_do(tmp_path, monkeypatch, status):
+    """Тарифный лимит — не поломка, и сообщение должно это отражать.
+
+    Groq на бесплатном тарифе отвечает 413, когда один запрос крупнее лимита
+    токенов в минуту. Пользователю нужен не код ошибки, а причина (сколько
+    просили и сколько можно) и что с этим делать.
+    """
+    def handler(request):
+        return httpx.Response(status, json={"error": {"message": "Limit 8000, Requested 16324"}})
+
+    _patch_transport(monkeypatch, handler)
+    with pytest.raises(LlmError) as exc:
+        asyncio.run(OpenAIClient(_api_cfg(tmp_path)).generate("m", "p"))
+    assert "Limit 8000, Requested 16324" in str(exc.value)
+    assert "Укоротите встречу" in str(exc.value)
+
+
+def test_openai_timeout_raises_llmerror(tmp_path, monkeypatch):
+    """Таймаут превращается в LlmError, а не улетает наружу.
+
+    Раньше ловился только ConnectError, поэтому упавший посреди запроса VPN
+    убивал фоновую задачу резюме и встреча навсегда оставалась «summarizing».
+    """
+    def handler(request):
+        raise httpx.ReadTimeout("too slow")
+
+    _patch_transport(monkeypatch, handler)
+    with pytest.raises(LlmError) as exc:
+        asyncio.run(OpenAIClient(_api_cfg(tmp_path)).generate("m", "p"))
+    assert "VPN" in str(exc.value)
+
+
+def test_openai_broken_connection_raises_llmerror(tmp_path, monkeypatch):
+    """Обрыв связи на середине ответа — тоже LlmError, а не сырое исключение."""
+    def handler(request):
+        raise httpx.RemoteProtocolError("server disconnected")
+
+    _patch_transport(monkeypatch, handler)
+    with pytest.raises(LlmError):
+        asyncio.run(OpenAIClient(_api_cfg(tmp_path)).generate("m", "p"))
+
+
 def test_openai_bad_shape_raises_llmerror(tmp_path, monkeypatch):
     """Ответ неожиданной формы не роняет сервер, а даёт внятную ошибку."""
     def handler(request):

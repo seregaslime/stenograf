@@ -49,6 +49,13 @@ class _FakeLlm:
         return self.reply
 
 
+def _raising(exc):
+    """Подменяет summarize так, чтобы он падал заданным исключением."""
+    async def _summarize(prompt, system=None, temperature=0.3):
+        raise exc
+    return _summarize
+
+
 def _meeting(mode="work", texts=("привет коллеги", "обсудим релиз")):
     with session_scope() as db:
         m = crud.create_meeting(db, "Планёрка", False, mode)
@@ -128,6 +135,47 @@ def test_llm_error_saved_as_message_not_crash():
     assert status == "done"
     assert summary is None and model is None
     assert "Ollama недоступен" in error
+
+
+def test_unexpected_error_also_closes_the_meeting():
+    """Любое исключение, а не только LlmError, закрывает встречу.
+
+    Раньше ловился один LlmError, поэтому таймаут по VPN или обрыв связи убивали
+    фоновую задачу молча: встреча навсегда оставалась "summarizing", а клиент
+    крутил спиннер, опрашивая её каждые 4 секунды.
+    """
+    llm = _FakeLlm()
+    llm.summarize = _raising(TimeoutError("Соединение с API истекло"))
+    meeting_id = _meeting()
+
+    asyncio.run(generate_summary(llm, meeting_id))
+
+    status, summary, model, error = _stored(meeting_id)
+    assert status == "done"
+    assert summary is None and model is None
+    assert "TimeoutError" in error  # тип сбоя виден
+    # Текст исключения наружу не отдаём: в сообщениях httpx попадается адрес API,
+    # а summary_error уходит на клиент и показывается в интерфейсе.
+    assert "Соединение с API истекло" not in error
+
+
+def test_cancellation_leaves_status_to_the_replacing_task():
+    """Отмена статус не трогает и пробрасывается дальше.
+
+    Отменяют задачу только из _schedule_summary, и сразу за отменой стартует
+    новая. Поставь мы здесь "done" — затёрли бы "summarizing" уже запущенной
+    замены, и клиент перестал бы опрашивать посреди живой генерации.
+    """
+    llm = _FakeLlm()
+    llm.summarize = _raising(asyncio.CancelledError())
+    meeting_id = _meeting()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(generate_summary(llm, meeting_id))
+
+    status, _, _, error = _stored(meeting_id)
+    assert status == "summarizing"  # ждём новую задачу, а не закрываемся
+    assert error is None
 
 
 def test_meeting_without_speech_is_not_sent_to_llm():

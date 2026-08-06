@@ -17,6 +17,20 @@ log = logging.getLogger(__name__)
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)  # на случай qwen3 за API
 
 
+def _detail(response: httpx.Response) -> str:
+    """Причина отказа человеческими словами.
+
+    OpenAI-совместимые провайдеры кладут её в error.message — там написано, чего
+    именно не хватило («Limit 8000, Requested 16324»). Сырое тело ответа, которое
+    показывалось раньше, для пользователя бесполезно.
+    """
+    try:
+        message = response.json().get("error", {}).get("message")
+    except Exception:
+        message = None
+    return message or response.text[:200]
+
+
 class OpenAIClient:
     def __init__(self, cfg: Settings):
         self._cfg = cfg
@@ -128,13 +142,31 @@ class OpenAIClient:
             raise LlmError(
                 f"API недоступен по адресу {self._base}. Проверьте STENOGRAF_LLM_API_BASE_URL."
             ) from exc
+        except httpx.TimeoutException as exc:
+            raise LlmError(
+                "API не ответил вовремя. Внешние сервисы работают через VPN — "
+                "проверьте, что туннель поднят."
+            ) from exc
+        except httpx.HTTPError as exc:
+            # Связь чаще рвётся на середине запроса, чем не открывается вовсе.
+            # Без этой ветки обрыв улетал мимо LlmError и убивал фоновую задачу
+            # резюме, оставляя встречу в вечном "summarizing".
+            raise LlmError(f"Связь с API оборвалась: {exc}") from exc
 
         if response.status_code in (401, 403):
             raise LlmError("API отклонил ключ — проверьте STENOGRAF_LLM_API_KEY.")
         if response.status_code == 404:
             raise LlmError(f"Модель «{model}» недоступна на этом API.")
+        if response.status_code in (413, 429):
+            # Тарифный лимит, а не поломка: 413 — запрос сам по себе крупнее
+            # лимита токенов в минуту, 429 — лимит выбран предыдущими запросами.
+            # Различать их пользователю незачем, а знать, что делать, — нужно.
+            raise LlmError(
+                "Запрос не уложился в лимит тарифа. Укоротите встречу, подождите "
+                f"минуту или выберите модель с большим лимитом. Ответ API: {_detail(response)}"
+            )
         if response.status_code != 200:
-            raise LlmError(f"API вернул ошибку {response.status_code}: {response.text[:200]}")
+            raise LlmError(f"API вернул ошибку {response.status_code}: {_detail(response)}")
 
         try:
             text = response.json()["choices"][0]["message"]["content"] or ""

@@ -1,32 +1,32 @@
 # Каталог тестов — Стенограф
 
 > ⚙️ **Сгенерирован автоматически** из кода тестов (`python scripts/test_inventory.py`), руками не редактируется.
-> Обновлён: 03.08.2026 01:07
+> Обновлён: 06.08.2026 18:00
 
-Всего тестовых функций на сервере: **195** (с учётом параметризации — 209 проверок). Клиент: **16**.
+Всего тестовых функций на сервере: **201** (с учётом параметризации — 216 проверок). Клиент: **16**.
 
 Здесь написано, **что именно** проверяет каждый тест. Покрытие кода (сколько строк исполнилось) — отдельная метрика, она в [TEST_REPORT.md](TEST_REPORT.md).
 
 ## Оглавление
 
-- **Юнит** — 150 тестов
+- **Юнит** — 155 тестов
   - [`test_bench_registry.py`](#test-bench-registrypy) —  (5)
   - [`test_config.py`](#test-configpy) — конфигурация и персист выбора движка ASR (2)
   - [`test_crud.py`](#test-crudpy) — операции с БД: встречи, спикеры, сегменты (8)
   - [`test_hints.py`](#test-hintspy) — движок подсказок: триггер, дедуп, бэкофф, SKIP, кнопка «подсказать сейчас» (28)
   - [`test_live_session.py`](#test-live-sessionpy) — живая сессия: разрез сегментов по смене говорящего (5)
-  - [`test_llm_provider.py`](#test-llm-providerpy) — клиент OpenAI-совместимого API, роутер local↔api, бюджет контекста (22)
+  - [`test_llm_provider.py`](#test-llm-providerpy) — клиент OpenAI-совместимого API, роутер local↔api, бюджет контекста (25)
   - [`test_loadtest_metrics.py`](#test-loadtest-metricspy) —  (7)
   - [`test_mixer.py`](#test-mixerpy) — микшер каналов: склейка mic/system и определение доминанты (10)
   - [`test_ollama_client.py`](#test-ollama-clientpy) — клиент локальной Ollama: запросы и обработка ошибок (6)
   - [`test_prompts.py`](#test-promptspy) — сборка промптов: режимы встречи, право промолчать, разбор ответа (14)
   - [`test_registry.py`](#test-registrypy) — диаризация: сопоставление голосов, приоры, слияние профилей (18)
   - [`test_summary_format.py`](#test-summary-formatpy) — форматирование транскрипта для протокола и лимиты длины (7)
-  - [`test_summary_generate.py`](#test-summary-generatepy) —  (8)
+  - [`test_summary_generate.py`](#test-summary-generatepy) —  (10)
   - [`test_transcriber_junk.py`](#test-transcriber-junkpy) — фильтр галлюцинаций ASR на тишине (5)
   - [`test_vad.py`](#test-vadpy) — нарезка речи по паузам, отбрасывание коротких фрагментов (5)
-- **Компонентные (API-слой)** — 26 тестов
-  - [`test_api.py`](#test-apipy) — REST-эндпоинты: коды ответов, форма данных, отказы (26)
+- **Компонентные (API-слой)** — 27 тестов
+  - [`test_api.py`](#test-apipy) — REST-эндпоинты: коды ответов, форма данных, отказы (27)
 - **Интеграционные (БД)** — 5 тестов
   - [`test_migrations.py`](#test-migrationspy) — апгрейд старых баз без потери данных (5)
 - **Интеграционные (модели)** — 3 тестов
@@ -146,11 +146,14 @@
 | `test_min_context_threshold_is_configurable` | Порог берётся из настроек: поднимаем — модель выпадает из списка. |
 | `test_only_groq_host_is_supported` | only groq host is supported |
 | `test_openai_bad_shape_raises_llmerror` | Ответ неожиданной формы не роняет сервер, а даёт внятную ошибку. |
+| `test_openai_broken_connection_raises_llmerror` | Обрыв связи на середине ответа — тоже LlmError, а не сырое исключение. |
 | `test_openai_connect_error_raises_llmerror` | Недоступный адрес API даёт понятное сообщение с указанием, что проверить. |
 | `test_openai_generate_builds_request_and_parses` | Запрос к OpenAI-совместимому API уходит на /chat/completions с моделью, ролями и температурой; ответ разбирается и обрезается. |
 | `test_openai_generate_strips_think` | Блок <think> вырезается и из ответа внешнего API (там тоже может стоять qwen3). |
 | `test_openai_http_errors_raise_llmerror` | Коды 401/403/404/500 превращаются в понятную пользователю ошибку, а не в сырое исключение. _(×4 кейсов)_ |
+| `test_openai_rate_limit_explains_what_to_do` | Тарифный лимит — не поломка, и сообщение должно это отражать. Groq на бесплатном тарифе отвечает 413, когда один запрос крупнее лимита токенов в минуту. Пользователю нужен не код ошибки, а причина (сколько просили и сколько можно) и что с этим делать. _(×2 кейсов)_ |
 | `test_openai_requires_base_url_and_model` | Без адреса API или без имени модели запрос не отправляется. |
+| `test_openai_timeout_raises_llmerror` | Таймаут превращается в LlmError, а не улетает наружу. Раньше ловился только ConnectError, поэтому упавший посреди запроса VPN убивал фоновую задачу резюме и встреча навсегда оставалась «summarizing». |
 | `test_router_api_dispatch_uses_api_model` | При провайдере api роутер зовёт OpenAI-клиента и подставляет модель, заданную для API. |
 | `test_router_local_dispatch` | При провайдере local роутер зовёт клиента Ollama и подставляет локальное имя модели. |
 | `test_save_and_load_llm_choice_api_roundtrip` | Выбор api переживает перезапуск: пишется на диск и читается обратно. |
@@ -282,6 +285,7 @@
 | Тест | Что проверяет |
 |---|---|
 | `test_api_budget_asks_for_more_detail` | У API контекст большой — просим таймкоды и раздел открытых вопросов. |
+| `test_cancellation_leaves_status_to_the_replacing_task` | Отмена статус не трогает и пробрасывается дальше. Отменяют задачу только из _schedule_summary, и сразу за отменой стартует новая. Поставь мы здесь "done" — затёрли бы "summarizing" уже запущенной замены, и клиент перестал бы опрашивать посреди живой генерации. |
 | `test_llm_error_saved_as_message_not_crash` | Недоступная LLM не роняет задачу: встреча закрывается с понятной ошибкой. |
 | `test_long_transcript_truncated_by_budget` | Маленький бюджет режет транскрипт, а не отправляет всё подряд. |
 | `test_meeting_mode_changes_sections` | Тип встречи доезжает из БД до промпта: у собеседования свои разделы. |
@@ -289,6 +293,7 @@
 | `test_missing_meeting_is_ignored` | Встречу удалили, пока задача ждала очереди — тихо выходим, без исключения. |
 | `test_summary_saved_with_model_name` | Успешный протокол сохраняется вместе с именем модели, встреча закрывается. |
 | `test_transcript_and_participants_reach_the_model` | В промпт уходят реплики с таймкодами и статистика участников. |
+| `test_unexpected_error_also_closes_the_meeting` | Любое исключение, а не только LlmError, закрывает встречу. Раньше ловился один LlmError, поэтому таймаут по VPN или обрыв связи убивали фоновую задачу молча: встреча навсегда оставалась "summarizing", а клиент крутил спиннер, опрашивая её каждые 4 секунды. |
 
 ### `test_transcriber_junk.py`
 
@@ -350,6 +355,7 @@
 | `test_merge_needs_two_speakers` | Слияние профилей требует ровно двух id — иначе 400. |
 | `test_merge_same_speaker_rejected` | Слить профиль сам с собой нельзя — 400. |
 | `test_speaker_rename` | Спикер переименовывается; для несуществующего id — 404. |
+| `test_startup_closes_meetings_stuck_in_summarizing` | Сервер убили посреди резюме — при следующем старте встреча не висит. Довести её до конца больше некому: фоновая задача умерла вместе с процессом, а клиент опрашивал бы статус «summarizing» до бесконечности. |
 | `test_summarize_live_conflict` | Составить протокол по ещё идущей встрече нельзя — 409. |
 | `test_summarize_sets_status` | Запрос протокола переводит встречу в статус summarizing; для несуществующей встречи — 404. |
 | `test_voiceprint_audio_404_when_absent` | Аудио несуществующего отпечатка даёт 404, а не падение с трейсбеком. |
