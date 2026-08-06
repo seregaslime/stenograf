@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(cd server && .venv/bin/python -m pytest:*)",
+      "Bash(.venv/bin/python -m pytest:*)",
+      "Bash(.venv/bin/python scripts/test_report.py:*)",
+      "Bash(.venv/bin/python scripts/test_inventory.py:*)",
+      "Bash(.venv/bin/python scripts/bench_asr.py:*)",
+      "Bash(.venv/bin/python scripts/eval_voices.py:*)",
+      "Bash(.venv/bin/python scripts/bench_registry.py:*)",
+      "Bash(uv pip install:*)",
+
+      "Bash(npm test:*)",
+      "Bash(npm run test:*)",
+      "Bash(npm run typecheck:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm ci:*)",
+
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git rev-parse:*)",
+
+      "Bash(curl -s http://127.0.0.1:8765/api/:*)",
+      "Bash(curl -s --max-time * http://127.0.0.1:8765/api/:*)",
+
+      "Bash(~/.local/bin/graphify explain:*)",
+      "Bash(~/.local/bin/graphify query:*)",
+      "Bash(~/.local/bin/graphify affected:*)",
+      "Bash(~/.local/bin/graphify god-nodes:*)",
+      "Bash(~/.local/bin/graphify update:*)"
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "client-web",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd /Users/serega_slime/Documents/practika/client && npx vite --host 127.0.0.1 --port ${PORT:-5199}"],
+      "autoPort": true,
+      "port": 5173
+    }
+  ]
+}
