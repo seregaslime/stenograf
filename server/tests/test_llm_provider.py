@@ -149,6 +149,90 @@ def test_openai_broken_connection_raises_llmerror(tmp_path, monkeypatch):
         asyncio.run(OpenAIClient(_api_cfg(tmp_path)).generate("m", "p"))
 
 
+def test_token_limit_read_from_header(tmp_path, monkeypatch):
+    """Лимит токенов в минуту берётся из заголовка ответа.
+
+    В списке моделей его нет — провайдер сообщает лимит только так. Меряем при
+    выборе модели, чтобы первая встреча шла с правильным бюджетом.
+    """
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            headers={"x-ratelimit-limit-tokens": "8000"},
+            json={"choices": [{"message": {"content": "1"}}]},
+        )
+
+    _patch_transport(monkeypatch, handler)
+    limit = asyncio.run(OpenAIClient(_api_cfg(tmp_path)).token_limit("m"))
+    assert limit == 8000
+    assert seen["body"]["max_tokens"] == 1  # проба должна быть дешёвой
+
+
+def test_token_limit_survives_error_response(tmp_path, monkeypatch):
+    """Заголовки лимитов приходят и с ошибкой — ответ 429 тоже годится."""
+    def handler(request):
+        return httpx.Response(429, headers={"x-ratelimit-limit-tokens": "6000"}, json={})
+
+    _patch_transport(monkeypatch, handler)
+    assert asyncio.run(OpenAIClient(_api_cfg(tmp_path)).token_limit("m")) == 6000
+
+
+@pytest.mark.parametrize("handler_kind", ["no_header", "network"])
+def test_token_limit_returns_none_when_unknown(tmp_path, monkeypatch, handler_kind):
+    """Проба необязательна: не вышло — работаем на запасном значении.
+
+    Сеть у пользователя нестабильна (внешние API только через VPN), и упавшая
+    проба не должна мешать сохранению настроек.
+    """
+    def handler(request):
+        if handler_kind == "network":
+            raise httpx.ConnectError("boom")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "1"}}]})
+
+    _patch_transport(monkeypatch, handler)
+    assert asyncio.run(OpenAIClient(_api_cfg(tmp_path)).token_limit("m")) is None
+
+
+def test_hints_budget_derived_from_measured_limit(tmp_path):
+    """Бюджет подсказки = минутный лимит ÷ максимум запросов в минуту.
+
+    Частота ограничена сверху hints_min_gap_s, поэтому сумма за минуту не
+    превысит лимит по построению — считать расход в реальном времени не нужно.
+    """
+    cfg = Settings(data_dir=tmp_path, _env_file=None)
+    cfg.llm_provider = "api"
+    cfg.llm_api_hints_model = "groq-model"
+    cfg.llm_api_tpm_limits = {"groq-model": 8000}
+    cfg.hints_min_gap_s = 15.0  # → не чаще 4 запросов в минуту
+
+    assert LlmRouter(cfg).budget.hints_tokens == 2000
+
+    # Модель с большим лимитом получает пропорционально больше — без правки настроек
+    cfg.llm_api_tpm_limits = {"groq-model": 40_000}
+    assert LlmRouter(cfg).budget.hints_tokens == 10_000
+
+
+def test_hints_budget_falls_back_when_limit_unknown(tmp_path):
+    """Лимит не измерен — берём запасное значение, а не считаем «без лимита»."""
+    cfg = Settings(data_dir=tmp_path, _env_file=None)
+    cfg.llm_provider = "api"
+    cfg.llm_api_hints_model = "неизмеренная"
+    cfg.llm_api_tpm_fallback = 6000
+    cfg.hints_min_gap_s = 15.0
+
+    assert LlmRouter(cfg).budget.hints_tokens == 1500
+
+
+def test_local_provider_has_no_token_budget(tmp_path):
+    """У локальной модели тарифного лимита нет — режем по символам, как раньше."""
+    cfg = Settings(data_dir=tmp_path, _env_file=None)
+    cfg.llm_provider = "local"
+    assert LlmRouter(cfg).budget.hints_tokens == 0
+
+
 def test_openai_bad_shape_raises_llmerror(tmp_path, monkeypatch):
     """Ответ неожиданной формы не роняет сервер, а даёт внятную ошибку."""
     def handler(request):
@@ -233,9 +317,34 @@ def test_save_llm_choice_persists_creds(tmp_path, monkeypatch):
     assert data == {
         "provider": "api", "api_base_url": GROQ,
         "api_key": "secret", "summary_model": "sum-m", "hints_model": "hint-m",
+        # измеренные лимиты живут рядом с выбором: их дописывает save_tpm_limits
+        # уже после сохранения, поэтому здесь они пустые
+        "tpm_limits": {},
     }
     assert config.settings.llm_api_base_url == GROQ
     assert config.settings.llm_api_summary_model == "sum-m"
+
+
+def test_tpm_limits_persist_and_reload(tmp_path, monkeypatch):
+    """Измеренный лимит переживает перезапуск сервера — мерить каждый раз незачем."""
+    monkeypatch.setattr(config.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(config.settings, "llm_api_base_url", "")
+    monkeypatch.setattr(config.settings, "llm_api_key", "")
+    monkeypatch.setattr(config.settings, "llm_api_tpm_limits", {})
+    config.save_llm_choice("api", api_base_url=GROQ, api_key="k", hints_model="hint-m")
+    config.save_tpm_limits({"hint-m": 8000})
+
+    monkeypatch.setattr(config.settings, "llm_api_tpm_limits", {})
+    config.load_llm_choice()
+    assert config.settings.llm_api_tpm_limits == {"hint-m": 8000}
+
+
+def test_save_tpm_limits_without_saved_choice_does_not_crash(tmp_path, monkeypatch):
+    """Лимиты без сохранённого выбора записывать некуда — молча выходим."""
+    monkeypatch.setattr(config.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(config.settings, "llm_api_tpm_limits", {})
+    config.save_tpm_limits({"m": 8000})  # llm.json ещё нет
+    assert not (tmp_path / "llm.json").exists()
 
 
 def test_save_llm_choice_empty_key_keeps_existing(tmp_path, monkeypatch):

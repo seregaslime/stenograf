@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from .asr.transcriber import GIGAAM_AVAILABLE, MLX_AVAILABLE, Transcriber
 from .config import (
     API_HOST_HINT, ASR_ENGINES, ASR_MODELS, LLM_API_DEFAULT_BASE_URL,
-    api_host_supported, save_asr_choice, save_llm_choice, settings,
+    api_host_supported, save_asr_choice, save_llm_choice, save_tpm_limits, settings,
 )
 from .db import crud
 from .db.database import init_db, session_scope
@@ -215,6 +215,10 @@ async def _llm_state() -> dict:
         "provider": llm.provider,
         "api_configured": bool(settings.llm_api_base_url and settings.llm_api_key),
         "api_base_url": settings.llm_api_base_url,  # адрес не секрет; ключ не отдаём
+        # Токены в минуту по моделям — то ограничение, в которое упираются
+        # подсказки. Размер контекста рядом с моделью уже показан, но упираются
+        # не в него, и без этой цифры настройки вводят в заблуждение.
+        "api_tpm_limits": settings.llm_api_tpm_limits,
         # чем заполнить поле адреса, если ничего не сохранено
         "api_base_url_default": LLM_API_DEFAULT_BASE_URL,
         "reachable": status.get("reachable", False),
@@ -250,7 +254,31 @@ async def set_llm(body: LlmBody):
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    if body.provider == "api":
+        await _measure_tpm_limits()
     return await _llm_state()
+
+
+async def _measure_tpm_limits() -> None:
+    """Выясняет лимит токенов в минуту у выбранных моделей и запоминает его.
+
+    Делается здесь, при выборе модели, а не по ходу встречи: иначе первая же
+    встреча шла бы с бюджетом наугад и выясняла лимит, упираясь в него. Модели
+    для резюме и подсказок могут быть разными, и лимиты у них разные.
+
+    Проба необязательна: не ответила — работаем на запасном значении. Ронять
+    из-за неё сохранение настроек нельзя, сеть у пользователя нестабильна.
+    """
+    client = OpenAIClient(settings)
+    measured = {}
+    for model in {settings.llm_api_summary_model, settings.llm_api_hints_model}:
+        if not model:
+            continue
+        limit = await client.token_limit(model)
+        if limit:
+            measured[model] = limit
+            log.info("Лимит модели «%s»: %d токенов/мин", model, limit)
+    save_tpm_limits(measured)
 
 
 @app.post("/api/llm/models")

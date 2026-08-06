@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SAMPLE_RATE = 16_000  # весь пайплайн работает на 16 кГц mono
@@ -138,6 +139,17 @@ class Settings(BaseSettings):
     # провайдера, а не из зашитых знаний о моделях.
     llm_api_min_context_tokens: int = 32_768
 
+    # Токены в минуту — то ограничение, в которое реально упираются подсказки
+    # (в отличие от размера контекста). В списке моделей его нет, провайдер
+    # сообщает его заголовком ответа; меряем при выборе модели и храним здесь
+    # по имени модели, у разных моделей лимиты разные.
+    llm_api_tpm_limits: dict[str, int] = Field(default_factory=dict)
+    # Когда измерить не удалось (упал VPN, провайдер не прислал заголовок,
+    # внутренний сервер организации таких заголовков не шлёт). Единственное
+    # зашитое здесь число, и оно честно означает «узнать не смогли»: берём
+    # нижнюю из встречающихся цифр бесплатного тарифа, чтобы не упереться.
+    llm_api_tpm_fallback: int = 6_000
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "stenograf.db"
@@ -212,6 +224,25 @@ def _llm_choice_path() -> Path:
     return settings.data_dir / "llm.json"
 
 
+def save_tpm_limits(limits: dict[str, int]) -> None:
+    """Дописывает измеренные лимиты к уже сохранённому выбору LLM.
+
+    Отдельной функцией, а не параметром save_llm_choice: лимиты выясняются
+    запросом к провайдеру уже ПОСЛЕ сохранения выбора, и неудачная проба
+    (упал VPN) не должна мешать настройкам сохраниться.
+    """
+    if not limits:
+        return
+    settings.llm_api_tpm_limits = {**settings.llm_api_tpm_limits, **limits}
+    path = _llm_choice_path()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return  # выбор ещё не сохранён — записывать лимиты некуда
+    data["tpm_limits"] = settings.llm_api_tpm_limits
+    path.write_text(json.dumps(data))
+
+
 def load_llm_choice() -> None:
     """Выбор из приложения важнее env-дефолтов. В llm.json теперь лежит не только
     провайдер, но и адрес/ключ/модели API (их вводят в настройках приложения).
@@ -230,6 +261,10 @@ def load_llm_choice() -> None:
         settings.llm_api_summary_model = data["summary_model"]
     if data.get("hints_model"):
         settings.llm_api_hints_model = data["hints_model"]
+    if isinstance(data.get("tpm_limits"), dict):
+        settings.llm_api_tpm_limits = {
+            model: int(limit) for model, limit in data["tpm_limits"].items()
+        }
     provider = data.get("provider")
     if provider == "api" and not (settings.llm_api_base_url and settings.llm_api_key):
         return
@@ -272,6 +307,7 @@ def save_llm_choice(
         "api_key": settings.llm_api_key,
         "summary_model": settings.llm_api_summary_model,
         "hints_model": settings.llm_api_hints_model,
+        "tpm_limits": settings.llm_api_tpm_limits,
     }))
     settings.llm_provider = provider
 

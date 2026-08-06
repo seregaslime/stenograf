@@ -82,6 +82,9 @@ export interface LlmStateDto {
   api_base_url: string;
   /** Чем заполнить поле адреса, если ничего не сохранено (задаётся сервером). */
   api_base_url_default: string;
+  /** Токенов в минуту по моделям — измеряется при сохранении настроек.
+   *  Именно этот лимит ограничивает подсказки, а не размер контекста. */
+  api_tpm_limits: Record<string, number>;
   reachable: boolean;
   models: string[];
   models_info: LlmModelInfo[];

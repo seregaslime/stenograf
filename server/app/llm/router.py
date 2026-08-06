@@ -18,6 +18,9 @@ class Budget:
     summary_chars: int  # 0 = без ограничения
     hints_chars: int
     detailed: bool      # развёрнутый промпт: больше секций и примеров
+    # Потолок одного запроса подсказки в токенах — вместе с промптом, не только
+    # разговор. 0 = тарифного лимита нет (локальная модель), режем по hints_chars.
+    hints_tokens: int = 0
 
 
 class LlmRouter:
@@ -36,11 +39,30 @@ class LlmRouter:
         и глубина подсказок должна поменяться сразу."""
         if self._cfg.llm_provider == "api":
             return Budget(
-                self._cfg.summary_max_chars_api, self._cfg.hints_window_chars_api, True
+                self._cfg.summary_max_chars_api, self._cfg.hints_window_chars_api, True,
+                self._hints_tokens(),
             )
         return Budget(
             self._cfg.summary_max_chars_local, self._cfg.hints_window_chars, False
         )
+
+    def _hints_tokens(self) -> int:
+        """Сколько токенов можно отдать одной подсказке, чтобы сумма за минуту
+        не превысила тарифный лимит.
+
+        Считать расход в реальном времени не нужно: частота подсказок ограничена
+        сверху минимальным интервалом между ними, поэтому достаточно поделить
+        минутный лимит на максимальное число запросов в минуту — сумма тогда не
+        превысит лимит по построению.
+        """
+        limit = (
+            self._cfg.llm_api_tpm_limits.get(self._cfg.llm_api_hints_model)
+            or self._cfg.llm_api_tpm_fallback
+        )
+        if limit <= 0:
+            return 0  # лимита нет (внутренний сервер организации) — не ограничиваем
+        per_minute = 60 / max(self._cfg.hints_min_gap_s, 1.0)
+        return int(limit / per_minute)
 
     def _client(self) -> LlmClient:
         return self._openai if self._cfg.llm_provider == "api" else self._ollama
