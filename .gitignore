@@ -22,7 +22,24 @@ client/dist/
 client/dist-electron/
 client/release/
 
+# Граф зависимостей проекта (graphify). Пересобирается post-commit хуком, то есть
+# после КАЖДОГО коммита — в репозитории ему делать нечего: каждый раз лез бы
+# в диффы огромным JSON. Строится локально командой `graphify update .`.
+graphify-out/
+
+# Настройки Claude Code. Версионируем то, что относится к проекту: общие
+# разрешения, конфигурацию dev-сервера и свои скилы. Мимо репозитория идут
+# settings.local.json (машинно-локальный) и поставленные чужие скилы — они
+# переустанавливаются командой `uipro init --ai claude` и весят 2 МБ.
+.claude/*
+!.claude/settings.json
+!.claude/launch.json
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/razbor/
+!.claude/skills/ponytail/
+!.claude/skills/sozvon/
+
 # OS
 .DS_Store
-.claude/
 server.log
