@@ -170,6 +170,23 @@ def meeting_segments(db: Session, meeting_id: int) -> Sequence[Segment]:
     ).all()
 
 
+def segments_by_ids(db: Session, meeting_id: int, ids: Sequence[int]) -> Sequence[Segment]:
+    """Реплики по идентификаторам — ТОЛЬКО из указанной встречи.
+
+    Фильтр по meeting_id обязателен и не является перестраховкой: id приходят от
+    клиента, и без него можно было бы вытянуть текст чужой встречи, передав
+    произвольные числа.
+    """
+    if not ids:
+        return []
+    return db.scalars(
+        select(Segment)
+        .where(Segment.meeting_id == meeting_id, Segment.id.in_(list(ids)))
+        .options(joinedload(Segment.speaker))
+        .order_by(Segment.start_s)  # порядок разговора, а не порядок кликов
+    ).all()
+
+
 def segment_to_dict(segment: Segment) -> dict:
     speaker = segment.speaker
     return {
