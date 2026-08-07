@@ -53,14 +53,26 @@ llm = LlmRouter(settings)
 _summary_tasks: dict[int, asyncio.Task] = {}
 
 
+# Прогресс длинного резюме по id встречи: «фрагмент 2 из 3». Держим в памяти, а
+# не в БД: это состояние живой задачи, оно бессмысленно без неё, и ради него не
+# стоит менять схему. Сервер перезапустили — задача умерла, и уборка при старте
+# закрывает встречу с внятной ошибкой.
+_summary_progress: dict[int, tuple[int, int]] = {}
+
+
 def _schedule_summary(meeting_id: int) -> None:
     previous = _summary_tasks.pop(meeting_id, None)
     if previous is not None:
         previous.cancel()
-    task = asyncio.create_task(generate_summary(llm, meeting_id))
+
+    def _progress(step: int, total: int, mid: int = meeting_id) -> None:
+        _summary_progress[mid] = (step, total)
+
+    task = asyncio.create_task(generate_summary(llm, meeting_id, on_progress=_progress))
     _summary_tasks[meeting_id] = task
 
     def _cleanup(done: asyncio.Task, mid: int = meeting_id) -> None:
+        _summary_progress.pop(mid, None)
         if _summary_tasks.get(mid) is done:
             del _summary_tasks[mid]
 
@@ -324,6 +336,10 @@ def get_meeting(meeting_id: int):
             "summary": meeting.summary,
             "summary_model": meeting.summary_model,
             "summary_error": meeting.summary_error,
+            # Прогресс длинного резюме: [шаг, всего] или null. Без него минуты
+            # ожидания выглядят как то самое зависание, которое мы чинили.
+            "summary_progress": list(_summary_progress[meeting_id])
+            if meeting_id in _summary_progress else None,
             "segments": [crud.segment_to_dict(s) for s in segments],
         }
 

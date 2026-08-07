@@ -368,6 +368,62 @@ _SUMMARY_DETAILED_SECTIONS = """\
 - что осталось без ответа (если всё закрыто — «Открытых вопросов нет»)"""
 
 
+_CHUNK_SYSTEM = """\
+Ты составляешь рабочие заметки по фрагменту встречи. Это НЕ итоговый протокол:
+твои заметки потом сведут вместе с заметками по другим фрагментам.
+
+Правила:
+- Пиши по-русски, сжато, списком.
+- Сохраняй КОНКРЕТИКУ: имена, числа, сроки, названия, кто что решил и пообещал.
+  Именно она теряется при пересказе, а формулировки — нет.
+- Не выдумывай и не додумывай, чего во фрагменте не было.
+- Не пиши вступлений и выводов — только то, что было сказано."""
+
+_REDUCE_SYSTEM_EXTRA = """\
+Тебе дан не транскрипт, а заметки по фрагментам одной встречи, по порядку.
+Составь по ним единый протокол. Повторы из разных фрагментов объединяй,
+противоречия разрешай в пользу более позднего фрагмента."""
+
+
+def build_chunk_prompt(
+    *, mode: str, title: str, part: int, total: int, transcript: str
+) -> tuple[str, str]:
+    """Заметки по одному фрагменту длинной встречи (проход «разделяй»).
+
+    Отдельный промпт от протокольного намеренно: просить формат с разделами по
+    куску бессмысленно — решения и задачи могут оказаться в соседнем фрагменте,
+    и модель начнёт их выдумывать, лишь бы заполнить раздел.
+    """
+    meeting = MODES[normalize_mode(mode)]
+    system = _CHUNK_SYSTEM + "\n\n" + _ASR_NOISE_WARNING
+    prompt = (
+        f"Встреча «{title}», тип: {meeting.label}. Фрагмент {part} из {total}.\n\n"
+        f"Выпиши из него всё существенное:\n\n{transcript}\n"
+    )
+    return system, prompt
+
+
+def build_reduce_prompt(
+    *, mode: str, title: str, date: str, participants: str, notes: str,
+    detailed: bool = False,
+) -> tuple[str, str]:
+    """Сведение заметок по фрагментам в итоговый протокол (проход «властвуй»)."""
+    meeting = MODES[normalize_mode(mode)]
+    system = (
+        _SUMMARY_SYSTEM_BASE
+        + "\n\n" + _REDUCE_SYSTEM_EXTRA
+        + (_SUMMARY_DETAILED_EXTRA if detailed else "")
+    )
+    sections = meeting.summary_sections + (_SUMMARY_DETAILED_SECTIONS if detailed else "")
+    prompt = (
+        f"Встреча «{title}» ({date}). Тип встречи: {meeting.label}. "
+        f"Участники и число их реплик: {participants}.\n\n"
+        f"Составь протокол строго в таком формате:\n\n{sections}\n\n"
+        f"Весь протокол пиши на русском языке.\n\nЗаметки по фрагментам:\n{notes}\n"
+    )
+    return system, prompt
+
+
 def build_summary_prompt(
     *,
     mode: str,

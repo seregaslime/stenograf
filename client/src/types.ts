@@ -45,6 +45,9 @@ export interface MeetingDetail {
   summary: string | null;
   summary_model: string | null;
   summary_error: string | null;
+  /** Длинная встреча суммируется по фрагментам: [шаг, всего]. null — идёт одним
+   *  запросом или не суммируется вовсе. */
+  summary_progress: [number, number] | null;
   segments: SegmentDto[];
 }
 
