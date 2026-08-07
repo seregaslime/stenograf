@@ -58,3 +58,21 @@ describe("LiveClient.start", () => {
     });
   });
 });
+
+describe("LiveClient.ask", () => {
+  it("шлёт вопрос вместе с выделенными репликами", () => {
+    const { client, sent } = withFakeSocket(WebSocket.OPEN);
+    client.ask("что такое SLA", [12, 7]);
+    expect(JSON.parse(sent[0] as unknown as string)).toEqual({
+      type: "ask",
+      question: "что такое SLA",
+      segment_ids: [12, 7],
+    });
+  });
+
+  it("выделение необязательно — вопрос может быть общим", () => {
+    const { client, sent } = withFakeSocket(WebSocket.OPEN);
+    client.ask("что такое кубернетес");
+    expect(JSON.parse(sent[0] as unknown as string).segment_ids).toEqual([]);
+  });
+});

@@ -133,6 +133,9 @@ export type LiveEvent =
   | { type: "speaker_new"; speaker: { id: number; name: string } }
   | { type: "hint"; text: string }
   | { type: "hint_error"; message: string }
+  /** Ответ на вопрос участника из окна чата (команда ask). */
+  | { type: "answer"; text: string }
+  | { type: "answer_error"; message: string }
   | { type: "stopped"; meeting_id: number }
   | { type: "error"; message: string };
 

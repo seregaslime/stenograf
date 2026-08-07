@@ -139,6 +139,11 @@ class LiveSession:
             self._hints_enabled = bool(command.get("enabled"))
         elif kind == "hint_now":
             await self._emit_hint(force=True)  # «подсказать сейчас» — в обход триггера
+        elif kind == "ask":
+            await self._answer(
+                question=str(command.get("question", "")).strip(),
+                segment_ids=command.get("segment_ids") or [],
+            )
         else:
             await self._send({"type": "error", "message": f"Неизвестная команда: {kind}"})
 
@@ -513,6 +518,73 @@ class LiveSession:
                 await self._send({"type": "hint_error", "message": str(exc)})
         finally:
             self._hint_in_flight = False
+
+    # ------------------------------------------------------------------ вопрос от участника
+
+    async def _answer(self, question: str, segment_ids: list) -> None:
+        """Отвечает на вопрос участника, заданный из окна чата.
+
+        Отличие от подсказки принципиальное: там модель сама решает, о чём
+        говорить, и вправе промолчать. Здесь спросил человек — ответ обязателен,
+        а тему задавать модели не надо.
+
+        Выделенные реплики (если показал) идут отдельным блоком «вопрос про
+        них», остальной разговор — контекстом. Молчать нельзя, дедупликация не
+        нужна: два одинаковых вопроса — это два вопроса.
+        """
+        if self._meeting_id is None:
+            return
+        question = (question or "").strip()  # чистим здесь же: вызвать могут не только из _on_command
+        if not question and not segment_ids:
+            await self._send({
+                "type": "answer_error", "message": "Пустой вопрос.",
+            })
+            return
+        if self._hint_in_flight:
+            await self._send({
+                "type": "answer_error", "message": "Модель ещё отвечает на прошлый вопрос…",
+            })
+            return
+
+        # Приводим id к целым: клиент может прислать что угодно, а дальше они
+        # уходят в запрос к БД
+        ids = [int(i) for i in segment_ids if isinstance(i, (int, float, str)) and str(i).lstrip("-").isdigit()]
+        with session_scope() as db:
+            quoted_rows = crud.segments_by_ids(db, self._meeting_id, ids)
+            quoted = "\n".join(
+                f"[{self._mmss(row.start_s)}] "
+                f"{row.speaker.name if row.speaker else 'Неизвестный'}: {row.text}"
+                for row in quoted_rows
+            )
+
+        budget = self._llm.budget
+        earlier = "\n".join(self._recent)[-self._window_chars(budget):]
+        system, prompt = prompts.build_answer_prompt(
+            mode=self._mode, question=question or "Объясни, о чём эти реплики.",
+            quoted=quoted, earlier=earlier,
+            title=self._meeting_title, participants=self._participants_line(),
+        )
+
+        self._hint_in_flight = True
+        try:
+            raw = await self._llm.hint(prompt, system=system, temperature=self._cfg.hints_temperature)
+            text = raw.strip()
+            if not text:
+                await self._send({
+                    "type": "answer_error", "message": "Модель вернула пустой ответ.",
+                })
+                return
+            await self._send({"type": "answer", "text": text})
+        except LlmError as exc:
+            # Бэкофф подсказок здесь не трогаем: человек спросил явно, и глушить
+            # его вопросы из-за неудач фонового цикла нельзя.
+            await self._send({"type": "answer_error", "message": str(exc)})
+        finally:
+            self._hint_in_flight = False
+
+    @staticmethod
+    def _mmss(seconds: float) -> str:
+        return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
 
     # ------------------------------------------------------------------ завершение
 

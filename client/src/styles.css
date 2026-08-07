@@ -240,7 +240,41 @@ label.field > span { display: block; font-size: 12.5px; color: var(--muted); mar
   overflow-y: auto;
   display: flex; flex-direction: column; gap: 10px;
 }
-.hints-title { font-size: 13px; font-weight: 700; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+/* flex-wrap: в панели 300px заголовок и пояснение не помещаются в строку, и без
+   переноса оба ломались по словам («Подсказки / ИИ»). Пояснение занимает всю
+   ширину и уходит на свою строку целиком. */
+.hints-title { font-size: 13px; font-weight: 700; color: var(--muted); display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.hints-title > .hint { flex-basis: 100%; margin-left: 0 !important; }
+
+/* Чат с моделью — под подсказками, в той же панели. Разделитель нужен: сверху
+   модель говорит сама, снизу отвечает на вопрос, и путать их не надо. */
+.ask-block {
+  margin-top: 14px; padding-top: 14px;
+  border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.ask-msg { font-size: 13px; line-height: 1.45; padding: 8px 10px; border-radius: 10px; }
+.ask-msg.you { background: var(--self-bubble); align-self: flex-end; max-width: 90%; }
+.ask-msg.model { background: var(--bg-3); }
+.ask-picked {
+  font-size: 12px; color: var(--muted);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.ask-row { display: flex; gap: 6px; }
+.ask-row input { flex: 1; min-width: 0; }
+
+/* Кнопка выделения реплики. Появляется по наведению, чтобы не рябить в ленте,
+   но выделенная остаётся видимой всегда — иначе не видно, что уже отмечено. */
+.msg-pick {
+  margin-left: auto; width: 20px; height: 20px; padding: 0;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: transparent; color: var(--muted);
+  font-size: 11px; line-height: 1; cursor: pointer;
+  opacity: 0; transition: opacity 0.15s, background 0.15s;
+}
+.msg:hover .msg-pick, .msg-pick.on, .msg-pick:focus-visible { opacity: 1; }
+.msg-pick.on { background: var(--accent); border-color: transparent; color: #fff; }
+.msg.picked .bubble { outline: 2px solid var(--accent); outline-offset: 1px; }
 .hint-card {
   background: var(--bg-3);
   border-left: 3px solid var(--accent-2);
