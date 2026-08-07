@@ -63,6 +63,12 @@ export class LiveClient {
     this.sendJson({ type: "hint_now" });
   }
 
+  /** Вопрос модели. segmentIds — реплики, на которые показал участник:
+   *  они уйдут в промпт как «вопрос про них», остальной разговор — контекстом. */
+  ask(question: string, segmentIds: number[] = []): void {
+    this.sendJson({ type: "ask", question, segment_ids: segmentIds });
+  }
+
   sendAudio(channel: Channel, pcm: ArrayBuffer): void {
     if (!this.connected) return;
     const frame = new Uint8Array(1 + pcm.byteLength);

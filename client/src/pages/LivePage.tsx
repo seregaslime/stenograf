@@ -57,6 +57,12 @@ export default function LivePage({
   const [hintList, setHintList] = useState<{ text: string; at: string }[]>([]);
   const [hintError, setHintError] = useState("");
   const [hintsOn, setHintsOn] = useState(false); // подсказки включены прямо сейчас (тумблер)
+  // Чат с моделью: вопрос участника и ответы. Отдельно от подсказок — там модель
+  // говорит сама, здесь спрашивает человек.
+  const [chatLog, setChatLog] = useState<{ role: "you" | "model"; text: string }[]>([]);
+  const [question, setQuestion] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [pickedIds, setPickedIds] = useState<Set<number>>(new Set());
   const [micLevel, setMicLevel] = useState(0);
   const [sysLevel, setSysLevel] = useState(0);
   const [sysActive, setSysActive] = useState(false);
@@ -70,6 +76,7 @@ export default function LivePage({
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const finishedRef = useRef(false);
   const chatRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true); // стоит ли человек внизу ленты (см. onChatScroll)
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
 
@@ -90,10 +97,42 @@ export default function LivePage({
     });
   }, [isElectron]);
 
+  // Автопрокрутка только когда человек и так стоял внизу. Иначе она утаскивает
+  // экран ровно тогда, когда он отлистал вверх выделить реплику для вопроса.
+  //
+  // Положение запоминаем в обработчике прокрутки, а не в эффекте: эффект
+  // выполняется уже ПОСЛЕ вставки новой реплики, и длинное сообщение само
+  // вытолкнуло бы себя из зоны «внизу».
   useEffect(() => {
     const el = chatRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [segments]);
+
+  function togglePicked(id: number) {
+    setPickedIds((previous) => {
+      const next = new Set(previous);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function ask() {
+    const text = question.trim();
+    if ((!text && pickedIds.size === 0) || asking) return;
+    // «реплик: N» вместо «N реплик» — обходит склонение, как уже сделано
+    // в истории встреч (HistoryPage)
+    const shown = text || `Объясни выделенное — реплик: ${pickedIds.size}`;
+    setChatLog((previous) => [...previous, { role: "you", text: shown }]);
+    clientRef.current?.ask(text, [...pickedIds]);
+    setQuestion("");
+    setPickedIds(new Set()); // выделение одноразовое: вопрос задан, лента снова живая
+    setAsking(true);
+  }
+
+  function onChatScroll() {
+    const el = chatRef.current;
+    if (el) stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }
 
   useEffect(() => () => {
     if (clientRef.current?.connected && (phaseRef.current === "live" || phaseRef.current === "starting")) {
@@ -144,6 +183,17 @@ export default function LivePage({
         break;
       case "hint_error":
         setHintError(event.message);
+        break;
+      case "answer":
+        setAsking(false);
+        setChatLog((previous) => [...previous, { role: "model", text: event.text }]);
+        break;
+      case "answer_error":
+        setAsking(false);
+        setChatLog((previous) => [
+          ...previous,
+          { role: "model", text: `⚠ ${event.message}` },
+        ]);
         break;
       case "stopped":
         finish(event.meeting_id);
@@ -444,9 +494,14 @@ export default function LivePage({
         </div>
       )}
       <div className="live-main">
-        <div className="live-chat" ref={chatRef}>
+        <div className="live-chat" ref={chatRef} onScroll={onChatScroll}>
           {segments.length > 0 ? (
-            <Transcript segments={segments} debug={isDebugMode()} />
+            <Transcript
+              segments={segments}
+              debug={isDebugMode()}
+              selectedIds={pickedIds}
+              onToggle={togglePicked}
+            />
           ) : (
             <div className="empty">
               <div className="big-icon">🎙️</div>
@@ -495,6 +550,54 @@ export default function LivePage({
               <div className="hint-time">{hint.at}</div>
             </div>
           ))}
+
+          <div className="ask-block">
+            <div className="hints-title">
+              💬 Спросить модель
+              <span className="hint" style={{ fontWeight: 400, marginLeft: 8 }}>
+                видит разговор целиком
+              </span>
+            </div>
+            {chatLog.length === 0 && (
+              <div className="empty" style={{ padding: "14px 8px" }}>
+                Задайте вопрос или отметьте реплики кнопкой «?» и спросите про них.
+              </div>
+            )}
+            {chatLog.map((message, index) => (
+              <div className={`ask-msg ${message.role}`} key={index}>
+                {message.text}
+              </div>
+            ))}
+            {asking && (
+              <div className="ask-msg model">
+                <span className="spinner" /> Думает…
+              </div>
+            )}
+            {pickedIds.size > 0 && (
+              <div className="ask-picked">
+                Выделено реплик: {pickedIds.size}
+                <button className="btn small" onClick={() => setPickedIds(new Set())}>
+                  Снять
+                </button>
+              </div>
+            )}
+            <div className="ask-row">
+              <input
+                className="input"
+                value={question}
+                placeholder={pickedIds.size > 0 ? "Вопрос про выделенное…" : "Ваш вопрос…"}
+                onChange={(event) => setQuestion(event.target.value)}
+                onKeyDown={(event) => event.key === "Enter" && ask()}
+              />
+              <button
+                className="btn small"
+                onClick={ask}
+                disabled={asking || (!question.trim() && pickedIds.size === 0)}
+              >
+                Спросить
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
