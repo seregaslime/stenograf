@@ -21,6 +21,9 @@ class Budget:
     # Потолок одного запроса подсказки в токенах — вместе с промптом, не только
     # разговор. 0 = тарифного лимита нет (локальная модель), режем по hints_chars.
     hints_tokens: int = 0
+    # Потолок одного запроса резюме. Оно идёт после встречи и в одиночку, поэтому
+    # ему достаётся весь минутный лимит, а не доля как подсказкам. 0 = без лимита.
+    summary_tokens: int = 0
 
 
 class LlmRouter:
@@ -40,7 +43,7 @@ class LlmRouter:
         if self._cfg.llm_provider == "api":
             return Budget(
                 self._cfg.summary_max_chars_api, self._cfg.hints_window_chars_api, True,
-                self._hints_tokens(),
+                self._hints_tokens(), self._tpm_limit(self._cfg.llm_api_summary_model),
             )
         return Budget(
             self._cfg.summary_max_chars_local, self._cfg.hints_window_chars, False
@@ -55,14 +58,25 @@ class LlmRouter:
         минутный лимит на максимальное число запросов в минуту — сумма тогда не
         превысит лимит по построению.
         """
-        limit = (
-            self._cfg.llm_api_tpm_limits.get(self._cfg.llm_api_hints_model)
-            or self._cfg.llm_api_tpm_fallback
-        )
+        limit = self._tpm_limit(self._cfg.llm_api_hints_model)
         if limit <= 0:
             return 0  # лимита нет (внутренний сервер организации) — не ограничиваем
         per_minute = 60 / max(self._cfg.hints_min_gap_s, 1.0)
         return int(limit / per_minute)
+
+    def _tpm_limit(self, model: str) -> int:
+        """Измеренный лимит модели, иначе запасной. 0 = не ограничивать."""
+        return self._cfg.llm_api_tpm_limits.get(model) or self._cfg.llm_api_tpm_fallback
+
+    @property
+    def chars_per_token(self) -> float:
+        return self._cfg.chars_per_token
+
+    @property
+    def rate_pause_s(self) -> float:
+        """Пауза между запросами длинного резюме. Лимит считается за минуту,
+        поэтому куски подряд упрутся в него так же, как один большой запрос."""
+        return self._cfg.llm_api_rate_pause_s
 
     def _client(self) -> LlmClient:
         return self._openai if self._cfg.llm_provider == "api" else self._ollama

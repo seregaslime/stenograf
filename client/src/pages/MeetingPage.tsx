@@ -100,8 +100,16 @@ export default function MeetingPage({
               <h2 style={{ marginBottom: 10 }}>Итоги встречи</h2>
               {meeting.status === "summarizing" && (
                 <div className="banner info">
-                  <span className="spinner" /> Локальная модель составляет протокол — обычно
-                  это занимает до пары минут…
+                  <span className="spinner" />{" "}
+                  {meeting.summary_progress ? (
+                    <>
+                      Встреча длинная — модель разбирает её по фрагментам, шаг{" "}
+                      {meeting.summary_progress[0]} из {meeting.summary_progress[1]}. Между
+                      запросами выдерживается минута, чтобы уложиться в лимит API.
+                    </>
+                  ) : (
+                    <>Модель составляет протокол — обычно это занимает до пары минут…</>
+                  )}
                 </div>
               )}
               {meeting.summary_error && (

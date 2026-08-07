@@ -41,7 +41,64 @@ def build_transcript(segments, max_chars: int = MAX_TRANSCRIPT_CHARS) -> tuple[s
     return transcript, participants
 
 
-async def generate_summary(llm: LlmRouter, meeting_id: int) -> None:
+def split_by_lines(transcript: str, max_chars: int) -> list[str]:
+    """Режет транскрипт на куски не длиннее max_chars — ПО ГРАНИЦАМ РЕПЛИК.
+
+    Резать по символам нельзя: фраза разорвётся пополам, и обе половины станут
+    бессмыслицей — а именно по ним модель и будет составлять заметки. Реплика
+    длиннее лимита целиком уходит в свой кусок: рвать её всё равно некуда.
+    """
+    if max_chars <= 0:
+        return [transcript]
+    chunks: list[str] = []
+    current: list[str] = []
+    size = 0
+    for line in transcript.split("\n"):
+        if current and size + len(line) + 1 > max_chars:
+            chunks.append("\n".join(current))
+            current, size = [], 0
+        current.append(line)
+        size += len(line) + 1
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+async def _summarize_in_parts(
+    llm: LlmRouter, chunks: list[str], *, mode: str, title: str, date: str,
+    participants: str, detailed: bool, pause_s: float, on_progress,
+) -> str:
+    """Длинная встреча: заметки по каждому фрагменту → сведение в протокол.
+
+    Пауза между запросами обязательна и не является перестраховкой: лимит
+    провайдера считается за минуту, поэтому два куска подряд упрутся в него
+    так же, как один большой запрос.
+
+    Промежуточные заметки живут в памяти: при обрыве связи резюме
+    пересоздаётся целиком. Хранить их в БД значило бы менять схему ради задачи
+    на три минуты — оно того не стоит, но если встречи станут по три часа, к
+    этому придётся вернуться.
+    """
+    notes = []
+    for index, chunk in enumerate(chunks, start=1):
+        if index > 1:
+            await asyncio.sleep(pause_s)
+        on_progress(index, len(chunks))
+        system, prompt = prompts.build_chunk_prompt(
+            mode=mode, title=title, part=index, total=len(chunks), transcript=chunk,
+        )
+        notes.append(f"— Фрагмент {index} —\n" + await llm.summarize(prompt, system=system))
+
+    await asyncio.sleep(pause_s)
+    on_progress(len(chunks) + 1, len(chunks) + 1)
+    system, prompt = prompts.build_reduce_prompt(
+        mode=mode, title=title, date=date, participants=participants,
+        notes="\n\n".join(notes), detailed=detailed,
+    )
+    return await llm.summarize(prompt, system=system, temperature=0.3)
+
+
+async def generate_summary(llm: LlmRouter, meeting_id: int, on_progress=None) -> None:
     with session_scope() as db:
         meeting = db.get(Meeting, meeting_id)
         if meeting is None:
@@ -64,8 +121,26 @@ async def generate_summary(llm: LlmRouter, meeting_id: int) -> None:
         participants=participants, transcript=transcript,
         detailed=budget.detailed,
     )
+    # Влезаем ли одним запросом. Считаем вместе с промптом: транскрипт, обрезанный
+    # ровно по бюджету, уедет к провайдеру вместе с инструкциями и всё равно
+    # получит 413 — на подсказках эта же ошибка уже была.
+    chunks = [transcript]
+    if budget.summary_tokens:
+        limit_chars = int(budget.summary_tokens * llm.chars_per_token) - len(system) - len(prompt) + len(transcript)
+        if len(transcript) > limit_chars:
+            chunks = split_by_lines(transcript, max(limit_chars, 1000))
+            log.info("Встреча #%d: транскрипт %d символов — режем на %d фрагментов",
+                     meeting_id, len(transcript), len(chunks))
+
     try:
-        summary = await llm.summarize(prompt, system=system, temperature=0.3)
+        if len(chunks) > 1:
+            summary = await _summarize_in_parts(
+                llm, chunks, mode=mode, title=title, date=date,
+                participants=participants, detailed=budget.detailed,
+                pause_s=llm.rate_pause_s, on_progress=on_progress or (lambda *_: None),
+            )
+        else:
+            summary = await llm.summarize(prompt, system=system, temperature=0.3)
         error = None
     except LlmError as exc:
         summary, error = None, str(exc)

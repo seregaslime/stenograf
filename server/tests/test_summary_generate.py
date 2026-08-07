@@ -38,6 +38,10 @@ class _FakeLlm:
     def budget(self) -> Budget:
         return self._budget
 
+    # Роутер отдаёт их summary.py для расчёта размера фрагмента и пауз
+    chars_per_token = 2.5
+    rate_pause_s = 60.0
+
     @property
     def summary_model_name(self) -> str:
         return "fake-model"
@@ -197,3 +201,77 @@ def test_missing_meeting_is_ignored():
     llm = _FakeLlm()
     asyncio.run(generate_summary(llm, 999_999))
     assert not llm.seen
+
+
+# ------------------------------------------------------------------ длинная встреча
+
+def test_split_by_lines_keeps_replicas_whole():
+    """Режем по границам реплик: разорванная пополам фраза бессмысленна."""
+    from app.llm.summary import split_by_lines
+
+    transcript = "\n".join(f"[00:0{i}] Сергей: реплика номер {i}" for i in range(6))
+    chunks = split_by_lines(transcript, 60)
+
+    assert len(chunks) > 1
+    assert "\n".join(chunks) == transcript          # ничего не потеряли
+    for chunk in chunks:
+        for line in chunk.split("\n"):
+            assert line.startswith("[00:0")          # каждая строка — целая реплика
+
+
+def test_split_keeps_overlong_replica_in_its_own_chunk():
+    """Реплика длиннее лимита рвать некуда — уходит своим куском целиком."""
+    from app.llm.summary import split_by_lines
+
+    long_line = "[00:00] Сергей: " + "очень длинная фраза " * 20
+    chunks = split_by_lines(long_line + "\n[00:30] Куратор: коротко", 100)
+
+    assert chunks[0] == long_line
+
+
+def test_long_meeting_goes_in_several_requests(monkeypatch):
+    """Транскрипт больше бюджета — заметки по фрагментам, потом сведение.
+
+    Проверяем и что пауза между запросами выдерживается: лимит провайдера
+    считается за минуту, без паузы фрагменты упрутся в него так же, как один
+    большой запрос.
+    """
+    slept = []
+
+    async def _no_wait(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr("app.llm.summary.asyncio.sleep", _no_wait)
+
+    llm = _FakeLlm(summary_chars=0)
+    llm._budget = Budget(0, 2500, True, 0, summary_tokens=900)  # ~2250 символов на запрос
+    meeting_id = _meeting(texts=[f"довольно длинная реплика номер {i} про релиз" for i in range(90)])
+
+    asyncio.run(generate_summary(llm, meeting_id))
+
+    status, summary, _, error = _stored(meeting_id)
+    assert status == "done" and error is None and summary
+    assert len(llm.seen) > 2                    # несколько фрагментов + сведение
+    assert slept and all(s == 60.0 for s in slept)
+    assert "Фрагмент" in llm.seen[-1][0]        # последний запрос сводит заметки
+
+
+def test_short_meeting_still_goes_in_one_request():
+    """Влезающая встреча идёт как раньше — одним запросом, без пауз."""
+    llm = _FakeLlm()
+    llm._budget = Budget(0, 2500, True, 0, summary_tokens=8000)
+    meeting_id = _meeting()
+
+    asyncio.run(generate_summary(llm, meeting_id))
+
+    assert len(llm.seen) == 1
+
+
+def test_no_tariff_limit_means_no_splitting():
+    """У локальной модели тарифного лимита нет — деление не включается."""
+    llm = _FakeLlm(summary_chars=0)
+    meeting_id = _meeting(texts=[f"реплика {i} с текстом" for i in range(200)])
+
+    asyncio.run(generate_summary(llm, meeting_id))
+
+    assert len(llm.seen) == 1
