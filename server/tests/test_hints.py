@@ -4,6 +4,7 @@
 """
 import asyncio
 
+from app.llm import prompts
 from app.llm.base import LlmError
 from app.llm.router import Budget
 from app.ws import LiveSession
@@ -388,3 +389,41 @@ def test_force_keeps_hint_markers(cfg):
     _, prompt = llm.seen[-1]
     assert "ты подсказал:" in prompt      # модель знает, что на SLA уже ответила
     assert "что такое CI/CD" in prompt    # и видит новый вопрос
+
+
+def test_window_shrinks_by_prompt_size(cfg):
+    """Из тарифного бюджета вычитается сам промпт.
+
+    Обрезав разговор ровно по бюджету, мы отправили бы его ВМЕСТЕ с
+    инструкциями и всё равно упёрлись бы в лимит. Инструкции стоят около 1100
+    токенов — больше половины бюджета на бесплатном тарифе.
+    """
+    s = _session(cfg, _FakeLLM())
+    budget = Budget(12_000, 40_000, True, hints_tokens=2000)
+
+    chars = s._window_chars(budget)
+
+    system, prompt = prompts.build_hint_prompt(
+        mode=s._mode, transcript="", earlier="", previous="—",
+        title="", participants="", detailed=True, allow_skip=True,
+    )
+    overhead_tokens = (len(system) + len(prompt)) / cfg.chars_per_token
+    assert overhead_tokens > 900          # промпт действительно дорогой
+    assert chars < 2000 * cfg.chars_per_token  # бюджет урезан на его величину
+    assert chars > 0
+
+
+def test_window_ignores_budget_without_tariff_limit(cfg):
+    """У локальной модели тарифного лимита нет — режем по символам, как раньше."""
+    s = _session(cfg, _FakeLLM())
+    assert s._window_chars(Budget(12_000, 2500, False)) == 2500
+
+
+def test_window_never_drops_to_zero(cfg):
+    """Лимит меньше самого промпта — отправляем минимум, а не пустоту.
+
+    Подсказки на таком тарифе невозможны, и провайдер ответит 413 с внятным
+    текстом. Это лучше, чем молча слать запросы без единого слова разговора.
+    """
+    s = _session(cfg, _FakeLLM())
+    assert s._window_chars(Budget(12_000, 40_000, True, hints_tokens=10)) == cfg.hints_min_context_chars

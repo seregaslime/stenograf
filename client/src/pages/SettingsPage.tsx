@@ -127,11 +127,21 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     setModelsRejected(state.models_rejected ?? 0);
   }
 
-  /** «llama-3.3-70b — 131k» — чтобы было видно, что модель потянет наши промпты. */
+  /** «llama-3.3-70b — 131k контекст · 8k токенов/мин».
+   *
+   *  Размер контекста показывает, потянет ли модель наши промпты, а лимит
+   *  токенов в минуту — сколько разговора влезет в одну подсказку. Упираются
+   *  на практике во второе, поэтому без него первая цифра вводит в заблуждение.
+   *  Лимит известен только для сохранённых моделей: он измеряется при
+   *  сохранении настроек. */
   function modelLabel(id: string): string {
     const context = modelsInfo.find((m) => m.id === id)?.context_window;
-    if (!context) return id;
-    return `${id} — ${Math.round(context / 1024)}k контекст`;
+    const tpm = llm?.api_tpm_limits?.[id];
+    const parts = [
+      context ? `${Math.round(context / 1024)}k контекст` : "",
+      tpm ? `${Math.round(tpm / 1000)}k токенов/мин` : "",
+    ].filter(Boolean);
+    return parts.length ? `${id} — ${parts.join(" · ")}` : id;
   }
 
   async function refreshLlm(resetSelect: boolean) {

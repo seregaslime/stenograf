@@ -388,6 +388,36 @@ class LiveSession:
         left = max(0, budget_chars - len(new_text))
         return ("\n".join(rendered[:new_from])[-left:] if left else ""), new_text
 
+    def _window_chars(self, budget) -> int:
+        """Сколько символов разговора влезает в один запрос подсказки.
+
+        Из тарифного бюджета вычитаем сам промпт: обрезав разговор ровно по
+        бюджету, мы отправили бы его ВМЕСТЕ с инструкциями и всё равно упёрлись
+        бы в лимит — просто позже и непонятнее. Инструкции стоят около 1100
+        токенов, то есть больше половины бюджета на бесплатном тарифе.
+
+        Размер промпта не забиваем числом, а меряем сборкой с пустым
+        транскриптом: поменяются промпты — пересчитается само, и в проекте не
+        появится очередной константы, подобранной на глаз.
+
+        Меряем вариантом с allow_skip=True — он длиннее (в нём есть правило
+        молчания), то есть оценка получается с запасом в безопасную сторону.
+        """
+        if not budget.hints_tokens:
+            return budget.hints_chars  # тарифного лимита нет — как раньше
+        system, prompt = prompts.build_hint_prompt(
+            mode=self._mode, transcript="", earlier="",
+            previous="\n".join(self._recent_hints) or "—",
+            title=self._meeting_title, participants=self._participants_line(),
+            detailed=budget.detailed, allow_skip=True,
+        )
+        overhead = (len(system) + len(prompt)) / self._cfg.chars_per_token
+        free = int((budget.hints_tokens - overhead) * self._cfg.chars_per_token)
+        # Нижняя граница: если бюджета не хватает даже на инструкции, подсказки
+        # на этом тарифе невозможны. Отправляем минимум и даём провайдеру
+        # ответить 413 — теперь он объясняет, что делать, вместо тихой смерти.
+        return max(self._cfg.hints_min_context_chars, min(budget.hints_chars, free))
+
     def _participants_line(self) -> str:
         return ", ".join(
             f"{name} ({n} реплик)" for name, n in self._participants.most_common()
@@ -418,7 +448,7 @@ class LiveSession:
                 })
             return
         budget = self._llm.budget  # читаем на каждый вызов — провайдера могли сменить
-        earlier, window = self._split_window(budget.hints_chars, force)
+        earlier, window = self._split_window(self._window_chars(budget), force)
         if len(window) + len(earlier) < self._cfg.hints_min_context_chars:
             if force:
                 await self._send({

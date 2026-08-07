@@ -105,6 +105,39 @@ class OpenAIClient:
             "models_rejected": len(raw_models) - len(info),
         }
 
+    async def token_limit(self, model: str) -> int | None:
+        """Сколько токенов в минуту разрешено этой модели, или None если узнать
+        не вышло.
+
+        В списке моделей лимита нет — провайдер сообщает его только заголовком
+        ответа. Поэтому шлём самый дешёвый запрос, какой возможен: одно слово и
+        один токен в ответе. Делается один раз при выборе модели, чтобы первая
+        же встреча шла с правильным бюджетом, а не выясняла его, упираясь в
+        лимит посреди разговора.
+
+        Ответ с ошибкой тоже годится: заголовки лимитов приходят и с ним.
+        """
+        if not (self._cfg.llm_api_base_url and model):
+            return None
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": "1"}],
+            "max_tokens": 1,
+            "temperature": 0,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=5.0)) as client:
+                response = await client.post(
+                    f"{self._base}/chat/completions", json=payload, headers=self._headers()
+                )
+        except httpx.HTTPError:
+            return None  # сеть у пользователя нестабильна — не повод ломать сохранение настроек
+        raw = response.headers.get("x-ratelimit-limit-tokens")
+        try:
+            return int(raw) if raw else None
+        except ValueError:
+            return None
+
     async def generate(
         self,
         model: str,
