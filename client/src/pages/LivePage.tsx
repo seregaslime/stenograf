@@ -454,45 +454,48 @@ export default function LivePage({
             </div>
           )}
         </div>
-        {hintsWanted && (
-          <div className="hints-panel">
-            <div className="hints-title">
-              💡 Подсказки ИИ
-              <span className="hint" style={{ fontWeight: 400, marginLeft: 8 }}>
-                молчит, когда сказать нечего
-              </span>
-            </div>
-            <div style={{ display: "flex", gap: 10, alignItems: "center", margin: "8px 0 12px" }}>
-              <label className="check" style={{ margin: 0 }}>
-                <input
-                  type="checkbox"
-                  checked={hintsOn}
-                  onChange={(event) => {
-                    setHintsOn(event.target.checked);
-                    clientRef.current?.setHints(event.target.checked);
-                  }}
-                />
-                <span className="box">✓</span>
-                Включены
-              </label>
-              <button className="btn small" onClick={() => clientRef.current?.requestHint()}>
-                Подсказать сейчас
-              </button>
-            </div>
-            {hintError && <div className="banner warn">{hintError}</div>}
-            {hintList.length === 0 && !hintError && (
-              <div className="empty" style={{ padding: "20px 8px" }}>
-                Модель слушает разговор…
-              </div>
-            )}
-            {[...hintList].reverse().slice(0, 8).map((hint, index) => (
-              <div className="hint-card" key={`${hint.at}-${index}`}>
-                {hint.text}
-                <div className="hint-time">{hint.at}</div>
-              </div>
-            ))}
+        {/* Панель показывается всегда, а не только когда подсказки выбрали до
+            старта: решение «а не спросить ли модель» приходит посреди встречи,
+            и тогда переиграть выбор было уже нельзя. */}
+        <div className="hints-panel">
+          <div className="hints-title">
+            💡 Подсказки ИИ
+            <span className="hint" style={{ fontWeight: 400, marginLeft: 8 }}>
+              молчит, когда сказать нечего
+            </span>
           </div>
-        )}
+          <div style={{ display: "flex", gap: 10, alignItems: "center", margin: "8px 0 12px" }}>
+            <label className="check" style={{ margin: 0 }}>
+              <input
+                type="checkbox"
+                checked={hintsOn}
+                onChange={(event) => {
+                  setHintsOn(event.target.checked);
+                  clientRef.current?.setHints(event.target.checked);
+                }}
+              />
+              <span className="box">✓</span>
+              Включены
+            </label>
+            <button className="btn small" onClick={() => clientRef.current?.requestHint()}>
+              Подсказать сейчас
+            </button>
+          </div>
+          {hintError && <div className="banner warn">{hintError}</div>}
+          {hintList.length === 0 && !hintError && (
+            <div className="empty" style={{ padding: "20px 8px" }}>
+              {hintsOn
+                ? "Модель слушает разговор…"
+                : "Подсказки выключены. Включите тумблер, чтобы модель подсказывала сама, или спросите разово кнопкой."}
+            </div>
+          )}
+          {[...hintList].reverse().slice(0, 8).map((hint, index) => (
+            <div className="hint-card" key={`${hint.at}-${index}`}>
+              {hint.text}
+              <div className="hint-time">{hint.at}</div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
