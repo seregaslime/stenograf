@@ -244,8 +244,8 @@ def test_long_meeting_goes_in_several_requests(monkeypatch):
     monkeypatch.setattr("app.llm.summary.asyncio.sleep", _no_wait)
 
     llm = _FakeLlm(summary_chars=0)
-    llm._budget = Budget(0, 2500, True, 0, summary_tokens=900)  # ~2250 символов на запрос
-    meeting_id = _meeting(texts=[f"довольно длинная реплика номер {i} про релиз" for i in range(90)])
+    llm._budget = Budget(0, 2500, True, 0, summary_tokens=3000)  # ~5900 символов на фрагмент
+    meeting_id = _meeting(texts=[f"довольно длинная реплика номер {i} про релиз и сроки" for i in range(200)])
 
     asyncio.run(generate_summary(llm, meeting_id))
 
@@ -275,3 +275,22 @@ def test_no_tariff_limit_means_no_splitting():
     asyncio.run(generate_summary(llm, meeting_id))
 
     assert len(llm.seen) == 1
+
+
+def test_tiny_budget_refuses_instead_of_dozens_of_requests():
+    """Бюджет меньше промпта — честная ошибка, а не получасовое молчание.
+
+    Без этой проверки транскрипт резался бы на куски по минимуму, и встреча на
+    40 минут превратилась бы в три десятка запросов по минуте паузы каждый —
+    внешне неотличимо от зависания.
+    """
+    llm = _FakeLlm(summary_chars=0)
+    llm._budget = Budget(0, 2500, True, 0, summary_tokens=700)  # меньше самого промпта
+    meeting_id = _meeting(texts=[f"реплика номер {i} с текстом подлиннее" for i in range(120)])
+
+    asyncio.run(generate_summary(llm, meeting_id))
+
+    status, summary, _, error = _stored(meeting_id)
+    assert status == "done" and summary is None
+    assert "Лимит тарифа слишком мал" in error
+    assert not llm.seen  # к модели даже не пошли

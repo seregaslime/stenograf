@@ -142,3 +142,53 @@ def test_both_prompts_warn_about_asr_noise():
         assert "распознаванием речи" in system
         assert "UDP" in system          # пример искажения
         assert "не угадывай" in system  # и защита от выдумывания термина
+
+
+# ------------------------------------------------------------------ честность протокола
+
+@pytest.mark.parametrize("builder", ["summary", "reduce"])
+def test_summary_forbids_the_four_ways_to_lie(builder):
+    """Правила против выдумок есть и в обычном протоколе, и в сведении фрагментов.
+
+    Все четыре запрета появились не из общих соображений, а из разбора реального
+    протокола встречи 03.08.2026: модель выдумала все шесть таймкодов, назначила
+    ответственным того, кто задачу попросил, записала уже проделанное
+    нагрузочное тестирование в планы и превратила отвергнутое предложение
+    (whisper по API) в «принятое решение».
+    """
+    if builder == "summary":
+        system, _ = prompts.build_summary_prompt(
+            mode="work", title="Т", date="", participants="", transcript="х", detailed=True,
+        )
+    else:
+        system, _ = prompts.build_reduce_prompt(
+            mode="work", title="Т", date="", participants="", notes="х", detailed=True,
+        )
+    assert "НЕ придумывай таймкоды" in system
+    assert "НЕ выдавай предложенное за принятое" in system
+    assert "НЕ записывай в задачи то, что уже сделано" in system
+    assert "НЕ назначай ответственного" in system
+    assert "НЕ достраивай названия" in system
+
+
+def test_detailed_summary_no_longer_demands_a_timecode():
+    """Раньше промпт ВЕЛЕЛ ставить таймкод у каждого решения, не сказав откуда.
+
+    Модель послушалась и выдала правдоподобный ряд выдуманных меток — это и был
+    источник ошибки. Теперь таймкод разрешён, но только скопированный.
+    """
+    system, _ = prompts.build_summary_prompt(
+        mode="work", title="Т", date="", participants="", transcript="х", detailed=True,
+    )
+    assert "указывай таймкод" not in system
+    assert "СКОПИРОВАВ" in system
+
+
+def test_chunk_prompt_preserves_timecodes_for_the_reduce_pass():
+    """Заметки по фрагменту должны нести таймкоды: при сведении транскрипта уже
+    не будет, и восстановить их будет неоткуда."""
+    system, _ = prompts.build_chunk_prompt(
+        mode="work", title="Т", part=1, total=2, transcript="[00:10] Вы: раз",
+    )
+    assert "таймкоды" in system
+    assert "предложено" in system.lower()
