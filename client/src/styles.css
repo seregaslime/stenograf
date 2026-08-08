@@ -374,7 +374,16 @@ code { background: var(--bg-3); border-radius: 5px; padding: 1.5px 6px; font-siz
 
 /* ============ Страница встречи ============ */
 .meeting-layout { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 20px; align-items: start; }
-.summary-panel { position: sticky; top: 0; }
+/* Своя прокрутка у панели. Без max-height липкая панель выше экрана не
+   долистывалась: её низ был доступен только через прокрутку всей страницы, а
+   высоту страницы задаёт транскрипт на сотни реплик — то есть до конца
+   протокола приходилось листать весь разговор.
+   52px — вертикальные отступы .content (26px сверху и снизу). */
+.summary-panel {
+  position: sticky; top: 0;
+  max-height: calc(100vh - 52px);
+  overflow-y: auto;
+}
 .summary-md { font-size: 13.5px; }
 .summary-md h2 { font-size: 15px; margin: 14px 0 6px; color: var(--accent); }
 .summary-md h2:first-child { margin-top: 0; }
@@ -403,7 +412,9 @@ code { background: var(--bg-3); border-radius: 5px; padding: 1.5px 6px; font-siz
   .content { padding: 18px 16px; }
   .setup-row { grid-template-columns: 1fr; }
   .meeting-layout { grid-template-columns: 1fr; }
-  .summary-panel { position: static; }
+  /* В одну колонку панель идёт под транскриптом обычным блоком: своя прокрутка
+     внутри страницы, которая и так прокручивается, только мешала бы. */
+  .summary-panel { position: static; max-height: none; overflow-y: visible; }
   .hints-panel { width: 220px; }
   .msg { max-width: 95%; }
 }
