@@ -40,7 +40,9 @@ class _FakeLlm:
 
     # Роутер отдаёт их summary.py для расчёта размера фрагмента и пауз
     chars_per_token = 2.5
-    rate_pause_s = 60.0
+
+    async def ensure_tpm_limit(self):
+        """В тестах лимит задан бюджетом напрямую — мерить нечего."""
 
     @property
     def summary_model_name(self) -> str:
@@ -229,20 +231,12 @@ def test_split_keeps_overlong_replica_in_its_own_chunk():
     assert chunks[0] == long_line
 
 
-def test_long_meeting_goes_in_several_requests(monkeypatch):
+def test_long_meeting_goes_in_several_requests():
     """Транскрипт больше бюджета — заметки по фрагментам, потом сведение.
 
-    Проверяем и что пауза между запросами выдерживается: лимит провайдера
-    считается за минуту, без паузы фрагменты упрутся в него так же, как один
-    большой запрос.
+    Пауз здесь нет намеренно: ждать нужное время умеет клиент — он читает из
+    заголовков ответа, сколько лимита осталось и когда восстановится.
     """
-    slept = []
-
-    async def _no_wait(seconds):
-        slept.append(seconds)
-
-    monkeypatch.setattr("app.llm.summary.asyncio.sleep", _no_wait)
-
     llm = _FakeLlm(summary_chars=0)
     llm._budget = Budget(0, 2500, True, 0, summary_tokens=3000)  # ~5900 символов на фрагмент
     meeting_id = _meeting(texts=[f"довольно длинная реплика номер {i} про релиз и сроки" for i in range(200)])
@@ -252,7 +246,6 @@ def test_long_meeting_goes_in_several_requests(monkeypatch):
     status, summary, _, error = _stored(meeting_id)
     assert status == "done" and error is None and summary
     assert len(llm.seen) > 2                    # несколько фрагментов + сведение
-    assert slept and all(s == 60.0 for s in slept)
     assert "Фрагмент" in llm.seen[-1][0]        # последний запрос сводит заметки
 
 
@@ -294,3 +287,30 @@ def test_tiny_budget_refuses_instead_of_dozens_of_requests():
     assert status == "done" and summary is None
     assert "Лимит тарифа слишком мал" in error
     assert not llm.seen  # к модели даже не пошли
+
+
+def test_truncated_fragment_is_retried_in_halves():
+    """Один невезучий фрагмент не должен валить весь протокол.
+
+    У рассуждающих моделей длина рассуждений гуляет, и на длинном фрагменте
+    текста может не остаться — ответ приходит оборванным. Раньше это убивало
+    работу минут за пять целиком; теперь фрагмент пересдаётся половинками.
+    """
+    llm = _FakeLlm(summary_chars=0)
+    llm._budget = Budget(0, 2500, True, 0, summary_tokens=3000)
+    calls = {"n": 0}
+    original = llm.summarize
+
+    async def flaky(prompt, system=None, temperature=0.3):
+        calls["n"] += 1
+        if calls["n"] == 1:  # первый фрагмент обрывается
+            raise LlmError("Модель не уместила ответ в отведённую длину.")
+        return await original(prompt, system=system, temperature=temperature)
+
+    llm.summarize = flaky
+    meeting_id = _meeting(texts=[f"реплика {i} про релиз и сроки поставки" for i in range(200)])
+
+    asyncio.run(generate_summary(llm, meeting_id))
+
+    status, summary, _, error = _stored(meeting_id)
+    assert status == "done" and error is None and summary

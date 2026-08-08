@@ -190,5 +190,35 @@ def test_chunk_prompt_preserves_timecodes_for_the_reduce_pass():
     system, _ = prompts.build_chunk_prompt(
         mode="work", title="Т", part=1, total=2, transcript="[00:10] Вы: раз",
     )
-    assert "таймкоды" in system
-    assert "предложено" in system.lower()
+    assert "таймкода" in system and "скопированного" in system
+    assert "### ПРЕДЛОЖЕНО" in system
+
+
+def test_chunk_notes_come_in_fixed_sections():
+    """Заметки по фрагменту выдаются разделами, а не свободным списком.
+
+    Свободный список заставлял сведение решать, что важно, — и оно выбрасывало
+    целые куски разговора. С разделами переносить нечего решать.
+    """
+    system, _ = prompts.build_chunk_prompt(
+        mode="work", title="Т", part=1, total=2, transcript="[00:10] Вы: раз",
+    )
+    for section in ("### РЕШЕНО", "### ПРЕДЛОЖЕНО", "### СДЕЛАНО", "### ФАКТЫ", "### ВОПРОСЫ"):
+        assert section in system
+    assert "«нет»" in system  # пустой раздел разрешён, выдумывать в него не надо
+
+
+def test_reduce_is_told_to_carry_over_not_retell():
+    """Сведение переносит помеченное, а не пересказывает.
+
+    Заметки уже прошли одно сжатие; второе стирало именно то, ради чего протокол
+    и составляют — на встрече 03.08.2026 так пропало замечание куратора про
+    коммит на 4500 строк, при том что в заметках фрагмента оно было.
+    """
+    system, _ = prompts.build_reduce_prompt(
+        mode="work", title="Т", date="", participants="", notes="х", detailed=True,
+    )
+    assert "ПЕРЕНЕСТИ, а не пересказать" in system
+    assert "Ни одного не выбрасывай" in system
+    assert "В принятые решения это не переводится никогда" in system
+    assert "Своими словами пиши только «Краткий итог»" in system

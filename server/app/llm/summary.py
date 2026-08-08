@@ -20,6 +20,11 @@ MAX_TRANSCRIPT_CHARS = 12_000
 # ожидание — молча. Лучше честно сказать, что тариф не тянет.
 MIN_CHUNK_CHARS = 4_000
 
+# Сколько раз подряд делить фрагмент пополам, если ответ не умещается. Три —
+# это восьмушка исходного куска; если не влезло и в неё, дело не в размере, а
+# каждое деление стоит минуты паузы.
+MAX_RETRY_DEPTH = 3
+
 
 def _mmss(seconds: float) -> str:
     return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
@@ -69,15 +74,54 @@ def split_by_lines(transcript: str, max_chars: int) -> list[str]:
     return chunks
 
 
+async def _notes_for(
+    llm: LlmRouter, chunk: str, *, mode: str, title: str, part: int, total: int,
+    depth: int = 0,
+) -> str:
+    """Заметки по фрагменту. Не уместился ответ — делим пополам и пробуем снова.
+
+    Сколько модель потратит на ответ, заранее не известно: у рассуждающих часть
+    лимита уходит на мысли, и доля эта гуляет от фрагмента к фрагменту. Гадать
+    бессмысленно — подстраиваемся по факту обрыва, а не подбираем числа под
+    конкретную модель.
+
+    Рекурсия, а не одна пересдача: половина тоже может не влезть. Глубина
+    ограничена — если не уместилось и на восьмушке, дело не в размере, и
+    бесконечное дробление только сожжёт минуты пауз.
+    """
+    system, prompt = prompts.build_chunk_prompt(
+        mode=mode, title=title, part=part, total=total, transcript=chunk,
+    )
+    try:
+        return await llm.summarize(prompt, system=system)
+    except LlmError as exc:
+        if "не уместила ответ" not in str(exc) or depth >= MAX_RETRY_DEPTH:
+            raise
+        log.warning("Фрагмент %d (уровень %d, %d символов) не уместился — делим пополам",
+                    part, depth, len(chunk))
+
+    halves = split_by_lines(chunk, max(len(chunk) // 2, 1))
+    if len(halves) < 2:
+        raise LlmError("Модель не уместила ответ даже на одной реплике.")
+    pieces = []
+    for half in halves:
+        pieces.append(await _notes_for(
+            llm, half, mode=mode, title=title, part=part, total=total,
+            depth=depth + 1,
+        ))
+    return "\n".join(pieces)
+
+
 async def _summarize_in_parts(
     llm: LlmRouter, chunks: list[str], *, mode: str, title: str, date: str,
-    participants: str, detailed: bool, pause_s: float, on_progress,
+    participants: str, detailed: bool, on_progress, notes_budget_chars: int,
 ) -> str:
     """Длинная встреча: заметки по каждому фрагменту → сведение в протокол.
 
-    Пауза между запросами обязательна и не является перестраховкой: лимит
-    провайдера считается за минуту, поэтому два куска подряд упрутся в него
-    так же, как один большой запрос.
+    Паузы между запросами здесь нет намеренно: ждать столько, сколько нужно,
+    умеет клиент — он читает из заголовков ответа, сколько лимита осталось и
+    когда восстановится. Фиксированная минута была хуже вдвойне: на скользящем
+    окне её не хватало, а при свободном лимите она тратилась впустую.
 
     Промежуточные заметки живут в памяти: при обрыве связи резюме
     пересоздаётся целиком. Хранить их в БД значило бы менять схему ради задачи
@@ -86,15 +130,27 @@ async def _summarize_in_parts(
     """
     notes = []
     for index, chunk in enumerate(chunks, start=1):
-        if index > 1:
-            await asyncio.sleep(pause_s)
         on_progress(index, len(chunks))
-        system, prompt = prompts.build_chunk_prompt(
-            mode=mode, title=title, part=index, total=len(chunks), transcript=chunk,
-        )
-        notes.append(f"— Фрагмент {index} —\n" + await llm.summarize(prompt, system=system))
+        notes.append(f"— Фрагмент {index} —\n" + await _notes_for(
+            llm, chunk, mode=mode, title=title, part=index, total=len(chunks),
+        ))
 
-    await asyncio.sleep(pause_s)
+    # Заметки тоже обязаны влезть в запрос. Проверять надо и их: у встречи на
+    # пять фрагментов они сами набирают тысячи символов, и сведение упирается в
+    # тот же лимит, что и транскрипт. Не влезли — сжимаем тем же проходом,
+    # который делал заметки: он выдаёт те же пять разделов, только компактнее.
+    level = 0
+    while len(joined := "\n\n".join(notes)) > notes_budget_chars and level < MAX_RETRY_DEPTH:
+        level += 1
+        log.info("Заметки (%d символов) не влезают в сведение — сжимаем, уровень %d",
+                 len(joined), level)
+        pieces = split_by_lines(joined, notes_budget_chars)
+        notes = []
+        for index, piece in enumerate(pieces, start=1):
+            notes.append(await _notes_for(
+                llm, piece, mode=mode, title=title, part=index, total=len(pieces),
+            ))
+
     on_progress(len(chunks) + 1, len(chunks) + 1)
     system, prompt = prompts.build_reduce_prompt(
         mode=mode, title=title, date=date, participants=participants,
@@ -116,6 +172,11 @@ async def generate_summary(llm: LlmRouter, meeting_id: int, on_progress=None) ->
             meeting.status = "done"
             meeting.summary_error = "Встреча не содержит распознанной речи."
             return
+
+    # Лимит модели меряем до расчёта бюджета: у настроивших API до появления
+    # пробы он неизвестен, и без этого мы считали бы по запасному значению —
+    # то есть резали бы встречу вдвое мельче, чем нужно.
+    await llm.ensure_tpm_limit()
 
     # Бюджет читается здесь, а не в __init__: провайдера могли переключить
     # уже после встречи (резюме перегенерируют кнопкой в истории).
@@ -155,7 +216,8 @@ async def generate_summary(llm: LlmRouter, meeting_id: int, on_progress=None) ->
             summary = await _summarize_in_parts(
                 llm, chunks, mode=mode, title=title, date=date,
                 participants=participants, detailed=budget.detailed,
-                pause_s=llm.rate_pause_s, on_progress=on_progress or (lambda *_: None),
+                on_progress=on_progress or (lambda *_: None),
+                notes_budget_chars=limit_chars,
             )
         else:
             summary = await llm.summarize(prompt, system=system, temperature=0.3)

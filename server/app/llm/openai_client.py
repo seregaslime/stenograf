@@ -4,8 +4,10 @@
 сервер инференса организации (vLLM/TGI/llama.cpp-server), и внешние сервисы
 (OpenAI, Groq, OpenRouter), и локальные (LM Studio, Ollama через /v1). Адрес и
 ключ берутся только из настроек сервера (server/.env) — на клиент не уходят."""
+import asyncio
 import logging
 import re
+import time
 
 import httpx
 
@@ -31,9 +33,58 @@ def _detail(response: httpx.Response) -> str:
     return message or response.text[:200]
 
 
+def _parse_reset(raw: str | None) -> float:
+    """«1.2s», «120ms», «2m59.56s» → секунды. Формат провайдера, не ISO."""
+    if not raw:
+        return 0.0
+    factors = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+    return sum(
+        float(value) * factors[unit]
+        for value, unit in re.findall(r"(\d+(?:\.\d+)?)(ms|s|m|h)", raw)
+    )
+
+
 class OpenAIClient:
     def __init__(self, cfg: Settings):
         self._cfg = cfg
+        # Остаток минутного лимита по данным провайдера. Спать фиксированную
+        # минуту оказалось недостаточно: окно скользящее, и после крупного
+        # запроса за 60 секунд восстанавливается не всё. На длинной встрече это
+        # выглядело так, что первый фрагмент проходит, а дальше всё хуже.
+        self._remaining: int | None = None
+        self._reset_s = 0.0
+        self._checked_at = 0.0
+
+    def _remember_limits(self, response: httpx.Response) -> None:
+        raw = response.headers.get("x-ratelimit-remaining-tokens")
+        if raw is None:
+            return
+        try:
+            self._remaining = int(raw)
+        except ValueError:
+            return
+        self._reset_s = _parse_reset(response.headers.get("x-ratelimit-reset-tokens"))
+        self._checked_at = time.monotonic()
+
+    def _reserve(self, model: str) -> int:
+        limit = self._cfg.llm_api_tpm_limits.get(model) or self._cfg.llm_api_tpm_fallback
+        return int(max(limit, 0) * self._cfg.llm_api_output_share)
+
+    async def _wait_for_budget(self, need: int) -> None:
+        """Ждёт, пока провайдер не восстановит лимит под запрос такого размера.
+
+        Спрашиваем у того, кто знает, вместо того чтобы спать наугад: сколько
+        осталось и через сколько вернётся, сказано в заголовках прошлого ответа.
+        """
+        if self._remaining is None or need <= self._remaining:
+            return
+        wait = self._reset_s - (time.monotonic() - self._checked_at)
+        if wait <= 0:
+            return
+        log.info("Ждём восстановления лимита: нужно %d токенов, осталось %d, "
+                 "провайдер обещает через %.1f с", need, self._remaining, wait)
+        await asyncio.sleep(wait + 1)  # секунда сверху: их часы и наши не совпадают
+        self._remaining = None  # после ожидания оценка устарела
 
     @property
     def _base(self) -> str:
@@ -132,6 +183,7 @@ class OpenAIClient:
                 )
         except httpx.HTTPError:
             return None  # сеть у пользователя нестабильна — не повод ломать сохранение настроек
+        self._remember_limits(response)
         raw = response.headers.get("x-ratelimit-limit-tokens")
         try:
             return int(raw) if raw else None
@@ -162,8 +214,20 @@ class OpenAIClient:
             "temperature": temperature,
             "stream": False,
         }
+        # max_tokens намеренно НЕ задаём по умолчанию. Провайдер списывает с
+        # минутного лимита фиксированный резерв (2500) независимо от того,
+        # просили мы что-то или нет, — но сам предел ответа у модели куда выше
+        # (max_completion_tokens = 65536). Выставив max_tokens = 2500, мы
+        # списание не уменьшаем, а модели связываем руки: у рассуждающих моделей
+        # рассуждения идут из того же лимита, и на текст ответа не остаётся
+        # ничего — фрагмент возвращается пустым с finish_reason=length.
         if num_predict:
             payload["max_tokens"] = num_predict
+
+        # Сколько этот запрос будет стоить: вход плюс место под ответ, которое
+        # провайдер списывает независимо от того, воспользуется им модель или нет.
+        need = int((len(system or "") + len(prompt)) / self._cfg.chars_per_token)
+        await self._wait_for_budget(need + self._reserve(model))
 
         timeout = httpx.Timeout(600.0, connect=5.0)
         try:
@@ -186,6 +250,10 @@ class OpenAIClient:
             # резюме, оставляя встречу в вечном "summarizing".
             raise LlmError(f"Связь с API оборвалась: {exc}") from exc
 
+        # Остаток лимита читаем с ЛЮБОГО ответа, включая отказ: отказ по лимиту
+        # как раз и несёт самые свежие цифры.
+        self._remember_limits(response)
+
         if response.status_code in (401, 403):
             raise LlmError("API отклонил ключ — проверьте STENOGRAF_LLM_API_KEY.")
         if response.status_code == 404:
@@ -202,7 +270,23 @@ class OpenAIClient:
             raise LlmError(f"API вернул ошибку {response.status_code}: {_detail(response)}")
 
         try:
-            text = response.json()["choices"][0]["message"]["content"] or ""
+            choice = response.json()["choices"][0]
+            text = choice["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:
             raise LlmError("API вернул ответ в неожиданном формате.") from exc
+
+        # Модель упёрлась в предел длины ответа и оборвалась на полуслове. Молча
+        # брать такой текст нельзя: у длинной встречи он уходит дальше в сведение
+        # фрагментов, и в протоколе не хватает куска разговора — а выглядит
+        # протокол целым. Один раз мы так уже потеряли половину третьего
+        # фрагмента и заметили только вручную.
+        if choice.get("finish_reason") == "length":
+            log.warning(
+                "Ответ модели «%s» оборван по пределу длины (%d символов) — "
+                "часть содержания потеряна", model, len(text)
+            )
+            raise LlmError(
+                "Модель не уместила ответ в отведённую длину. Для длинной встречи "
+                "это значит, что часть разговора не попала бы в протокол."
+            )
         return _THINK_RE.sub("", text).strip()
