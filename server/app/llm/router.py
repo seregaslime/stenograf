@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from .base import LlmClient
 from .ollama_client import OllamaClient
 from .openai_client import OpenAIClient
-from ..config import Settings
+from ..config import Settings, save_tpm_limits
 
 
 @dataclass(frozen=True)
@@ -65,18 +65,21 @@ class LlmRouter:
         return int(limit / per_minute)
 
     def _tpm_limit(self, model: str) -> int:
-        """Измеренный лимит модели, иначе запасной. 0 = не ограничивать."""
-        return self._cfg.llm_api_tpm_limits.get(model) or self._cfg.llm_api_tpm_fallback
+        """Сколько токенов можно ОТПРАВИТЬ этой модели за минуту.
+
+        Из минутного лимита вычитаем резерв под ответ: провайдер засчитывает в
+        лимит и его тоже. Без вычета запрос на 5400 токенов при лимите 8000
+        получал отказ «Requested 8476» — недостающие три тысячи и были местом,
+        отведённым модели на ответ.
+        """
+        limit = self._cfg.llm_api_tpm_limits.get(model) or self._cfg.llm_api_tpm_fallback
+        if limit <= 0:
+            return 0  # лимита нет — делить не из чего
+        return int(limit * (1 - self._cfg.llm_api_output_share))
 
     @property
     def chars_per_token(self) -> float:
         return self._cfg.chars_per_token
-
-    @property
-    def rate_pause_s(self) -> float:
-        """Пауза между запросами длинного резюме. Лимит считается за минуту,
-        поэтому куски подряд упрутся в него так же, как один большой запрос."""
-        return self._cfg.llm_api_rate_pause_s
 
     def _client(self) -> LlmClient:
         return self._openai if self._cfg.llm_provider == "api" else self._ollama
@@ -92,6 +95,23 @@ class LlmRouter:
         if self._cfg.llm_provider == "api":
             return self._cfg.llm_api_hints_model
         return self._cfg.hints_model
+
+    async def ensure_tpm_limit(self) -> None:
+        """Измеряет лимит модели резюме, если он ещё неизвестен.
+
+        Проба делается при сохранении настроек, но у того, кто настроил API
+        раньше её появления, лимит не измерен никогда — и он молча работает на
+        запасном значении. Разница не косметическая: 6000 вместо 8000 урезает
+        бюджет входа на четверть и удваивает число фрагментов у длинной встречи.
+        """
+        if self._cfg.llm_provider != "api":
+            return
+        model = self._cfg.llm_api_summary_model
+        if not model or model in self._cfg.llm_api_tpm_limits:
+            return
+        limit = await self._openai.token_limit(model)
+        if limit:
+            save_tpm_limits({model: limit})
 
     async def summarize(self, prompt: str, system: str | None = None, temperature: float = 0.3) -> str:
         return await self._client().generate(

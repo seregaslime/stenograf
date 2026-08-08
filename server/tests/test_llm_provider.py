@@ -197,22 +197,25 @@ def test_token_limit_returns_none_when_unknown(tmp_path, monkeypatch, handler_ki
 
 
 def test_hints_budget_derived_from_measured_limit(tmp_path):
-    """Бюджет подсказки = минутный лимит ÷ максимум запросов в минуту.
+    """Бюджет подсказки = (лимит − резерв под ответ) ÷ запросов в минуту.
 
     Частота ограничена сверху hints_min_gap_s, поэтому сумма за минуту не
     превысит лимит по построению — считать расход в реальном времени не нужно.
+    Резерв вычитается потому, что провайдер засчитывает в лимит и место,
+    отведённое модели на ответ.
     """
     cfg = Settings(data_dir=tmp_path, _env_file=None)
     cfg.llm_provider = "api"
     cfg.llm_api_hints_model = "groq-model"
     cfg.llm_api_tpm_limits = {"groq-model": 8000}
+    cfg.llm_api_output_share = 0.5
     cfg.hints_min_gap_s = 15.0  # → не чаще 4 запросов в минуту
 
-    assert LlmRouter(cfg).budget.hints_tokens == 2000
+    assert LlmRouter(cfg).budget.hints_tokens == int(8000 * 0.5) // 4
 
     # Модель с большим лимитом получает пропорционально больше — без правки настроек
     cfg.llm_api_tpm_limits = {"groq-model": 40_000}
-    assert LlmRouter(cfg).budget.hints_tokens == 10_000
+    assert LlmRouter(cfg).budget.hints_tokens == int(40_000 * 0.5) // 4
 
 
 def test_hints_budget_falls_back_when_limit_unknown(tmp_path):
@@ -221,9 +224,10 @@ def test_hints_budget_falls_back_when_limit_unknown(tmp_path):
     cfg.llm_provider = "api"
     cfg.llm_api_hints_model = "неизмеренная"
     cfg.llm_api_tpm_fallback = 6000
+    cfg.llm_api_output_share = 0.5
     cfg.hints_min_gap_s = 15.0
 
-    assert LlmRouter(cfg).budget.hints_tokens == 1500
+    assert LlmRouter(cfg).budget.hints_tokens == int(6000 * 0.5) // 4
 
 
 def test_local_provider_has_no_token_budget(tmp_path):
@@ -516,3 +520,125 @@ def test_save_llm_choice_rejects_foreign_host(tmp_path, monkeypatch):
             "api", api_base_url="https://api.openai.com/v1", api_key="k",
             summary_model="m", hints_model="m",
         )
+
+
+def test_truncated_answer_is_an_error_not_a_silent_half(tmp_path, monkeypatch):
+    """Ответ, оборванный по пределу длины, не уходит дальше молча.
+
+    На длинной встрече такой обрубок попадает в сведение фрагментов, и в
+    протоколе не хватает куска разговора — а выглядит протокол целым. Один раз
+    так потерялась половина заметок по третьему фрагменту, и заметили это
+    только вручную.
+    """
+    def handler(request):
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "начал писать и"}, "finish_reason": "length"}]
+        })
+
+    _patch_transport(monkeypatch, handler)
+    with pytest.raises(LlmError) as exc:
+        asyncio.run(OpenAIClient(_api_cfg(tmp_path)).generate("m", "p"))
+    assert "не уместила ответ" in str(exc.value)
+
+
+def test_normal_answer_passes_through(tmp_path, monkeypatch):
+    """Обычный ответ (finish_reason=stop) проходит как раньше."""
+    def handler(request):
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": " готово "}, "finish_reason": "stop"}]
+        })
+
+    _patch_transport(monkeypatch, handler)
+    assert asyncio.run(OpenAIClient(_api_cfg(tmp_path)).generate("m", "p")) == "готово"
+
+
+def test_max_tokens_is_not_set_by_default(tmp_path, monkeypatch):
+    """Предел ответа модели не ограничиваем — списание от этого не уменьшится.
+
+    Провайдер списывает с минутного лимита фиксированный резерв (2500) независимо
+    от max_tokens, а сама модель способна на 65536. Выставив max_tokens = 2500,
+    мы списание не уменьшаем, зато у рассуждающей модели рассуждения съедают весь
+    отведённый предел и текст ответа приходит пустым.
+    """
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ок"}}]})
+
+    _patch_transport(monkeypatch, handler)
+    asyncio.run(OpenAIClient(_api_cfg(tmp_path)).generate("m", "p"))
+    assert "max_tokens" not in seen["body"]
+
+
+def test_no_tpm_limit_means_no_reserve_subtraction(tmp_path):
+    """Без тарифного лимита вычитать резерв не из чего — бюджет остаётся нулевым."""
+    cfg = Settings(data_dir=tmp_path, _env_file=None)
+    cfg.llm_provider = "api"
+    cfg.llm_api_tpm_fallback = 0
+    assert LlmRouter(cfg).budget.hints_tokens == 0
+    assert LlmRouter(cfg).budget.summary_tokens == 0
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("1.2s", 1.2), ("120ms", 0.12), ("2m59.56s", 179.56), ("7.66s", 7.66), (None, 0.0),
+])
+def test_reset_header_parsed(raw, expected):
+    """Провайдер сообщает время сброса своим форматом, не ISO."""
+    assert openai_mod._parse_reset(raw) == pytest.approx(expected)
+
+
+def test_client_waits_when_budget_is_spent(tmp_path, monkeypatch):
+    """Ждём столько, сколько сказал провайдер, вместо фиксированной паузы.
+
+    Спать минуту оказалось мало: окно скользящее, и после крупного запроса за
+    60 секунд восстанавливается не всё — на длинной встрече первый фрагмент
+    проходил, а дальше всё хуже.
+    """
+    slept = []
+
+    async def _no_wait(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(openai_mod.asyncio, "sleep", _no_wait)
+
+    def handler(request):
+        return httpx.Response(200, headers={
+            "x-ratelimit-remaining-tokens": "10",     # почти ничего не осталось
+            "x-ratelimit-reset-tokens": "30s",
+        }, json={"choices": [{"message": {"content": "ок"}}]})
+
+    _patch_transport(monkeypatch, handler)
+    cfg = _api_cfg(tmp_path)
+    cfg.llm_api_tpm_limits = {"m": 8000}
+    client = OpenAIClient(cfg)
+
+    asyncio.run(client.generate("m", "первый запрос"))   # тут ждать ещё нечего
+    assert not slept
+    asyncio.run(client.generate("m", "второй запрос"))   # остатка уже не хватает
+    assert slept and 25 < slept[0] <= 32
+
+
+def test_client_does_not_wait_while_budget_is_free(tmp_path, monkeypatch):
+    """Лимит свободен — не спим: фиксированная пауза тратила минуты впустую."""
+    slept = []
+
+    async def _no_wait(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(openai_mod.asyncio, "sleep", _no_wait)
+
+    def handler(request):
+        return httpx.Response(200, headers={
+            "x-ratelimit-remaining-tokens": "7900",
+            "x-ratelimit-reset-tokens": "1s",
+        }, json={"choices": [{"message": {"content": "ок"}}]})
+
+    _patch_transport(monkeypatch, handler)
+    cfg = _api_cfg(tmp_path)
+    cfg.llm_api_tpm_limits = {"m": 8000}
+    client = OpenAIClient(cfg)
+
+    asyncio.run(client.generate("m", "раз"))
+    asyncio.run(client.generate("m", "два"))
+    assert not slept
