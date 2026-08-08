@@ -15,6 +15,11 @@ log = logging.getLogger(__name__)
 # qwen3:4b с контекстом 8k токенов: ~12000 символов русского текста влезает с запасом
 MAX_TRANSCRIPT_CHARS = 12_000
 
+# Меньше этого фрагменты не режем. На каждый уходит минута паузы, поэтому куски
+# по паре тысяч символов превратили бы встречу на 40 минут в получасовое
+# ожидание — молча. Лучше честно сказать, что тариф не тянет.
+MIN_CHUNK_CHARS = 4_000
+
 
 def _mmss(seconds: float) -> str:
     return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
@@ -128,7 +133,20 @@ async def generate_summary(llm: LlmRouter, meeting_id: int, on_progress=None) ->
     if budget.summary_tokens:
         limit_chars = int(budget.summary_tokens * llm.chars_per_token) - len(system) - len(prompt) + len(transcript)
         if len(transcript) > limit_chars:
-            chunks = split_by_lines(transcript, max(limit_chars, 1000))
+            if limit_chars < MIN_CHUNK_CHARS:
+                # Бюджет меньше самого промпта. Резать по крохам нельзя: на
+                # каждый кусок уходит минута паузы, и встреча на 40 минут
+                # превратилась бы в получасовое молчаливое ожидание.
+                with session_scope() as db:
+                    meeting = db.get(Meeting, meeting_id)
+                    if meeting is not None:
+                        meeting.status = "done"
+                        meeting.summary_error = (
+                            "Лимит тарифа слишком мал для протокола этой встречи. "
+                            "Выберите модель с большим лимитом токенов в минуту."
+                        )
+                return
+            chunks = split_by_lines(transcript, limit_chars)
             log.info("Встреча #%d: транскрипт %d символов — режем на %d фрагментов",
                      meeting_id, len(transcript), len(chunks))
 
