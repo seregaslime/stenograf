@@ -206,3 +206,36 @@ def test_answer_is_printed_as_it_goes(cfg):
     assert "".join(m["text"] for m in куски).strip() == llm.reply
     assert мысли, "мысли модели провайдер отдаёт даром — выбрасывать их незачем"
     assert s._sent[-1] == {"type": "answer", "text": llm.reply}  # итог приходит последним
+
+
+def test_selection_without_question_asks_to_explain_the_content(cfg):
+    """Показал на реплику без вопроса — просим разобрать сказанное.
+
+    Живой случай: участник выделил реплику с термином, а модель ответила, что
+    этот вопрос задали для проверки связи. Формально верно — мы просили
+    объяснить, «о чём эти реплики», то есть чем они являются в разговоре. А
+    человек выделяет то, чего не понял, и ждёт разбора.
+    """
+    meeting_id, ids = _meeting(["Скажите, что такое ВВП?"])
+    llm = _FakeLLM()
+    s = _session(cfg, llm, meeting_id)
+
+    asyncio.run(s._answer(question="", segment_ids=[ids[0]]))
+
+    _, prompt = llm.seen[-1]
+    assert "объясни термины" in prompt.lower()
+    assert "ответь на него" in prompt.lower()   # прозвучавший вопрос не игнорируем
+    assert "о чём эти реплики" not in prompt.lower()
+
+
+def test_typed_question_is_not_replaced(cfg):
+    """Свой вопрос участника подменять нечем — он и есть тема."""
+    meeting_id, ids = _meeting(["обсудим SLA"])
+    llm = _FakeLLM()
+    s = _session(cfg, llm, meeting_id)
+
+    asyncio.run(s._answer(question="кто за это отвечает", segment_ids=[ids[0]]))
+
+    _, prompt = llm.seen[-1]
+    assert "кто за это отвечает" in prompt
+    assert "объясни термины" not in prompt.lower()
