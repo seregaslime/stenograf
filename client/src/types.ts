@@ -71,8 +71,10 @@ export interface SpeakerDto {
 export interface HealthDto {
   status: string;
   version: string;
-  asr: { engine: string; model: string; loaded: boolean };
-  diarization: { loaded: boolean };
+  // device — на чём считают модели: cuda | mps | cpu. Старый сервер поля не
+  // шлёт, поэтому необязательное.
+  asr: { engine: string; model: string; loaded: boolean; device?: string };
+  diarization: { loaded: boolean; device?: string };
   ollama: { reachable: boolean; models: string[] };
   llm: { provider: "local" | "api"; api_configured: boolean };
   summary_model: string;
