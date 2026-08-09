@@ -17,6 +17,7 @@ import numpy as np
 from faster_whisper import WhisperModel
 
 from ..config import Settings
+from ..device import compute_type, for_ctranslate2, resolve
 
 log = logging.getLogger(__name__)
 
@@ -61,12 +62,14 @@ class _FasterWhisperBackend:
         self._model: WhisperModel | None = None
 
     def load(self) -> None:
+        device = for_ctranslate2(resolve(self._cfg.asr_device))
         self._model = WhisperModel(
             self._model_name,
-            device=self._cfg.asr_device,
-            compute_type=self._cfg.asr_compute_type,
+            device=device,
+            compute_type=compute_type(device, self._cfg.asr_compute_type),
             download_root=str(self._cfg.models_dir),
         )
+        self.device = device
 
     def transcribe(self, audio: np.ndarray, language: str | None) -> list[str]:
         segments, _info = self._model.transcribe(
@@ -80,6 +83,8 @@ class _FasterWhisperBackend:
 
 
 class _MlxBackend:
+    device = "mps"  # mlx считает на GPU Apple по построению, выбирать нечего
+
     def __init__(self, model_name: str):
         self._repo = _MLX_REPOS[model_name]
 
@@ -127,12 +132,16 @@ class _GigaAmBackend:
         self._model = None
 
     def load(self) -> None:
+        device = resolve(self._cfg.asr_device)
         self._model = gigaam.load_model(
             self._model_name,
-            fp16_encoder=False,  # CPU: fp32 быстрее и стабильнее
-            device="cpu",
+            # fp16 только на видеокарте: на процессоре fp32 быстрее и стабильнее,
+            # а на Metal половинная точность у этой модели не проверена.
+            fp16_encoder=device == "cuda",
+            device=device,
             download_root=str(self._cfg.models_dir / "gigaam"),
         )
+        self.device = device
 
     def transcribe(self, audio: np.ndarray, language: str | None) -> list[str]:
         # language игнорируется — модель только русская
@@ -167,6 +176,13 @@ class Transcriber:
     @property
     def model_name(self) -> str:
         return self._model_name
+
+    @property
+    def device(self) -> str:
+        """На чём считает загруженная модель. Пока не загружена — на чём
+        собирается: куратору важно видеть это до первой фразы, а не после."""
+        actual = getattr(self._backend, "device", None)
+        return actual or resolve(self._cfg.asr_device)
 
     @property
     def loaded(self) -> bool:

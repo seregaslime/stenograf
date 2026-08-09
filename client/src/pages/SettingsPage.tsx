@@ -9,6 +9,14 @@ const ENGINE_LABELS: Record<string, string> = {
   gigaam: "GigaAM (Сбер)",
 };
 
+// Куратор жаловался, что «всё лагает»: у него всё считалось процессором при
+// живой видеокарте. Пишем словами, а не кодом устройства.
+const DEVICE_LABELS: Record<string, string> = {
+  cuda: "видеокарта NVIDIA",
+  mps: "GPU Apple (Metal)",
+  cpu: "процессор",
+};
+
 const MODEL_HINTS: Record<string, string> = {
   tiny: "самая лёгкая, много ошибок на русском",
   base: "лёгкая, но заметно больше ошибок (имена, окончания)",
@@ -255,12 +263,17 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
               <span className="k">Распознавание речи</span>
               <span>
                 {health.asr.model} · {ENGINE_LABELS[health.asr.engine] ?? health.asr.engine}{" "}
+                {health.asr.device ? `· ${DEVICE_LABELS[health.asr.device] ?? health.asr.device} ` : ""}
                 {health.asr.loaded ? "· загружена" : "· грузится…"}
               </span>
             </div>
             <div className="kv">
               <span className="k">Идентификация голосов</span>
-              <span>{health.diarization.loaded ? "ECAPA · загружена" : "грузится…"}</span>
+              <span>
+                {health.diarization.loaded
+                  ? `ECAPA · ${DEVICE_LABELS[health.diarization.device ?? ""] ?? health.diarization.device ?? ""} · загружена`
+                  : "грузится…"}
+              </span>
             </div>
             <div className="kv">
               <span className="k">Локальная LLM (Ollama)</span>

@@ -144,8 +144,11 @@ async def health():
             "engine": transcriber.engine,
             "model": transcriber.model_name,
             "loaded": transcriber.loaded,
+            # Куратор жаловался на тормоза, потому что всё считалось процессором
+            # при живой видеокарте. Теперь это видно, не заглядывая в журнал.
+            "device": transcriber.device,
         },
-        "diarization": {"loaded": embedder.loaded},
+        "diarization": {"loaded": embedder.loaded, "device": embedder.device},
         "ollama": await llm.local_status(),
         "llm": {
             "provider": llm.provider,

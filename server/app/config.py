@@ -31,8 +31,12 @@ class Settings(BaseSettings):
     # на CPU. Если пакет gigaam не установлен, main.py откатывается на whisper.
     asr_engine: str = "gigaam"      # gigaam | faster_whisper (CPU) | mlx (GPU, Apple Silicon)
     asr_model: str = "v3_e2e_rnnt"  # см. ASR_MODELS
-    asr_device: str = "cpu"
-    asr_compute_type: str = "int8"
+    # auto — выбрать самим: cuda → mps → cpu (см. app/device.py). Раньше здесь
+    # стоял «cpu», и он никогда не менялся: у куратора на Windows всё считалось
+    # процессором при живой видеокарте. Значения cuda/mps/cpu задают устройство
+    # руками; недоступное молча откатывается на процессор.
+    asr_device: str = "auto"
+    asr_compute_type: str = "auto"  # auto: float16 на видеокарте, int8 на процессоре
     asr_language: str = "ru"        # "auto" — автоопределение языка
     asr_beam_size: int = 1          # 1 = greedy, быстрее на CPU
     preload_asr: bool = True        # грузить модель при старте, а не при первой фразе

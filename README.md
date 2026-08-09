@@ -145,6 +145,13 @@ docker compose exec ollama ollama pull qwen3:1.7b   # подсказки (оди
 Ollama включается переменными `STENOGRAF_LLM_*` в `docker-compose.yml` (ключ в образ
 не попадает). `torch` ставится CPU-сборкой, `mlx` пропускается сам (только macOS).
 
+**Видеокарта в этом образе не используется.** `torch` ставится CPU-сборкой
+([server/Dockerfile](server/Dockerfile)) — без CUDA образ в разы меньше, но и
+`STENOGRAF_ASR_DEVICE=cuda` внутри контейнера ничего не даст: карты для torch
+там просто нет. Чтобы считать на видеокарте, запускайте сервер напрямую
+(`server/run.sh`) — при установке в обычное окружение torch сам подтянет сборку
+с CUDA. Отдельного GPU-образа пока нет.
+
 ## Конфигурация сервера
 
 Все параметры — переменные окружения с префиксом `STENOGRAF_` (или `server/.env`):
@@ -153,6 +160,8 @@ Ollama включается переменными `STENOGRAF_LLM_*` в `docker-
 |---|---|---|
 | `STENOGRAF_ASR_ENGINE` | `gigaam` | Движок: `gigaam` / `faster_whisper` (CPU) / `mlx` (GPU, Apple Silicon) |
 | `STENOGRAF_ASR_MODEL` | `v3_e2e_rnnt` | whisper: `tiny`/`base`/`small`; gigaam: `v3_e2e_rnnt`/`v3_e2e_ctc` |
+| `STENOGRAF_ASR_DEVICE` | `auto` | Где считать: `auto` (видеокарта NVIDIA, иначе процессор), `cuda`, `mps`, `cpu` |
+| `STENOGRAF_ASR_COMPUTE_TYPE` | `auto` | Точность faster-whisper: `auto` (`float16` на видеокарте, `int8` на процессоре) |
 | `STENOGRAF_ASR_LANGUAGE` | `ru` | Язык распознавания whisper (`auto` — автоопределение); GigaAM всегда русский |
 | `STENOGRAF_SPEAKER_MATCH_THRESHOLD` | `0.35` | Порог «тот же голос» (косинусная близость, см. `scripts/eval_voices.py`) |
 | `STENOGRAF_SPEAKER_CHANNEL_DOMINANCE` | `2.0` | Во сколько раз канал должен быть громче, чтобы считаться источником голоса |
