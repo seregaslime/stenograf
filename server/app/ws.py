@@ -503,6 +503,16 @@ class LiveSession:
             for speaker_id, n in self._participants.most_common()
         )
 
+    async def _hint_delta(self, kind: str, chunk: str) -> None:
+        """Куски подсказки по кнопке «подсказать сейчас».
+
+        Мысли сюда не шлём: панель подсказок узкая, и рассуждения на английском
+        в ней только мешали бы. Их место — окно чата, где человек сам решил
+        спросить и готов читать длинный ответ.
+        """
+        if kind == "text":
+            await self._send({"type": "hint_delta", "text": chunk})
+
     def _is_duplicate(self, hint: str) -> bool:
         """Почти-дубль недавней подсказки (сравнение без учёта регистра)."""
         candidate = hint.casefold()
@@ -556,8 +566,14 @@ class LiveSession:
                 detailed=budget.detailed,
                 allow_skip=not force,
             )
+            # Печатаем только по кнопке. Автоподсказку стримить нечем: модель
+            # вправе промолчать, и молчание приходит словом SKIP в тексте
+            # ответа — человек увидел бы, как в панели появляется «SKIP» и
+            # исчезает. По кнопке молчать нельзя (allow_skip=False), и там
+            # печатать безопасно.
             raw = await self._llm.hint(
-                prompt, system=system, temperature=self._cfg.hints_temperature
+                prompt, system=system, temperature=self._cfg.hints_temperature,
+                on_delta=self._hint_delta if force else None,
             )
             self._hint_fail_streak = 0
             hint = prompts.parse_hint(raw, min_chars=self._cfg.hints_min_len_chars)
@@ -652,8 +668,21 @@ class LiveSession:
 
         self._hint_in_flight = True
         self._explicit_in_flight = True
+
+        async def on_delta(kind: str, chunk: str) -> None:
+            # Человек ждёт ответа и смотрит на экран: первый кусок приходит через
+            # полсекунды вместо нескольких секунд тишины. Мысли идут отдельным
+            # событием — показывать их вперемешку с ответом нельзя.
+            await self._send({
+                "type": "answer_reasoning" if kind == "reasoning" else "answer_delta",
+                "text": chunk,
+            })
+
         try:
-            raw = await self._llm.hint(prompt, system=system, temperature=self._cfg.hints_temperature)
+            raw = await self._llm.hint(
+                prompt, system=system, temperature=self._cfg.hints_temperature,
+                on_delta=on_delta,
+            )
             text = raw.strip()
             if not text:
                 await self._send({

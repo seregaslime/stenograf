@@ -26,6 +26,22 @@ import {
 
 type Phase = "setup" | "starting" | "live" | "stopping";
 
+/** Ход мыслей модели под спойлером.
+ *
+ *  Показывать его ничего не стоит: провайдер генерирует рассуждения в любом
+ *  случае и уже списал за них минутный лимит — мы просто перестали их
+ *  выбрасывать. Свёрнут по умолчанию: мысли идут на английском и длиннее
+ *  самого ответа, разворачивать их каждый раз никто не станет.
+ */
+function Thoughts({ text, live }: { text: string; live?: boolean }) {
+  return (
+    <details className="thoughts" open={false}>
+      <summary>{live ? "думает…" : "ход мыслей"}</summary>
+      <div className="thoughts-body">{text}</div>
+    </details>
+  );
+}
+
 function LevelMeter({ label, value }: { label: string; value: number }) {
   const width = Math.min(100, Math.round(value * 260)); // RMS речи ~0.05–0.3
   return (
@@ -65,7 +81,13 @@ export default function LivePage({
   const [hintsOn, setHintsOn] = useState(false); // подсказки включены прямо сейчас (тумблер)
   // Чат с моделью: вопрос участника и ответы. Отдельно от подсказок — там модель
   // говорит сама, здесь спрашивает человек.
-  const [chatLog, setChatLog] = useState<{ role: "you" | "model"; text: string }[]>([]);
+  const [chatLog, setChatLog] = useState<
+    { role: "you" | "model"; text: string; reasoning?: string }[]
+  >([]);
+  // Ответ, который печатается прямо сейчас: копится из кусков и превращается в
+  // сообщение, когда придёт итог. Мысли отдельно — их место под спойлером.
+  const [draft, setDraft] = useState<{ text: string; reasoning: string } | null>(null);
+  const [hintDraft, setHintDraft] = useState("");
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   const [pickedIds, setPickedIds] = useState<Set<number>>(new Set());
@@ -88,6 +110,11 @@ export default function LivePage({
   const stickToBottomRef = useRef(true); // стоит ли человек внизу ленты (см. onChatScroll)
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
+  // onEvent создаётся один раз при подключении и замыкает состояние на тот
+  // момент, поэтому мысли к финальному ответу берём через ref, а не из draft
+  // (тот же приём уже используется для phase).
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
 
   const isElectron = platform() !== "web";
 
@@ -205,8 +232,13 @@ export default function LivePage({
       case "segment":
         setSegments((previous) => [...previous, event.segment]);
         break;
+      case "hint_delta":
+        setHintError("");
+        setHintDraft((previous) => previous + event.text);
+        break;
       case "hint":
         setHintError(""); // подсказка пришла — снимаем баннер прошлой ошибки
+        setHintDraft("");
         setHintList((previous) => [
           ...previous,
           { text: event.text, at: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) },
@@ -215,12 +247,29 @@ export default function LivePage({
       case "hint_error":
         setHintError(event.message);
         break;
+      case "answer_delta":
+        setDraft((previous) => ({
+          text: (previous?.text ?? "") + event.text,
+          reasoning: previous?.reasoning ?? "",
+        }));
+        break;
+      case "answer_reasoning":
+        setDraft((previous) => ({
+          text: previous?.text ?? "",
+          reasoning: (previous?.reasoning ?? "") + event.text,
+        }));
+        break;
       case "answer":
         setAsking(false);
-        setChatLog((previous) => [...previous, { role: "model", text: event.text }]);
+        setChatLog((previous) => [
+          ...previous,
+          { role: "model", text: event.text, reasoning: draftRef.current?.reasoning },
+        ]);
+        setDraft(null);
         break;
       case "answer_error":
         setAsking(false);
+        setDraft(null);
         setChatLog((previous) => [
           ...previous,
           { role: "model", text: `⚠ ${event.message}` },
@@ -586,7 +635,13 @@ export default function LivePage({
             </button>
           </div>
           {hintError && <div className="banner warn">{hintError}</div>}
-          {hintList.length === 0 && !hintError && (
+          {hintDraft && (
+            <div className="hint-card">
+              {hintDraft}
+              <span className="caret" />
+            </div>
+          )}
+          {hintList.length === 0 && !hintError && !hintDraft && (
             <div className="empty" style={{ padding: "20px 8px" }}>
               {hintsOn
                 ? "Модель слушает разговор…"
@@ -614,12 +669,28 @@ export default function LivePage({
             )}
             {chatLog.map((message, index) => (
               <div className={`ask-msg ${message.role}`} key={index}>
+                {message.reasoning && <Thoughts text={message.reasoning} />}
                 {message.text}
               </div>
             ))}
+            {/* Пока ответ печатается: сначала появляются мысли, потом текст.
+                Спиннер остаётся только до первого куска — дальше видно, что
+                модель работает, по самому тексту. */}
             {asking && (
               <div className="ask-msg model">
-                <span className="spinner" /> Думает…
+                {draft?.reasoning && <Thoughts text={draft.reasoning} live />}
+                {draft?.text ? (
+                  <>
+                    {draft.text}
+                    <span className="caret" />
+                  </>
+                ) : (
+                  !draft?.reasoning && (
+                    <>
+                      <span className="spinner" /> Думает…
+                    </>
+                  )
+                )}
               </div>
             )}
             {pickedIds.size > 0 && (

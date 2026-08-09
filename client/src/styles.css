@@ -291,6 +291,30 @@ label.field > span { display: block; font-size: 12.5px; color: var(--muted); mar
   font-size: 12px; color: var(--muted);
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
+/* Курсор печати: видно, что ответ ещё идёт, без второго спиннера рядом. */
+.caret {
+  display: inline-block; width: 7px; height: 14px; vertical-align: -2px;
+  margin-left: 2px; background: var(--accent);
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink { to { visibility: hidden; } }
+
+/* Ход мыслей модели. Свёрнут: он на английском и длиннее самого ответа. */
+.thoughts { margin-bottom: 6px; font-size: 12px; }
+.thoughts > summary {
+  cursor: pointer; color: var(--muted); user-select: none;
+  list-style: none;
+}
+.thoughts > summary::before { content: "▸ "; }
+.thoughts[open] > summary::before { content: "▾ "; }
+.thoughts-body {
+  margin-top: 6px; padding: 8px 10px;
+  background: var(--bg); border-radius: 8px;
+  color: var(--muted); line-height: 1.4;
+  max-height: 220px; overflow-y: auto;
+  white-space: pre-wrap;
+}
+
 .ask-row { display: flex; gap: 6px; }
 .ask-row input { flex: 1; min-width: 0; }
 
