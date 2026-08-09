@@ -427,3 +427,63 @@ def test_window_never_drops_to_zero(cfg):
     """
     s = _session(cfg, _FakeLLM())
     assert s._window_chars(Budget(12_000, 40_000, True, hints_tokens=10)) == cfg.hints_min_context_chars
+
+
+# ------------------------------------------------- приоритет: вопрос важнее подсказки
+
+class _SlowLLM(_FakeLLM):
+    """Модель, которая «висит» — как настоящая, когда ждёт восстановления лимита."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.started = asyncio.Event()
+        self.cancelled = False
+
+    async def hint(self, prompt, system=None, temperature=0.5):
+        self.calls += 1
+        self.seen.append((system or "", prompt))
+        self.started.set()
+        try:
+            await asyncio.sleep(30)  # пейсинг по минутному лимиту длится и дольше
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        return self.reply
+
+
+def test_question_cancels_the_background_hint(cfg):
+    """Вопрос человека снимает фоновую подсказку, а не отбивается ею.
+
+    Живой случай: подсказка стояла в ожидании минутного лимита (это десятки
+    секунд), а выделение реплик и «Спросить» получали в ответ «Модель ещё
+    отвечает на прошлый вопрос…» — про вопрос, которого не было.
+    """
+    llm = _SlowLLM()
+
+    async def scenario():
+        s = _session(cfg, llm)
+        s._meeting_id = 1
+        _fill_context(s)
+        s._auto_hint_task = asyncio.create_task(s._emit_hint())
+        await llm.started.wait()          # подсказка честно висит на модели
+        assert s._hint_in_flight
+
+        await s._cancel_auto_hint()
+        assert llm.cancelled
+        assert not s._hint_in_flight      # флаг отпущен, путь для вопроса свободен
+        return s
+
+    s = asyncio.run(scenario())
+    assert not any(p.get("type") == "answer_error" for p in s._sent)
+
+
+def test_background_hint_does_not_start_while_question_runs(cfg):
+    """Пока считается вопрос, фоновая подсказка не лезет: приоритет односторонний."""
+    llm = _FakeLLM()
+    s = _session(cfg, llm)
+    _fill_context(s)
+    s._hint_in_flight = True              # занято ответом на вопрос
+
+    asyncio.run(s._emit_hint())
+
+    assert llm.calls == 0 and s._sent == []
