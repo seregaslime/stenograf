@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { SegmentDto } from "../types";
-import { formatTime, groupSegments } from "./Transcript";
+import {
+  applyMergeToSegments,
+  formatTime,
+  groupSegments,
+  renameInSegments,
+} from "./Transcript";
 
 describe("formatTime", () => {
   it("форматирует секунды меньше минуты", () => {
@@ -65,5 +70,73 @@ describe("groupSegments", () => {
 
   it("пустой список даёт пустой результат", () => {
     expect(groupSegments([])).toEqual([]);
+  });
+});
+
+describe("renameInSegments", () => {
+  const seg = (id: number, speakerId: number | null): SegmentDto => ({
+    id,
+    meeting_id: 1,
+    channel: "mic",
+    start_s: id,
+    end_s: id + 1,
+    text: "реплика",
+    similarity: null,
+    speaker: speakerId === null ? null : { id: speakerId, name: `Спикер ${speakerId}`, is_self: false },
+  });
+
+  it("меняет имя во всех репликах спикера, а не только в одной", () => {
+    const out = renameInSegments([seg(1, 3), seg(2, 4), seg(3, 3)], 3, "Иван");
+    expect(out.map((s) => s.speaker?.name)).toEqual(["Иван", "Спикер 4", "Иван"]);
+  });
+
+  it("не трогает реплики без спикера", () => {
+    const out = renameInSegments([seg(1, null), seg(2, 3)], 3, "Иван");
+    expect(out[0].speaker).toBeNull();
+    expect(out[1].speaker?.name).toBe("Иван");
+  });
+
+  it("не мутирует исходный массив", () => {
+    const before = [seg(1, 3)];
+    renameInSegments(before, 3, "Иван");
+    expect(before[0].speaker?.name).toBe("Спикер 3");
+  });
+});
+
+describe("applyMergeToSegments", () => {
+  const seg = (id: number, speakerId: number, name: string): SegmentDto => ({
+    id,
+    meeting_id: 1,
+    channel: "mic",
+    start_s: id,
+    end_s: id + 1,
+    text: "реплика",
+    similarity: null,
+    speaker: { id: speakerId, name, is_self: false },
+  });
+
+  it("реплики исчезнувшего профиля переезжают на целевой", () => {
+    const out = applyMergeToSegments(
+      [seg(1, 3, "Спикер 3"), seg(2, 5, "Иван"), seg(3, 9, "Другой")], 3, 5, "Иван",
+    );
+    expect(out.map((s) => [s.speaker?.id, s.speaker?.name])).toEqual([
+      [5, "Иван"], [5, "Иван"], [9, "Другой"],
+    ]);
+  });
+
+  it("целевой профиль тоже переименовывается, если сервер взял имя источника", () => {
+    // merge выбирает главного сам и может забрать человеческое имя у второго
+    const out = applyMergeToSegments([seg(1, 5, "Спикер 5")], 3, 5, "Иван");
+    expect(out[0].speaker?.name).toBe("Иван");
+  });
+
+  it("не трогает реплики без спикера и не мутирует исходный массив", () => {
+    const before: SegmentDto[] = [
+      { ...seg(1, 3, "Спикер 3"), speaker: null },
+      seg(2, 3, "Спикер 3"),
+    ];
+    const out = applyMergeToSegments(before, 3, 5, "Иван");
+    expect(out[0].speaker).toBeNull();
+    expect(before[1].speaker?.id).toBe(3);
   });
 });

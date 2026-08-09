@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Page } from "../App";
 import { LiveClient } from "../api/live";
+import { api } from "../api/rest";
 import {
   AudioEngine,
   type CaptureHandle,
@@ -8,8 +9,13 @@ import {
   listAudioInputs,
   looksLikeLoopback,
 } from "../audio/capture";
-import Transcript, { formatTime } from "../components/Transcript";
+import Transcript, {
+  applyMergeToSegments,
+  formatTime,
+  renameInSegments,
+} from "../components/Transcript";
 import { isDebugMode, platform } from "../store";
+import SpeakersPage from "./SpeakersPage";
 import {
   MEETING_MODE_LABELS,
   type HealthDto,
@@ -63,6 +69,9 @@ export default function LivePage({
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   const [pickedIds, setPickedIds] = useState<Set<number>>(new Set());
+  // «Спикеры» окном поверх встречи: уход на страницу размонтировал бы LivePage
+  // вместе с захватом звука и соединением, то есть завершил бы встречу.
+  const [speakersOpen, setSpeakersOpen] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
   const [sysLevel, setSysLevel] = useState(0);
   const [sysActive, setSysActive] = useState(false);
@@ -114,6 +123,28 @@ export default function LivePage({
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
+  }
+
+  /** Имя уже сохранено на сервере — осталось поправить показанное. */
+  function showNewName(id: number, name: string) {
+    setSegments((previous) => renameInSegments(previous, id, name));
+  }
+
+  async function renameSpeaker(id: number, name: string) {
+    try {
+      await api.renameSpeaker(id, name);
+    } catch (exc) {
+      setError((exc as Error).message);
+      return;
+    }
+    showNewName(id, name);
+  }
+
+  // Окном, а не переходом на страницу: уход со встречи размонтировал бы её
+  // вместе с захватом звука и соединением — то есть завершил бы её.
+  function onSpeakersMerged(sourceId: number, targetId: number, name: string) {
+    setSegments((previous) => applyMergeToSegments(previous, sourceId, targetId, name));
+    // Выделенные реплики не трогаем: у них свои id, слияние спикеров их не меняет.
   }
 
   function ask() {
@@ -470,10 +501,27 @@ export default function LivePage({
         <LevelMeter label="Микрофон" value={micLevel} />
         {sysActive && <LevelMeter label="Система" value={sysLevel} />}
         <span className="live-spacer" />
+        <button className="btn" onClick={() => setSpeakersOpen(true)}>
+          👥 Спикеры
+        </button>
         <button className="btn danger" onClick={stop} disabled={phase === "stopping"}>
           {phase === "stopping" ? <span className="spinner" /> : "■"} Завершить
         </button>
       </div>
+      {speakersOpen && (
+        <div className="modal-overlay" onClick={() => setSpeakersOpen(false)}>
+          <div className="modal wide" onClick={(event) => event.stopPropagation()}>
+            {/* Без своего заголовка: он уже есть у самой страницы, и второй
+                «Спикеры» строкой выше читался бы как ошибка вёрстки. */}
+            <div className="modal-head">
+              <button className="btn small" onClick={() => setSpeakersOpen(false)}>
+                Закрыть
+              </button>
+            </div>
+            <SpeakersPage onRenamed={showNewName} onMerged={onSpeakersMerged} />
+          </div>
+        </div>
+      )}
       {(error || warning) && (
         <div style={{ padding: "12px 24px 0" }}>
           {error && <div className="banner error">{error}</div>}
@@ -501,6 +549,7 @@ export default function LivePage({
               debug={isDebugMode()}
               selectedIds={pickedIds}
               onToggle={togglePicked}
+              onRename={renameSpeaker}
             />
           ) : (
             <div className="empty">

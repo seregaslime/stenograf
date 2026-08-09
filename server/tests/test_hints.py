@@ -4,10 +4,30 @@
 """
 import asyncio
 
+import pytest
+
+from app.db import crud
+from app.db.database import init_db, session_scope
 from app.llm import prompts
 from app.llm.base import LlmError
 from app.llm.router import Budget
 from app.ws import LiveSession
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _schema():
+    init_db()
+
+
+def _speakers(*names: str) -> list[int]:
+    """Спикеры в БД: имена участников теперь читаются оттуда, а не из счётчика."""
+    with session_scope() as db:
+        ids = []
+        for name in names:
+            speaker = crud.create_speaker(db)
+            speaker.name = name
+            ids.append(speaker.id)
+        return ids
 
 
 def _session(cfg, llm=None):
@@ -245,13 +265,37 @@ def test_prompt_carries_meeting_context(cfg):
     s = _session(cfg, llm)
     s._meeting_title = "Планёрка отдела"
     s._mode = "interview"
-    s._participants.update({"Вы": 3, "Интервьюер": 5})
+    you, interviewer = _speakers("Вы", "Интервьюер")
+    s._participants.update({you: 3, interviewer: 5})
     _fill_context(s)
     asyncio.run(s._emit_hint())
     system, prompt = llm.seen[-1]
     assert "Планёрка отдела" in prompt
     assert "Интервьюер (5 реплик)" in prompt
     assert "кандидат" in system  # режим собеседования доехал до промпта
+
+
+def test_rename_mid_meeting_keeps_one_participant(cfg):
+    """Переименовали участника посреди встречи — он остался одним человеком.
+
+    Счётчик реплик раньше жил по строке имени, и после переименования в промпт
+    уходили двое: «Спикер 3 (12 реплик)» и «Иван (4 реплики)». Модель считала,
+    что в разговоре на одного человека больше, чем есть.
+    """
+    llm = _FakeLLM("Уточните срок задачи и ответственного.")
+    s = _session(cfg, llm)
+    (speaker_id,) = _speakers("Спикер 3")
+    s._participants[speaker_id] = 12
+    _fill_context(s)
+
+    with session_scope() as db:
+        crud.rename_speaker(db, speaker_id, "Иван")
+    s._participants[speaker_id] += 4  # он говорит и после переименования
+
+    asyncio.run(s._emit_hint())
+    _, prompt = llm.seen[-1]
+    assert "Иван (16 реплик)" in prompt
+    assert "Спикер 3" not in prompt
 
 
 def test_window_follows_provider_budget(cfg):

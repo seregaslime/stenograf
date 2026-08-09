@@ -74,8 +74,13 @@ export const api = {
     request<{ deleted: number }>(`/api/speakers/${speakerId}/voiceprints/${printId}`, {
       method: "DELETE",
     }),
+  // source_id — какого профиля больше нет: целевой сервер выбирает сам
+  // («Вы» → человеческое имя → больше реплик), и клиент заранее его не знает.
   mergeSpeakers: (ids: [number, number]) =>
-    request<{ target_id: number; name: string; moved_segments: number }>(
+    request<{
+      target_id: number; name: string; moved_segments: number;
+      source_id: number; was_named: string[];
+    }>(
       "/api/speakers/merge",
       { method: "POST", body: JSON.stringify({ speaker_ids: ids }) },
     ),

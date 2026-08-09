@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import type { SegmentDto } from "../types";
 import Avatar, { speakerColor } from "./Avatar";
 
@@ -76,16 +78,104 @@ function Replica({
   );
 }
 
+/** Новое имя спикера — во ВСЕХ его репликах.
+ *
+ *  Имя лежит в каждом сегменте копией (так его присылает сервер), поэтому
+ *  переименование обязано пройти по всей ленте: иначе один и тот же человек
+ *  остался бы «Спикером 3» выше по разговору и «Иваном» ниже.
+ */
+export function renameInSegments(
+  segments: SegmentDto[], speakerId: number, name: string,
+): SegmentDto[] {
+  return segments.map((segment) =>
+    segment.speaker && segment.speaker.id === speakerId
+      ? { ...segment, speaker: { ...segment.speaker, name } }
+      : segment,
+  );
+}
+
+/** Двух спикеров объединили — переписываем ленту.
+ *
+ *  Реплики исчезнувшего профиля переезжают на целевой: без этого один человек
+ *  оставался бы в ленте двумя — со старым id, старым цветом аватарки и старым
+ *  именем, — пока страницу не перезагрузят.
+ */
+export function applyMergeToSegments(
+  segments: SegmentDto[], sourceId: number, targetId: number, name: string,
+): SegmentDto[] {
+  return segments.map((segment) => {
+    if (!segment.speaker) return segment;
+    const mine = segment.speaker.id === sourceId || segment.speaker.id === targetId;
+    if (!mine) return segment;
+    return { ...segment, speaker: { ...segment.speaker, id: targetId, name } };
+  });
+}
+
+function SpeakerName({
+  id,
+  name,
+  isSelf,
+  onRename,
+}: {
+  id: number;
+  name: string;
+  isSelf: boolean;
+  onRename?: (id: number, name: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const color = speakerColor(id, isSelf);
+  // Переименовывать некого, пока спикер не опознан: id нулевой, и правка ушла
+  // бы в никуда.
+  if (!onRename || id === 0) {
+    return <span className="msg-name" style={{ color }}>{name}</span>;
+  }
+  if (editing) {
+    return (
+      <input
+        className="msg-name-input"
+        defaultValue={name}
+        autoFocus
+        style={{ color }}
+        onBlur={(event) => {
+          setEditing(false);
+          const value = event.target.value.trim();
+          if (value && value !== name) onRename(id, value);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+          if (event.key === "Escape") {
+            event.currentTarget.value = name;  // отмена: blur сравнит и не тронет
+            event.currentTarget.blur();
+          }
+        }}
+      />
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="msg-name as-button"
+      style={{ color }}
+      title="Переименовать участника"
+      onClick={() => setEditing(true)}
+    >
+      {name}
+    </button>
+  );
+}
+
 function Group({
   segments,
   debug,
   selectedIds,
   onToggle,
+  onRename,
 }: {
   segments: SegmentDto[];
   debug?: boolean;
   selectedIds?: Set<number>;
   onToggle?: (id: number) => void;
+  onRename?: (id: number, name: string) => void;
 }) {
   const first = segments[0];
   const speaker = first.speaker;
@@ -99,9 +189,7 @@ function Group({
         {/* Имя и время — по одному разу на группу: время первой реплики
             отвечает на вопрос «когда он это начал говорить». */}
         <div className="msg-meta">
-          <span className="msg-name" style={{ color: speakerColor(id, isSelf) }}>
-            {name}
-          </span>
+          <SpeakerName id={id} name={name} isSelf={isSelf} onRename={onRename} />
           <span className="msg-time">{formatTime(first.start_s)}</span>
         </div>
         {segments.map((segment) => (
@@ -123,6 +211,7 @@ export default function Transcript({
   debug,
   selectedIds,
   onToggle,
+  onRename,
 }: {
   segments: SegmentDto[];
   debug?: boolean;
@@ -130,6 +219,8 @@ export default function Transcript({
   selectedIds?: Set<number>;
   /** Не передан — режим выделения выключен (история встречи). */
   onToggle?: (id: number) => void;
+  /** Не передан — имена не редактируются (история встречи). */
+  onRename?: (id: number, name: string) => void;
 }) {
   return (
     <div className="transcript">
@@ -140,6 +231,7 @@ export default function Transcript({
           debug={debug}
           selectedIds={selectedIds}
           onToggle={onToggle}
+          onRename={onRename}
         />
       ))}
     </div>

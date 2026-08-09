@@ -81,6 +81,18 @@ def rename_speaker(db: Session, speaker_id: int, name: str) -> Optional[Speaker]
     return speaker
 
 
+def speaker_names(db: Session, speaker_ids: list[int]) -> dict[int, str]:
+    """Имена по id — одним запросом.
+
+    Нужны там, где имя нельзя запомнить заранее: его меняют посреди встречи, и
+    сохранённая строка устаревает (см. LiveSession._participants_line).
+    """
+    if not speaker_ids:
+        return {}
+    rows = db.query(Speaker.id, Speaker.name).filter(Speaker.id.in_(speaker_ids)).all()
+    return {row.id: row.name for row in rows}
+
+
 def reassign_segments(db: Session, from_speaker_id: int, to_speaker_id: Optional[int]) -> int:
     """Переписывает speaker_id в сегментах ВСЕХ встреч (merge либо, с None,
     отвязка реплик при удалении спикера — текст остаётся как «Неизвестный»)."""

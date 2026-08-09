@@ -52,7 +52,16 @@ function VoiceprintButtons({
   );
 }
 
-export default function SpeakersPage() {
+/** Страница спикеров живёт и сама по себе, и окном поверх идущей встречи.
+ *  Во втором случае лента встречи должна узнать о правках — иначе один человек
+ *  останется в ней двумя, со старым именем и старым цветом аватарки. */
+export default function SpeakersPage({
+  onRenamed,
+  onMerged,
+}: {
+  onRenamed?: (speakerId: number, name: string) => void;
+  onMerged?: (sourceId: number, targetId: number, name: string) => void;
+} = {}) {
   const [speakers, setSpeakers] = useState<SpeakerDto[] | null>(null);
   const [selected, setSelected] = useState<number[]>([]);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -111,6 +120,7 @@ export default function SpeakersPage() {
     if (!name) return;
     try {
       await api.renameSpeaker(id, name);
+      onRenamed?.(id, name);
       await load();
     } catch (exc) {
       setError((exc as Error).message);
@@ -162,6 +172,7 @@ export default function SpeakersPage() {
     setMerging(true);
     try {
       const result = await api.mergeSpeakers([a.id, b.id]);
+      onMerged?.(result.source_id, result.target_id, result.name);
       setNotice(
         `Объединено в «${result.name}»: перенесено реплик — ${result.moved_segments}. ` +
           "Оба отпечатка голоса сохранены.",
