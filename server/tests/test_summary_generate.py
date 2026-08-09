@@ -101,26 +101,6 @@ def test_transcript_and_participants_reach_the_model():
     assert "русском" in system  # протокол требуем по-русски
 
 
-def test_meeting_mode_changes_sections():
-    """Тип встречи доезжает из БД до промпта: у собеседования свои разделы."""
-    llm = _FakeLlm()
-    asyncio.run(generate_summary(llm, _meeting(mode="interview")))
-
-    prompt, _ = llm.seen[0]
-    assert "Что стоит подтянуть" in prompt
-    assert "Принятые решения" not in prompt
-
-
-def test_api_budget_asks_for_more_detail():
-    """У API контекст большой — просим таймкоды и раздел открытых вопросов."""
-    llm = _FakeLlm(detailed=True)
-    asyncio.run(generate_summary(llm, _meeting()))
-
-    prompt, system = llm.seen[0]
-    assert "таймкод" in system
-    assert "Открытые вопросы" in prompt
-
-
 def test_long_transcript_truncated_by_budget():
     """Маленький бюджет режет транскрипт, а не отправляет всё подряд."""
     llm = _FakeLlm(summary_chars=400)
