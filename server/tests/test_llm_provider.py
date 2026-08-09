@@ -230,6 +230,22 @@ def test_hints_budget_falls_back_when_limit_unknown(tmp_path):
     assert LlmRouter(cfg).budget.hints_tokens == int(6000 * 0.5) // 4
 
 
+def test_default_share_leaves_most_of_the_limit_to_the_input(tmp_path):
+    """По умолчанию под ответ отводится четверть лимита, а не половина.
+
+    Замер 09.08: без max_tokens провайдер списывает промпт плюс фактический
+    ответ, а ответ протокола занимает 600–2200 токенов — 8–27% лимита в 8000.
+    Прежняя половина резервировала вдвое-вчетверо больше нужного, и длинная
+    встреча резалась на лишние фрагменты, каждый с минутной паузой.
+    """
+    cfg = Settings(data_dir=tmp_path, _env_file=None)
+    cfg.llm_provider = "api"
+    cfg.llm_api_summary_model = "groq-model"
+    cfg.llm_api_tpm_limits = {"groq-model": 8000}
+
+    assert LlmRouter(cfg).budget.summary_tokens == 6000
+
+
 def test_local_provider_has_no_token_budget(tmp_path):
     """У локальной модели тарифного лимита нет — режем по символам, как раньше."""
     cfg = Settings(data_dir=tmp_path, _env_file=None)
