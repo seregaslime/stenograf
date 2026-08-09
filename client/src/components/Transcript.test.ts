@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { SegmentDto } from "../types";
-import { formatTime, groupSegments, renameInSegments } from "./Transcript";
+import {
+  applyMergeToSegments,
+  formatTime,
+  groupSegments,
+  renameInSegments,
+} from "./Transcript";
 
 describe("formatTime", () => {
   it("форматирует секунды меньше минуты", () => {
@@ -98,3 +103,40 @@ describe("renameInSegments", () => {
   });
 });
 
+describe("applyMergeToSegments", () => {
+  const seg = (id: number, speakerId: number, name: string): SegmentDto => ({
+    id,
+    meeting_id: 1,
+    channel: "mic",
+    start_s: id,
+    end_s: id + 1,
+    text: "реплика",
+    similarity: null,
+    speaker: { id: speakerId, name, is_self: false },
+  });
+
+  it("реплики исчезнувшего профиля переезжают на целевой", () => {
+    const out = applyMergeToSegments(
+      [seg(1, 3, "Спикер 3"), seg(2, 5, "Иван"), seg(3, 9, "Другой")], 3, 5, "Иван",
+    );
+    expect(out.map((s) => [s.speaker?.id, s.speaker?.name])).toEqual([
+      [5, "Иван"], [5, "Иван"], [9, "Другой"],
+    ]);
+  });
+
+  it("целевой профиль тоже переименовывается, если сервер взял имя источника", () => {
+    // merge выбирает главного сам и может забрать человеческое имя у второго
+    const out = applyMergeToSegments([seg(1, 5, "Спикер 5")], 3, 5, "Иван");
+    expect(out[0].speaker?.name).toBe("Иван");
+  });
+
+  it("не трогает реплики без спикера и не мутирует исходный массив", () => {
+    const before: SegmentDto[] = [
+      { ...seg(1, 3, "Спикер 3"), speaker: null },
+      seg(2, 3, "Спикер 3"),
+    ];
+    const out = applyMergeToSegments(before, 3, 5, "Иван");
+    expect(out[0].speaker).toBeNull();
+    expect(before[1].speaker?.id).toBe(3);
+  });
+});

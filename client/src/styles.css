@@ -393,6 +393,10 @@ code { background: var(--bg-3); border-radius: 5px; padding: 1.5px 6px; font-siz
   max-height: 85vh; overflow-y: auto;
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
 }
+/* Широкий вариант — под «Спикеры» поверх встречи: страница рассчитана на всю
+   ширину, в 560px её карточки складываются в кашу. */
+.modal.wide { width: min(920px, calc(100vw - 40px)); }
+.modal-head { display: flex; justify-content: flex-end; margin-bottom: 4px; }
 .modal h2 { margin-bottom: 6px; }
 .modal-sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
 .merge-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

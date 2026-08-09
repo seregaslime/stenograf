@@ -94,6 +94,23 @@ export function renameInSegments(
   );
 }
 
+/** Двух спикеров объединили — переписываем ленту.
+ *
+ *  Реплики исчезнувшего профиля переезжают на целевой: без этого один человек
+ *  оставался бы в ленте двумя — со старым id, старым цветом аватарки и старым
+ *  именем, — пока страницу не перезагрузят.
+ */
+export function applyMergeToSegments(
+  segments: SegmentDto[], sourceId: number, targetId: number, name: string,
+): SegmentDto[] {
+  return segments.map((segment) => {
+    if (!segment.speaker) return segment;
+    const mine = segment.speaker.id === sourceId || segment.speaker.id === targetId;
+    if (!mine) return segment;
+    return { ...segment, speaker: { ...segment.speaker, id: targetId, name } };
+  });
+}
+
 function SpeakerName({
   id,
   name,

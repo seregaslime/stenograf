@@ -23,6 +23,7 @@ import logging
 import time
 import wave
 from collections import Counter, deque
+from dataclasses import replace
 from typing import Optional
 
 import numpy as np
@@ -45,6 +46,23 @@ log = logging.getLogger(__name__)
 
 CHANNELS = {0: "mic", 1: "system"}
 _STOP = object()  # сигнал потребителю очереди
+
+
+_LIVE_SESSIONS: set["LiveSession"] = set()
+
+
+def notify_speakers_merged(source_id: int, target_id: int, name: str,
+                           was_named: list[str]) -> None:
+    """Сообщает идущим встречам, что двух спикеров объединили.
+
+    Слияние приходит по REST (страница «Спикеры» открыта окном поверх встречи),
+    а живая сессия держит id спикеров в памяти и про удаление профиля сама не
+    узнает. Без этого следующая короткая реплика уехала бы на удалённого:
+    внешние ключи в SQLite выключены, поэтому она не упала бы с ошибкой, а молча
+    записалась ссылкой в никуда — и не нашлась бы потом ни у одного участника.
+    """
+    for session in list(_LIVE_SESSIONS):
+        session.on_speakers_merged(source_id, target_id, name, was_named)
 
 
 def _log_hint_failure(task: asyncio.Task) -> None:
@@ -174,6 +192,7 @@ class LiveSession:
             return
         # Старый клиент поля не шлёт — normalize_mode вернёт режим по умолчанию
         self._mode = prompts.normalize_mode(command.get("meeting_mode"))
+        _LIVE_SESSIONS.add(self)  # чтобы узнать о слиянии спикеров по ходу встречи
         with session_scope() as db:
             meeting = crud.create_meeting(
                 db,
@@ -650,6 +669,42 @@ class LiveSession:
             self._hint_in_flight = False
             self._explicit_in_flight = False
 
+    def on_speakers_merged(self, source_id: int, target_id: int, name: str,
+                           was_named: list[str]) -> None:
+        """Двух спикеров объединили посреди встречи — приводим память в порядок.
+
+        Профиля source_id в базе больше нет, а сессия помнит его в трёх местах:
+        как донора для коротких реплик (иначе следующее «ага» уедет на удалённого),
+        как недавно говорившего и в счётчике участников. Счётчик особенно важен:
+        не сложив его, мы отдали бы модели на одного участника больше, чем есть.
+        """
+        if source_id == target_id:
+            return
+        moved = self._participants.pop(source_id, 0)
+        if moved:
+            self._participants[target_id] += moved
+        self._recent_speakers.pop(source_id, None)
+        for channel, (match, ended_at) in list(self._last_by_channel.items()):
+            if match.speaker_id == source_id:
+                self._last_by_channel[channel] = (
+                    replace(match, speaker_id=target_id, name=name), ended_at,
+                )
+        # Окно разговора для подсказок хранится строками «Имя: текст», и после
+        # слияния в нём соседствовали бы два имени одного человека — модель
+        # считала бы, что говорили двое.
+        if was_named:
+            self._recent = deque(
+                (self._rename_line(line, was_named, name) for line in self._recent),
+                maxlen=self._recent.maxlen,
+            )
+
+    @staticmethod
+    def _rename_line(line: str, was_named: list[str], name: str) -> str:
+        for old in was_named:
+            if line.startswith(f"{old}: "):
+                return f"{name}: {line[len(old) + 2:]}"
+        return line
+
     @staticmethod
     def _mmss(seconds: float) -> str:
         return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
@@ -657,6 +712,7 @@ class LiveSession:
     # ------------------------------------------------------------------ завершение
 
     async def _finalize(self) -> None:
+        _LIVE_SESSIONS.discard(self)
         if self._meeting_id is None:
             return
         meeting_id, self._meeting_id = self._meeting_id, None

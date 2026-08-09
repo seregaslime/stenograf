@@ -221,6 +221,10 @@ class SpeakerRegistry:
             return (speaker.is_self, self._has_custom_name(speaker), segments, -speaker.id)
 
         target, source = (a, b) if rank(a) >= rank(b) else (b, a)
+        # Имена, под которыми эти двое уже успели прозвучать. Нужны тем, кто
+        # держит их строками: живая сессия помнит окно разговора как «Имя: текст»,
+        # и после слияния в нём остались бы оба имени одного человека.
+        was_named = [source.name, target.name]
         if not self._has_custom_name(target) and self._has_custom_name(source):
             target.name = source.name
 
@@ -246,7 +250,13 @@ class SpeakerRegistry:
             "Merge: «%s» → «%s», сегментов: %d, отпечатков теперь: %d",
             source_name, target.name, moved, len(self._prints.get(target.id, [])),
         )
-        return {"target_id": target.id, "name": target.name, "moved_segments": moved}
+        return {
+            "target_id": target.id, "name": target.name, "moved_segments": moved,
+            # source_id — чтобы вызывающий знал, какого профиля больше нет:
+            # целевого выбирает сервер, и клиент заранее его не знает.
+            "source_id": source.id,
+            "was_named": [name for name in was_named if name != target.name],
+        }
 
     @staticmethod
     def _has_custom_name(speaker: Speaker) -> bool:

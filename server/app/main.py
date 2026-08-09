@@ -30,7 +30,7 @@ from .diarization.registry import SpeakerRegistry
 from .llm.openai_client import OpenAIClient
 from .llm.router import LlmRouter
 from .llm.summary import build_transcript, generate_summary
-from .ws import LiveSession
+from .ws import LiveSession, notify_speakers_merged
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 log = logging.getLogger("stenograf")
@@ -479,6 +479,11 @@ def merge_speakers(body: MergeBody):
             result = registry.merge(db, body.speaker_ids[0], body.speaker_ids[1])
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+    # Только после коммита: идущая встреча по этому сигналу перепишет своё
+    # состояние, а профиля-источника к тому моменту уже не должно быть в базе.
+    notify_speakers_merged(
+        result["source_id"], result["target_id"], result["name"], result["was_named"],
+    )
     return result
 
 
