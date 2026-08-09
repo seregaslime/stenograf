@@ -47,6 +47,15 @@ CHANNELS = {0: "mic", 1: "system"}
 _STOP = object()  # сигнал потребителю очереди
 
 
+def _log_hint_failure(task: asyncio.Task) -> None:
+    """Фоновая подсказка теперь живёт отдельной задачей, и её исключение никто
+    не ждёт — без этого неожиданный сбой пропал бы совсем беззвучно."""
+    if task.cancelled():
+        return  # сняли ради вопроса человека — штатный исход
+    if task.exception() is not None:
+        log.exception("Фоновая подсказка упала", exc_info=task.exception())
+
+
 class LiveSession:
     def __init__(
         self,
@@ -87,7 +96,16 @@ class LiveSession:
         self._chars_since_hint = 0        # сколько нового текста с прошлой подсказки
         self._last_hint_at = 0.0          # time.monotonic() последней подсказки
         self._recent_hints: deque[str] = deque(maxlen=cfg.hints_memory)  # против повторов
-        self._hint_in_flight = False      # идёт генерация — не запускать вторую
+        self._hint_in_flight = False      # занят LLM (любой запрос) — не запускать вторую
+        # Занят тем, что человек запросил САМ (кнопка «подсказать сейчас» или
+        # вопрос по выделенным репликам). Отдельно от _hint_in_flight, потому что
+        # у этих двух разный приоритет: фоновая подсказка необязательна, а вопрос
+        # — нет. Раньше флаг был один, и подсказка, ждущая восстановления минутного
+        # лимита (это десятки секунд), отбивала вопрос сообщением про «прошлый
+        # вопрос», которого человек не задавал.
+        self._explicit_in_flight = False
+        # Фоновая подсказка живёт своей задачей — чтобы явный запрос мог её снять.
+        self._auto_hint_task: Optional[asyncio.Task] = None
         self._hint_fail_streak = 0        # ошибок LLM подряд
         self._hint_backoff_until = 0.0    # до этого времени не пробовать (бэкофф)
         self._skip_streak = 0             # сколько раз подряд модель промолчала
@@ -327,8 +345,32 @@ class LiveSession:
         разговора и прошёл минимальный интервал (быстрый API это позволяет)."""
         while self._meeting_id is not None:
             await asyncio.sleep(self._cfg.hints_poll_s)
-            if self._hints_enabled and self._should_hint(time.monotonic()):
-                await self._emit_hint()
+            # Занятость проверяем здесь, а не только внутри _emit_hint: иначе
+            # новая задача затёрла бы ссылку на уже считающуюся, и снять ту ради
+            # вопроса человека было бы нечем.
+            if (self._hints_enabled and not self._hint_in_flight
+                    and self._should_hint(time.monotonic())):
+                # Отдельной задачей, а не await прямо здесь: иначе снять подсказку
+                # ради вопроса человека можно было бы только вместе со всем циклом.
+                self._auto_hint_task = asyncio.create_task(self._emit_hint())
+                self._auto_hint_task.add_done_callback(_log_hint_failure)
+
+    async def _cancel_auto_hint(self) -> None:
+        """Снимает фоновую подсказку ради того, что человек запросил сам.
+
+        Подсказка необязательна: модель и без того вправе промолчать, и пропуск
+        ничего не стоит. Вопрос — наоборот, единственное, ради чего человек в
+        этот момент смотрит на экран. Ждать её нельзя: она может стоять в
+        пейсинге по минутному лимиту почти минуту.
+        """
+        task, self._auto_hint_task = self._auto_hint_task, None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass  # сняли сами, это штатный исход, а не сбой
 
     def _should_hint(self, now: float) -> bool:
         """Пора ли подсказывать: не в периоде бэкоффа, накопилось нового текста
@@ -446,11 +488,16 @@ class LiveSession:
         поэтому allow_skip=False, дедуп отключён, а на каждый отказ он получает
         внятный ответ вместо тишины.
         """
-        if self._hint_in_flight:
-            if force:
+        if force:
+            # Спросили явно: уступает только другому явному запросу, а фоновую
+            # подсказку снимает.
+            if self._explicit_in_flight:
                 await self._send({
                     "type": "hint_error", "message": "Подсказка уже готовится…",
                 })
+                return
+            await self._cancel_auto_hint()
+        elif self._hint_in_flight:
             return
         budget = self._llm.budget  # читаем на каждый вызов — провайдера могли сменить
         earlier, window = self._split_window(self._window_chars(budget), force)
@@ -462,6 +509,7 @@ class LiveSession:
                 })
             return  # счётчики не трогаем — контекст копится дальше
         self._hint_in_flight = True
+        self._explicit_in_flight = force
         self._chars_since_hint = 0
         self._last_hint_at = time.monotonic()
         try:
@@ -518,6 +566,7 @@ class LiveSession:
                 await self._send({"type": "hint_error", "message": str(exc)})
         finally:
             self._hint_in_flight = False
+            self._explicit_in_flight = False
 
     # ------------------------------------------------------------------ вопрос от участника
 
@@ -540,11 +589,14 @@ class LiveSession:
                 "type": "answer_error", "message": "Пустой вопрос.",
             })
             return
-        if self._hint_in_flight:
+        # Отказываем только настоящему прошлому вопросу. Фоновую подсказку —
+        # снимаем: она необязательна, а её ожидание лимита длится десятки секунд.
+        if self._explicit_in_flight:
             await self._send({
                 "type": "answer_error", "message": "Модель ещё отвечает на прошлый вопрос…",
             })
             return
+        await self._cancel_auto_hint()
 
         # Приводим id к целым: клиент может прислать что угодно, а дальше они
         # уходят в запрос к БД
@@ -566,6 +618,7 @@ class LiveSession:
         )
 
         self._hint_in_flight = True
+        self._explicit_in_flight = True
         try:
             raw = await self._llm.hint(prompt, system=system, temperature=self._cfg.hints_temperature)
             text = raw.strip()
@@ -581,6 +634,7 @@ class LiveSession:
             await self._send({"type": "answer_error", "message": str(exc)})
         finally:
             self._hint_in_flight = False
+            self._explicit_in_flight = False
 
     @staticmethod
     def _mmss(seconds: float) -> str:
@@ -596,6 +650,8 @@ class LiveSession:
         try:
             if self._hints_task:
                 self._hints_task.cancel()
+            if self._auto_hint_task:
+                self._auto_hint_task.cancel()  # цикл её уже не снимет: она сама по себе
             # Дожимаем недоговорённые фразы и ждём, пока ASR обработает очередь
             if self._segmenter is not None:
                 for mixed in self._mixer.flush():

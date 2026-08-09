@@ -141,17 +141,35 @@ def test_llm_error_reaches_the_user(cfg):
 
 
 def test_second_question_while_answering_is_refused(cfg):
-    """Пока модель отвечает, второй вопрос не запускаем — иначе два запроса
-    в лимит токенов в минуту вместо одного."""
+    """Пока модель отвечает на вопрос, второй вопрос не запускаем — иначе два
+    запроса в лимит токенов в минуту вместо одного."""
     meeting_id, _ = _meeting(["реплика"])
     llm = _FakeLLM()
     s = _session(cfg, llm, meeting_id)
-    s._hint_in_flight = True
+    s._explicit_in_flight = True
 
     asyncio.run(s._answer(question="вопрос", segment_ids=[]))
 
     assert not llm.seen
     assert "ещё отвечает" in s._sent[-1]["message"]
+
+
+def test_background_hint_does_not_block_the_question(cfg):
+    """Фоновая подсказка вопрос не отбивает — она необязательна, а он нет.
+
+    Раньше флаг занятости был один на подсказки и вопросы, и подсказка, ждущая
+    восстановления минутного лимита (десятки секунд), отвечала человеку «Модель
+    ещё отвечает на прошлый вопрос…» — про вопрос, которого он не задавал.
+    """
+    meeting_id, _ = _meeting(["реплика"])
+    llm = _FakeLLM()
+    s = _session(cfg, llm, meeting_id)
+    s._hint_in_flight = True  # занято фоновой подсказкой, а не человеком
+
+    asyncio.run(s._answer(question="вопрос", segment_ids=[]))
+
+    assert llm.seen  # вопрос дошёл до модели
+    assert s._sent[-1]["type"] == "answer"
 
 
 def test_garbage_ids_do_not_crash(cfg):
