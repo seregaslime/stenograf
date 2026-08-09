@@ -118,8 +118,22 @@ class LlmRouter:
             self.summary_model_name, prompt, system=system, temperature=temperature
         )
 
-    async def hint(self, prompt: str, system: str | None = None, temperature: float = 0.5) -> str:
-        return await self._client().generate(
+    async def hint(self, prompt: str, system: str | None = None, temperature: float = 0.5,
+                   on_delta=None) -> str:
+        """on_delta — печатать ответ по мере генерации.
+
+        Работает только у внешнего API: у локальной Ollama свой протокол, и
+        стриминг там пришлось бы делать отдельно. Провайдера переключают в
+        настройках, поэтому вызывающий не обязан знать, кто сейчас активен, —
+        с локальной моделью он просто получит ответ целиком, как раньше.
+        """
+        client = self._client()
+        if on_delta is not None and isinstance(client, OpenAIClient):
+            return await client.generate_streaming(
+                self.hints_model_name, prompt, system=system,
+                temperature=temperature, on_delta=on_delta,
+            )
+        return await client.generate(
             self.hints_model_name, prompt, system=system, temperature=temperature
         )
 

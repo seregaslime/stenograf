@@ -30,10 +30,15 @@ class _FakeLLM:
     def budget(self) -> Budget:
         return Budget(12_000, 2500, False)
 
-    async def hint(self, prompt, system=None, temperature=0.5):
+    async def hint(self, prompt, system=None, temperature=0.5, on_delta=None):
         self.seen.append((system or "", prompt))
         if self.fail:
             raise LlmError("нет связи с LLM")
+        if on_delta is not None:
+            # как настоящий поток: сначала мысли, потом ответ по кускам
+            await on_delta("reasoning", "думаю")
+            for кусок in self.reply.split(" "):
+                await on_delta("text", кусок + " ")
         return self.reply
 
 
@@ -182,3 +187,22 @@ def test_garbage_ids_do_not_crash(cfg):
 
     _, prompt = llm.seen[-1]
     assert "нормальная реплика" in prompt
+
+
+def test_answer_is_printed_as_it_goes(cfg):
+    """Ответ на вопрос печатается по кускам, а мысли идут отдельным событием.
+
+    Провайдер шлёт их разными полями (content и reasoning), и смешивать нельзя:
+    ответ показывается как ответ, рассуждения — под спойлером.
+    """
+    meeting_id, _ = _meeting(["реплика"])
+    llm = _FakeLLM("SLA — соглашение об уровне сервиса.")
+    s = _session(cfg, llm, meeting_id)
+
+    asyncio.run(s._answer(question="что такое SLA", segment_ids=[]))
+
+    куски = [m for m in s._sent if m["type"] == "answer_delta"]
+    мысли = [m for m in s._sent if m["type"] == "answer_reasoning"]
+    assert "".join(m["text"] for m in куски).strip() == llm.reply
+    assert мысли, "мысли модели провайдер отдаёт даром — выбрасывать их незачем"
+    assert s._sent[-1] == {"type": "answer", "text": llm.reply}  # итог приходит последним

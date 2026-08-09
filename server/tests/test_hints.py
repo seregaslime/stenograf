@@ -52,6 +52,7 @@ class _FakeLLM:
         self.reply = reply
         self.fail = fail
         self.calls = 0
+        self.streamed = False   # звали ли с печатью по кускам
         self.seen: list[tuple[str, str]] = []  # (system, prompt) последних вызовов
         self._detailed = detailed
 
@@ -59,11 +60,16 @@ class _FakeLLM:
     def budget(self) -> Budget:
         return Budget(12_000, 2500, self._detailed)
 
-    async def hint(self, prompt, system=None, temperature=0.5):
+    async def hint(self, prompt, system=None, temperature=0.5, on_delta=None):
         self.calls += 1
         self.seen.append((system or "", prompt))
+        self.streamed = on_delta is not None
         if self.fail:
             raise LlmError("нет связи с LLM")
+        if on_delta is not None:
+            await on_delta("reasoning", "думаю")
+            for кусок in self.reply.split(" "):
+                await on_delta("text", кусок + " ")
         return self.reply
 
 
@@ -483,7 +489,7 @@ class _SlowLLM(_FakeLLM):
         self.started = asyncio.Event()
         self.cancelled = False
 
-    async def hint(self, prompt, system=None, temperature=0.5):
+    async def hint(self, prompt, system=None, temperature=0.5, on_delta=None):
         self.calls += 1
         self.seen.append((system or "", prompt))
         self.started.set()
@@ -531,3 +537,50 @@ def test_background_hint_does_not_start_while_question_runs(cfg):
     asyncio.run(s._emit_hint())
 
     assert llm.calls == 0 and s._sent == []
+
+
+# ------------------------------------------------- печать ответа по мере генерации
+
+def test_hint_by_button_is_printed_as_it_goes(cfg):
+    """По кнопке подсказка печатается кусками: человек ждёт и смотрит на экран.
+
+    Замер провайдера: первый кусок приходит через 0.6 с вместо нескольких
+    секунд тишины, а при обрыве связи остаётся хотя бы начало.
+    """
+    llm = _FakeLLM("Уточните срок задачи и ответственного.")
+    s = _session(cfg, llm)
+    _fill_context(s)
+
+    asyncio.run(s._emit_hint(force=True))
+
+    куски = [m for m in s._sent if m["type"] == "hint_delta"]
+    assert куски, "по кнопке подсказка должна печататься кусками"
+    assert "".join(m["text"] for m in куски).strip() == llm.reply
+    # и целиком тоже приходит — панель кладёт её в список подсказок
+    assert [m for m in s._sent if m["type"] == "hint"]
+
+
+def test_hint_by_button_does_not_print_thoughts(cfg):
+    """Мысли в узкую панель подсказок не идут — их место в окне чата."""
+    llm = _FakeLLM("Уточните срок задачи и ответственного.")
+    s = _session(cfg, llm)
+    _fill_context(s)
+
+    asyncio.run(s._emit_hint(force=True))
+
+    assert not [m for m in s._sent if m["type"] == "hint_reasoning"]
+
+
+def test_background_hint_is_not_streamed(cfg):
+    """Автоподсказку печатать нельзя: модель вправе промолчать, и молчание
+    приходит словом SKIP в тексте ответа — человек увидел бы, как в панели
+    появляется «SKIP» и исчезает."""
+    llm = _FakeLLM("SKIP")
+    s = _session(cfg, llm)
+    _fill_context(s)
+
+    asyncio.run(s._emit_hint())
+
+    assert llm.streamed is False
+    assert not [m for m in s._sent if m["type"] == "hint_delta"]
+    assert not [m for m in s._sent if m["type"] == "hint"]  # промолчала — и молчит
