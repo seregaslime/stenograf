@@ -198,7 +198,15 @@ label.field > span { display: block; font-size: 12.5px; color: var(--muted); mar
   flex-shrink: 0; margin-top: 2px;
 }
 
-.msg-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+/* align-items: реплики в группе разной длины, и без этого все растянулись бы
+   по самой широкой — стопка выглядела бы одним блоком с рваным текстом. */
+.msg-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; align-items: flex-start; }
+.msg.self .msg-body { align-items: flex-end; }
+/* flex-start, а не center: у пузыря в пять строк кнопка и отладочная подпись
+   висели бы посередине высоты и читались как относящиеся не к нему. */
+.replica { display: flex; align-items: flex-start; gap: 8px; max-width: 100%; }
+.replica > .msg-pick, .replica > .msg-debug { margin-top: 9px; }  /* вровень с первой строкой */
+.msg.self .replica { flex-direction: row-reverse; }
 .msg-meta { display: flex; align-items: baseline; gap: 8px; font-size: 12px; padding: 0 4px; }
 .msg.self .msg-meta { flex-direction: row-reverse; }
 .msg-name { font-weight: 600; }
@@ -216,6 +224,9 @@ label.field > span { display: block; font-size: 12.5px; color: var(--muted); mar
   background: var(--self-bubble);
   border-radius: 14px 4px 14px 14px;
 }
+/* Срезанный угол — «хвостик» к аватарке, он нужен только первой реплике
+   группы: у продолжений хвостик указывал бы в пустоту. */
+.replica:not(:first-of-type) .bubble { border-radius: 14px; }
 
 /* ============ Live-страница ============ */
 .live-layout { display: flex; flex-direction: column; height: 100%; }
@@ -272,15 +283,15 @@ label.field > span { display: block; font-size: 12.5px; color: var(--muted); mar
 /* Кнопка выделения реплики. Появляется по наведению, чтобы не рябить в ленте,
    но выделенная остаётся видимой всегда — иначе не видно, что уже отмечено. */
 .msg-pick {
-  margin-left: auto; width: 20px; height: 20px; padding: 0;
+  width: 20px; height: 20px; padding: 0; flex-shrink: 0;
   border: 1px solid var(--border); border-radius: 6px;
   background: transparent; color: var(--muted);
   font-size: 11px; line-height: 1; cursor: pointer;
   opacity: 0; transition: opacity 0.15s, background 0.15s;
 }
-.msg:hover .msg-pick, .msg-pick.on, .msg-pick:focus-visible { opacity: 1; }
+.replica:hover .msg-pick, .msg-pick.on, .msg-pick:focus-visible { opacity: 1; }
 .msg-pick.on { background: var(--accent); border-color: transparent; color: #fff; }
-.msg.picked .bubble { outline: 2px solid var(--accent); outline-offset: 1px; }
+.replica.picked .bubble { outline: 2px solid var(--accent); outline-offset: 1px; }
 .hint-card {
   background: var(--bg-3);
   border-left: 3px solid var(--accent-2);
