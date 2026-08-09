@@ -54,6 +54,8 @@ class OpenAIClient:
         self._remaining: int | None = None
         self._reset_s = 0.0
         self._checked_at = 0.0
+        # Провайдер не понял reasoning_effort — больше не присылаем (см. generate)
+        self._no_reasoning_effort = False
 
     def _remember_limits(self, response: httpx.Response) -> None:
         raw = response.headers.get("x-ratelimit-remaining-tokens")
@@ -214,6 +216,11 @@ class OpenAIClient:
             "temperature": temperature,
             "stream": False,
         }
+        # Мысли модели считаются в тот же минутный лимит, что и ответ, а
+        # пользователю не показываются: у gpt-oss-120b это 62% ответа впустую.
+        # Просим думать поменьше — выписывание фактов в рассуждениях не нуждается.
+        if self._cfg.llm_api_reasoning_effort and not self._no_reasoning_effort:
+            payload["reasoning_effort"] = self._cfg.llm_api_reasoning_effort
         # max_tokens намеренно НЕ задаём по умолчанию. Провайдер списывает с
         # минутного лимита фиксированный резерв (2500) независимо от того,
         # просили мы что-то или нет, — но сам предел ответа у модели куда выше
@@ -253,6 +260,15 @@ class OpenAIClient:
         # Остаток лимита читаем с ЛЮБОГО ответа, включая отказ: отказ по лимиту
         # как раз и несёт самые свежие цифры.
         self._remember_limits(response)
+
+        # Провайдер не знает про reasoning_effort — убираем и пробуем ещё раз.
+        # Так параметр остаётся необязательным: на сервере организации с другой
+        # моделью он просто отвалится один раз и больше не появится.
+        if (response.status_code == 400 and not self._no_reasoning_effort
+                and "reasoning_effort" in _detail(response)):
+            log.info("Провайдер не поддерживает reasoning_effort — работаем без него")
+            self._no_reasoning_effort = True
+            return await self.generate(model, prompt, system, temperature, num_predict)
 
         if response.status_code in (401, 403):
             raise LlmError("API отклонил ключ — проверьте STENOGRAF_LLM_API_KEY.")

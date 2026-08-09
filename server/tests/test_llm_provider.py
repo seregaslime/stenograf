@@ -642,3 +642,64 @@ def test_client_does_not_wait_while_budget_is_free(tmp_path, monkeypatch):
     asyncio.run(client.generate("m", "раз"))
     asyncio.run(client.generate("m", "два"))
     assert not slept
+
+
+def test_reasoning_effort_is_sent(tmp_path, monkeypatch):
+    """Просим модель думать поменьше: мысли считаются в лимит, а не показываются.
+
+    Замер на gpt-oss-120b: по умолчанию 168 токенов мыслей из 270 токенов
+    ответа — 62% лимита впустую. С «low» осталось 12 из 118.
+    """
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ок"}}]})
+
+    _patch_transport(monkeypatch, handler)
+    cfg = _api_cfg(tmp_path)
+    cfg.llm_api_reasoning_effort = "low"
+    asyncio.run(OpenAIClient(cfg).generate("m", "p"))
+    assert seen["body"]["reasoning_effort"] == "low"
+
+
+def test_unknown_reasoning_effort_is_dropped_and_retried(tmp_path, monkeypatch):
+    """Провайдер не знает параметра — убираем и повторяем, а не падаем.
+
+    Так параметр остаётся необязательным: на сервере организации с другой
+    моделью он отвалится один раз и больше не появится.
+    """
+    bodies = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "reasoning_effort" in body:
+            return httpx.Response(400, json={"error": {"message": "unknown field reasoning_effort"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "готово"}}]})
+
+    _patch_transport(monkeypatch, handler)
+    cfg = _api_cfg(tmp_path)
+    cfg.llm_api_reasoning_effort = "low"
+    client = OpenAIClient(cfg)
+
+    assert asyncio.run(client.generate("m", "p")) == "готово"
+    assert len(bodies) == 2 and "reasoning_effort" not in bodies[1]
+
+    asyncio.run(client.generate("m", "ещё"))       # второй раз уже не пробуем
+    assert "reasoning_effort" not in bodies[2]
+
+
+def test_reasoning_effort_can_be_switched_off(tmp_path, monkeypatch):
+    """Пустая строка — не передавать параметр вовсе."""
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ок"}}]})
+
+    _patch_transport(monkeypatch, handler)
+    cfg = _api_cfg(tmp_path)
+    cfg.llm_api_reasoning_effort = ""
+    asyncio.run(OpenAIClient(cfg).generate("m", "p"))
+    assert "reasoning_effort" not in seen["body"]

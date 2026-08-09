@@ -75,8 +75,8 @@ def split_by_lines(transcript: str, max_chars: int) -> list[str]:
 
 
 async def _notes_for(
-    llm: LlmRouter, chunk: str, *, mode: str, title: str, part: int, total: int,
-    depth: int = 0,
+    llm: LlmRouter, chunk: str, *, mode: str, title: str, date: str,
+    participants: str, part: int, total: int, depth: int = 0,
 ) -> str:
     """Заметки по фрагменту. Не уместился ответ — делим пополам и пробуем снова.
 
@@ -89,8 +89,9 @@ async def _notes_for(
     ограничена — если не уместилось и на восьмушке, дело не в размере, и
     бесконечное дробление только сожжёт минуты пауз.
     """
-    system, prompt = prompts.build_chunk_prompt(
-        mode=mode, title=title, part=part, total=total, transcript=chunk,
+    system, prompt = prompts.build_protocol_prompt(
+        mode=mode, title=title, date=date, participants=participants,
+        text=chunk, part=part, total=total,
     )
     try:
         return await llm.summarize(prompt, system=system)
@@ -106,17 +107,17 @@ async def _notes_for(
     pieces = []
     for half in halves:
         pieces.append(await _notes_for(
-            llm, half, mode=mode, title=title, part=part, total=total,
-            depth=depth + 1,
+            llm, half, mode=mode, title=title, date=date, participants=participants,
+            part=part, total=total, depth=depth + 1,
         ))
     return "\n".join(pieces)
 
 
 async def _summarize_in_parts(
     llm: LlmRouter, chunks: list[str], *, mode: str, title: str, date: str,
-    participants: str, detailed: bool, on_progress, notes_budget_chars: int,
+    participants: str, on_progress, notes_budget_chars: int,
 ) -> str:
-    """Длинная встреча: заметки по каждому фрагменту → сведение в протокол.
+    """Длинная встреча: протокол по каждому фрагменту → склейка в общий.
 
     Паузы между запросами здесь нет намеренно: ждать столько, сколько нужно,
     умеет клиент — он читает из заголовков ответа, сколько лимита осталось и
@@ -132,13 +133,14 @@ async def _summarize_in_parts(
     for index, chunk in enumerate(chunks, start=1):
         on_progress(index, len(chunks))
         notes.append(f"— Фрагмент {index} —\n" + await _notes_for(
-            llm, chunk, mode=mode, title=title, part=index, total=len(chunks),
+            llm, chunk, mode=mode, title=title, date=date, participants=participants,
+            part=index, total=len(chunks),
         ))
 
     # Заметки тоже обязаны влезть в запрос. Проверять надо и их: у встречи на
     # пять фрагментов они сами набирают тысячи символов, и сведение упирается в
     # тот же лимит, что и транскрипт. Не влезли — сжимаем тем же проходом,
-    # который делал заметки: он выдаёт те же пять разделов, только компактнее.
+    # который делал заметки: он выдаёт тот же протокол, только компактнее.
     level = 0
     while len(joined := "\n\n".join(notes)) > notes_budget_chars and level < MAX_RETRY_DEPTH:
         level += 1
@@ -148,13 +150,16 @@ async def _summarize_in_parts(
         notes = []
         for index, piece in enumerate(pieces, start=1):
             notes.append(await _notes_for(
-                llm, piece, mode=mode, title=title, part=index, total=len(pieces),
+                llm, piece, mode=mode, title=title, date=date,
+                participants=participants, part=index, total=len(pieces),
             ))
 
     on_progress(len(chunks) + 1, len(chunks) + 1)
-    system, prompt = prompts.build_reduce_prompt(
+    # Склейка протоколов фрагментов — тот же промпт: для него это просто текст,
+    # по которому надо составить протокол.
+    system, prompt = prompts.build_protocol_prompt(
         mode=mode, title=title, date=date, participants=participants,
-        notes="\n\n".join(notes), detailed=detailed,
+        text="\n\n".join(notes),
     )
     return await llm.summarize(prompt, system=system, temperature=0.3)
 
@@ -182,10 +187,9 @@ async def generate_summary(llm: LlmRouter, meeting_id: int, on_progress=None) ->
     # уже после встречи (резюме перегенерируют кнопкой в истории).
     budget = llm.budget
     transcript, participants = build_transcript(segments, budget.summary_chars)
-    system, prompt = prompts.build_summary_prompt(
+    system, prompt = prompts.build_protocol_prompt(
         mode=mode, title=title, date=date,
-        participants=participants, transcript=transcript,
-        detailed=budget.detailed,
+        participants=participants, text=transcript,
     )
     # Влезаем ли одним запросом. Считаем вместе с промптом: транскрипт, обрезанный
     # ровно по бюджету, уедет к провайдеру вместе с инструкциями и всё равно
@@ -215,7 +219,7 @@ async def generate_summary(llm: LlmRouter, meeting_id: int, on_progress=None) ->
         if len(chunks) > 1:
             summary = await _summarize_in_parts(
                 llm, chunks, mode=mode, title=title, date=date,
-                participants=participants, detailed=budget.detailed,
+                participants=participants,
                 on_progress=on_progress or (lambda *_: None),
                 notes_budget_chars=limit_chars,
             )

@@ -19,10 +19,14 @@ def test_normalize_mode_falls_back_to_default():
         assert prompts.normalize_mode(key) == key
 
 
-def test_every_mode_has_focus_and_sections():
-    """У каждого режима встречи заполнены и фокус подсказок, и разделы протокола."""
+def test_every_mode_has_label_and_focus():
+    """У каждого режима заполнены название и фокус подсказок.
+
+    Разделов протокола у режимов больше нет: протокол один на все типы,
+    а тип встречи попадает в промпт строкой в шапке.
+    """
     for mode in prompts.MODES.values():
-        assert mode.label and mode.hint_focus and mode.summary_sections
+        assert mode.label and mode.hint_focus
 
 
 # ------------------------------------------------------------------ промпт подсказок
@@ -104,121 +108,85 @@ def test_parse_hint_respects_min_chars():
     assert prompts.parse_hint("Коротко", min_chars=3) == "Коротко"
 
 
-# ------------------------------------------------------------------ промпт резюме
+# ------------------------------------------------------------------ промпт протокола
 
-def test_summary_sections_depend_on_mode():
-    """Разделы протокола зависят от типа встречи: у планёрки решения, у собеседования — что подтянуть, у переговоров — позиции сторон.
+def _protocol(**over):
+    params = dict(mode="work", title="Планёрка", date="03.08.2026",
+                  participants="Вы (5 реплик)", text="[00:10] Вы: раз")
+    params.update(over)
+    return prompts.build_protocol_prompt(**params)
+
+
+def test_protocol_sections_are_the_same_for_every_mode():
+    """Разделы протокола больше не зависят от типа встречи.
+
+    Своя вёрстка под каждый тип стоила 300–500 символов промпта, а при лимите
+    8000 токенов в минуту это столько же символов разговора, которые не влезли.
+    Тип встречи остался строкой в шапке — модель его видит.
     """
-    def sections(mode):
-        return prompts.build_summary_prompt(
-            mode=mode, title="T", date="D", participants="P", transcript="X"
-        )[1]
-
-    assert "Принятые решения" in sections("work")          # регрессия на текущий формат
-    assert "Что стоит подтянуть" in sections("interview")  # собеседование — глазами соискателя
-    assert "Позиции сторон" in sections("negotiation")
+    prompts_by_mode = {key: _protocol(mode=key)[1] for key in prompts.MODES}
+    sections = [p.split("Расшифровка:")[0].split("формате:")[1] for p in prompts_by_mode.values()]
+    assert len(set(sections)) == 1                       # разделы одни на всех
+    assert "Тип встречи: рабочая встреча" in prompts_by_mode["work"]
+    assert "Тип встречи: переговоры" in prompts_by_mode["negotiation"]
 
 
-def test_summary_detailed_adds_instructions():
-    """Для API протокол просит больше: таймкоды у решений и раздел открытых вопросов."""
-    common = dict(mode="work", title="T", date="D", participants="P", transcript="X")
-    sys_short, prompt_short = prompts.build_summary_prompt(**common, detailed=False)
-    sys_long, prompt_long = prompts.build_summary_prompt(**common, detailed=True)
-    assert len(sys_long) > len(sys_short) and len(prompt_long) > len(prompt_short)
-    assert "таймкод" in sys_long
-    assert "Открытые вопросы" in prompt_long
+def test_protocol_forbids_the_ways_to_lie():
+    """Запреты против выдумок — каждый из разбора реальных протоколов.
+
+    03.08.2026: модель выдумала все шесть таймкодов, записала уже проделанное
+    нагрузочное тестирование в планы, превратила отвергнутое предложение в
+    решение. 09.08.2026: дважды назначила ответственным куратора, который
+    задачу попросил, — поэтому ответственных не пишем вовсе.
+    """
+    system, _ = _protocol()
+    assert "Таймкод ставь только скопированный" in system
+    assert "результат, а не" in system
+    assert "задачей не" in system and "становится" in system
+    assert "Ответственных и сроки не пиши вообще" in system
+    assert "не достраивай" in system
+
+
+def test_protocol_has_no_decisions_section():
+    """Раздела решений нет намеренно: модель ставила туда описания и
+    рекомендации через раз, а неверное «принятое решение» в протоколе хуже
+    отсутствующего. Стоит обсудить с куратором — в исходном задании он был."""
+    _, prompt = _protocol()
+    assert "Принятые решения" not in prompt
+    assert "Ответственный" not in prompt
+    for section in ("## Краткий итог", "## Ключевые темы", "## Задачи", "## Открытые вопросы"):
+        assert section in prompt
+
+
+def test_fragment_is_marked_as_a_fragment():
+    """Фрагмент длинной встречи помечается, чтобы модель не искала в нём итогов."""
+    _, whole = _protocol()
+    _, part = _protocol(part=2, total=5)
+    assert "фрагмент 2 из 5" in part
+    assert "фрагмент" not in whole
+
+
+def test_same_prompt_serves_the_merge():
+    """Склейка протоколов фрагментов идёт тем же промптом: для него это просто
+    текст, по которому надо составить протокол."""
+    _, merge = _protocol(text="— Фрагмент 1 —\n## Принятые решения\n- [05:18] что-то")
+    assert "Составь протокол" in merge
+    assert "Фрагмент 1" in merge
+
+
+def test_protocol_warns_about_asr_noise():
+    """Распознавание русское и коверкает английские термины: «UDP» приходит как
+    «уд». Без предупреждения модель честно объясняет, что такое «уд».
+    """
+    system, _ = _protocol()
+    assert "распознаванием речи" in system and "UDP" in system and "не угадывай" in system
 
 
 def test_both_prompts_warn_about_asr_noise():
-    """Распознавание русское и коверкает английские термины: «UDP» приходит как
-    «уд». Без предупреждения модель честно объясняет, что такое «уд» — реальный
-    случай с живой встречи.
-    """
+    """То же предупреждение и в подсказках, и в протоколе."""
     hint_system, _ = _hint()
-    summary_system, _ = prompts.build_summary_prompt(
-        mode="work", title="T", date="D", participants="P", transcript="X"
-    )
-    for system in (hint_system, summary_system):
+    protocol_system, _ = _protocol()
+    for system in (hint_system, protocol_system):
         assert "распознаванием речи" in system
-        assert "UDP" in system          # пример искажения
-        assert "не угадывай" in system  # и защита от выдумывания термина
-
-
-# ------------------------------------------------------------------ честность протокола
-
-@pytest.mark.parametrize("builder", ["summary", "reduce"])
-def test_summary_forbids_the_four_ways_to_lie(builder):
-    """Правила против выдумок есть и в обычном протоколе, и в сведении фрагментов.
-
-    Все четыре запрета появились не из общих соображений, а из разбора реального
-    протокола встречи 03.08.2026: модель выдумала все шесть таймкодов, назначила
-    ответственным того, кто задачу попросил, записала уже проделанное
-    нагрузочное тестирование в планы и превратила отвергнутое предложение
-    (whisper по API) в «принятое решение».
-    """
-    if builder == "summary":
-        system, _ = prompts.build_summary_prompt(
-            mode="work", title="Т", date="", participants="", transcript="х", detailed=True,
-        )
-    else:
-        system, _ = prompts.build_reduce_prompt(
-            mode="work", title="Т", date="", participants="", notes="х", detailed=True,
-        )
-    assert "НЕ придумывай таймкоды" in system
-    assert "НЕ выдавай предложенное за принятое" in system
-    assert "НЕ записывай в задачи то, что уже сделано" in system
-    assert "НЕ назначай ответственного" in system
-    assert "НЕ достраивай названия" in system
-
-
-def test_detailed_summary_no_longer_demands_a_timecode():
-    """Раньше промпт ВЕЛЕЛ ставить таймкод у каждого решения, не сказав откуда.
-
-    Модель послушалась и выдала правдоподобный ряд выдуманных меток — это и был
-    источник ошибки. Теперь таймкод разрешён, но только скопированный.
-    """
-    system, _ = prompts.build_summary_prompt(
-        mode="work", title="Т", date="", participants="", transcript="х", detailed=True,
-    )
-    assert "указывай таймкод" not in system
-    assert "СКОПИРОВАВ" in system
-
-
-def test_chunk_prompt_preserves_timecodes_for_the_reduce_pass():
-    """Заметки по фрагменту должны нести таймкоды: при сведении транскрипта уже
-    не будет, и восстановить их будет неоткуда."""
-    system, _ = prompts.build_chunk_prompt(
-        mode="work", title="Т", part=1, total=2, transcript="[00:10] Вы: раз",
-    )
-    assert "таймкода" in system and "скопированного" in system
-    assert "### ПРЕДЛОЖЕНО" in system
-
-
-def test_chunk_notes_come_in_fixed_sections():
-    """Заметки по фрагменту выдаются разделами, а не свободным списком.
-
-    Свободный список заставлял сведение решать, что важно, — и оно выбрасывало
-    целые куски разговора. С разделами переносить нечего решать.
-    """
-    system, _ = prompts.build_chunk_prompt(
-        mode="work", title="Т", part=1, total=2, transcript="[00:10] Вы: раз",
-    )
-    for section in ("### РЕШЕНО", "### ПРЕДЛОЖЕНО", "### СДЕЛАНО", "### ФАКТЫ", "### ВОПРОСЫ"):
-        assert section in system
-    assert "«нет»" in system  # пустой раздел разрешён, выдумывать в него не надо
-
-
-def test_reduce_is_told_to_carry_over_not_retell():
-    """Сведение переносит помеченное, а не пересказывает.
-
-    Заметки уже прошли одно сжатие; второе стирало именно то, ради чего протокол
-    и составляют — на встрече 03.08.2026 так пропало замечание куратора про
-    коммит на 4500 строк, при том что в заметках фрагмента оно было.
-    """
-    system, _ = prompts.build_reduce_prompt(
-        mode="work", title="Т", date="", participants="", notes="х", detailed=True,
-    )
-    assert "ПЕРЕНЕСТИ, а не пересказать" in system
-    assert "Ни одного не выбрасывай" in system
-    assert "В принятые решения это не переводится никогда" in system
-    assert "Своими словами пиши только «Краткий итог»" in system
+        assert "UDP" in system
+        assert "не угадывай" in system
