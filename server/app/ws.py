@@ -88,7 +88,10 @@ class LiveSession:
         self._summarize = True  # составлять ли резюме по завершении (выбор при старте)
         self._meeting_title = ""          # уходит в промпт: модель должна видеть тему
         self._mode = prompts.DEFAULT_MODE  # тип встречи (планёрка/собеседование/…)
-        self._participants: Counter[str] = Counter()  # имя → число реплик, для промпта
+        # speaker_id → число реплик, для промпта. Именно id, а не имя: имя меняют
+        # прямо во время встречи, и счётчик по строке разъезжался бы на двух
+        # участников — «Спикер 3 (12 реплик)» и «Иван (4 реплики)» вместо одного.
+        self._participants: Counter[int] = Counter()
         # Историю держим большой всегда: окно режется срезом по бюджету провайдера,
         # маленькая дека обнулила бы большое API-окно.
         self._recent: deque[str] = deque(maxlen=cfg.hints_recent_maxlen)
@@ -280,7 +283,7 @@ class LiveSession:
 
         self._recent.append(f"{match.name}: {text}")
         self._lines_total += 1
-        self._participants[match.name] += 1
+        self._participants[match.speaker_id] += 1
         self._chars_since_hint += len(text)
 
         if match.is_new:
@@ -466,8 +469,19 @@ class LiveSession:
         return max(self._cfg.hints_min_context_chars, min(budget.hints_chars, free))
 
     def _participants_line(self) -> str:
+        """Кто говорил и сколько — строкой для промпта.
+
+        Имена читаем из БД в момент сборки промпта, а не запоминаем при реплике:
+        участника переименовывают по ходу встречи, и запомненное имя устарело бы
+        ровно тогда, когда оно и становится осмысленным.
+        """
+        if not self._participants:
+            return ""
+        with session_scope() as db:
+            names = crud.speaker_names(db, list(self._participants))
         return ", ".join(
-            f"{name} ({n} реплик)" for name, n in self._participants.most_common()
+            f"{names.get(speaker_id, 'Неизвестный')} ({n} реплик)"
+            for speaker_id, n in self._participants.most_common()
         )
 
     def _is_duplicate(self, hint: str) -> bool:

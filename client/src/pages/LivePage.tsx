@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Page } from "../App";
 import { LiveClient } from "../api/live";
+import { api } from "../api/rest";
 import {
   AudioEngine,
   type CaptureHandle,
@@ -8,7 +9,7 @@ import {
   listAudioInputs,
   looksLikeLoopback,
 } from "../audio/capture";
-import Transcript, { formatTime } from "../components/Transcript";
+import Transcript, { formatTime, renameInSegments } from "../components/Transcript";
 import { isDebugMode, platform } from "../store";
 import {
   MEETING_MODE_LABELS,
@@ -114,6 +115,21 @@ export default function LivePage({
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
+  }
+
+  /** Имя уже сохранено на сервере — осталось поправить показанное. */
+  function showNewName(id: number, name: string) {
+    setSegments((previous) => renameInSegments(previous, id, name));
+  }
+
+  async function renameSpeaker(id: number, name: string) {
+    try {
+      await api.renameSpeaker(id, name);
+    } catch (exc) {
+      setError((exc as Error).message);
+      return;
+    }
+    showNewName(id, name);
   }
 
   function ask() {
@@ -501,6 +517,7 @@ export default function LivePage({
               debug={isDebugMode()}
               selectedIds={pickedIds}
               onToggle={togglePicked}
+              onRename={renameSpeaker}
             />
           ) : (
             <div className="empty">

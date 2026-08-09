@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { SegmentDto } from "../types";
-import { formatTime, groupSegments } from "./Transcript";
+import { formatTime, groupSegments, renameInSegments } from "./Transcript";
 
 describe("formatTime", () => {
   it("форматирует секунды меньше минуты", () => {
@@ -67,3 +67,34 @@ describe("groupSegments", () => {
     expect(groupSegments([])).toEqual([]);
   });
 });
+
+describe("renameInSegments", () => {
+  const seg = (id: number, speakerId: number | null): SegmentDto => ({
+    id,
+    meeting_id: 1,
+    channel: "mic",
+    start_s: id,
+    end_s: id + 1,
+    text: "реплика",
+    similarity: null,
+    speaker: speakerId === null ? null : { id: speakerId, name: `Спикер ${speakerId}`, is_self: false },
+  });
+
+  it("меняет имя во всех репликах спикера, а не только в одной", () => {
+    const out = renameInSegments([seg(1, 3), seg(2, 4), seg(3, 3)], 3, "Иван");
+    expect(out.map((s) => s.speaker?.name)).toEqual(["Иван", "Спикер 4", "Иван"]);
+  });
+
+  it("не трогает реплики без спикера", () => {
+    const out = renameInSegments([seg(1, null), seg(2, 3)], 3, "Иван");
+    expect(out[0].speaker).toBeNull();
+    expect(out[1].speaker?.name).toBe("Иван");
+  });
+
+  it("не мутирует исходный массив", () => {
+    const before = [seg(1, 3)];
+    renameInSegments(before, 3, "Иван");
+    expect(before[0].speaker?.name).toBe("Спикер 3");
+  });
+});
+
