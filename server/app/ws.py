@@ -661,7 +661,7 @@ class LiveSession:
         budget = self._llm.budget
         earlier = "\n".join(self._recent)[-self._window_chars(budget):]
         system, prompt = prompts.build_answer_prompt(
-            mode=self._mode, question=question or "Объясни, о чём эти реплики.",
+            mode=self._mode, question=question or prompts.ASK_ABOUT_SELECTED,
             quoted=quoted, earlier=earlier,
             title=self._meeting_title, participants=self._participants_line(),
         )
