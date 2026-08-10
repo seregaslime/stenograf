@@ -292,20 +292,27 @@ class LiveSession:
 
         with session_scope() as db:
             match = await self._match_speaker(db, segment, dominance)
-            self._last_by_channel[dominance] = (match, segment.end_s)
-            self._recent_speakers[match.speaker_id] = segment.end_s
+            if match is not None:
+                # Неопознанный обрывок донором не становится: мы не знаем, чей
+                # он, и приписывать по нему следующие короткие реплики нельзя.
+                self._last_by_channel[dominance] = (match, segment.end_s)
+                self._recent_speakers[match.speaker_id] = segment.end_s
             row = crud.add_segment(
-                db, meeting_id, match.speaker_id, dominance,
-                segment.start_s, segment.end_s, text, match.similarity,
+                db, meeting_id, match.speaker_id if match else None, dominance,
+                segment.start_s, segment.end_s, text,
+                match.similarity if match else None,
             )
             segment_id = row.id
 
-        self._recent.append(f"{match.name}: {text}")
+        self._recent.append(f"{match.name if match else 'Неизвестный'}: {text}")
         self._lines_total += 1
-        self._participants[match.speaker_id] += 1
+        # Ничью реплику в участники не записываем: счётчик уходит в промпт, и
+        # «Неизвестный (7 реплик)» модель приняла бы за ещё одного человека.
+        if match is not None:
+            self._participants[match.speaker_id] += 1
         self._chars_since_hint += len(text)
 
-        if match.is_new:
+        if match is not None and match.is_new:
             await self._send({
                 "type": "speaker_new",
                 "speaker": {"id": match.speaker_id, "name": match.name},
@@ -319,16 +326,20 @@ class LiveSession:
                 "start_s": round(segment.start_s, 2),
                 "end_s": round(segment.end_s, 2),
                 "text": text,
-                "similarity": match.similarity,
+                "similarity": match.similarity if match else None,
+                # null — реплика ничья: клиент покажет её как «Неизвестный»
                 "speaker": {
                     "id": match.speaker_id,
                     "name": match.name,
                     "is_self": match.is_self,
-                },
+                } if match else None,
             },
         })
 
-    async def _match_speaker(self, db, segment: SpeechSegment, dominance: str) -> MatchResult:
+    async def _match_speaker(
+        self, db, segment: SpeechSegment, dominance: str
+    ) -> Optional[MatchResult]:
+        """Кто это сказал. None — опознать не по чему, реплика остаётся ничьей."""
         # duration_s включает паддинг VAD по краям — вычитаем его, чтобы порог
         # сравнивался с длительностью самой речи (иначе правило не срабатывает)
         speech_s = segment.duration_s - 2 * self._cfg.vad_pad_ms / 1000
@@ -336,6 +347,13 @@ class LiveSession:
             donor = self._short_segment_donor(dominance, segment.start_s)
             if donor is not None:
                 return MatchResult(donor.speaker_id, donor.name, donor.is_self, None, False)
+            # Донора нет: это первая реплика встречи или прошло больше четырёх
+            # секунд. Эмбеддер на таком обрывке считает не голос, а что придётся,
+            # и заводит нового «Спикера N» на каждое «ага» — ровно то, на что
+            # жаловался куратор (замечание №13). Оставляем реплику без имени:
+            # «Неизвестный» честнее выдуманного участника, и в базу голосов
+            # такой обрывок не попадает, потому что эмбеддер даже не зовётся.
+            return None
         embedding = await asyncio.to_thread(self._embedder.embed, segment.audio)
         recent = frozenset(
             speaker_id for speaker_id, end_s in self._recent_speakers.items()
