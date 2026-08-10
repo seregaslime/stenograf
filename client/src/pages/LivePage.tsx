@@ -1,3 +1,4 @@
+import { marked } from "marked";
 import { useEffect, useRef, useState } from "react";
 import type { Page } from "../App";
 import { LiveClient } from "../api/live";
@@ -25,6 +26,21 @@ import {
 } from "../types";
 
 type Phase = "setup" | "starting" | "live" | "stopping";
+
+/** Ответ модели с разметкой: списки, выделения и — главное — блоки кода.
+ *
+ *  Тем же marked, которым уже рисуется протокол встречи: зависимость давно
+ *  стоит, второй способ показывать разметку заводить незачем. Своё сообщение
+ *  участника разметкой не трогаем — он писал текст, а не markdown.
+ */
+function ModelText({ text }: { text: string }) {
+  return (
+    <div
+      className="ask-md"
+      dangerouslySetInnerHTML={{ __html: marked.parse(text) as string }}
+    />
+  );
+}
 
 /** Ход мыслей модели под спойлером.
  *
@@ -676,7 +692,7 @@ export default function LivePage({
             {chatLog.map((message, index) => (
               <div className={`ask-msg ${message.role}`} key={index}>
                 {message.reasoning && <Thoughts text={message.reasoning} />}
-                {message.text}
+                {message.role === "model" ? <ModelText text={message.text} /> : message.text}
               </div>
             ))}
             {/* Пока ответ печатается: сначала появляются мысли, потом текст.
