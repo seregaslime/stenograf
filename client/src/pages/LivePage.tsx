@@ -634,6 +634,10 @@ export default function LivePage({
               Подсказать сейчас
             </button>
           </div>
+          {/* Своя прокрутка у подсказок и своя у чата: раньше панель
+              прокручивалась целиком, и, листая подсказки, человек уводил с
+              экрана окно чата вместе со строкой ввода. */}
+          <div className="hints-feed">
           {hintError && <div className="banner warn">{hintError}</div>}
           {hintDraft && (
             <div className="hint-card">
@@ -654,6 +658,7 @@ export default function LivePage({
               <div className="hint-time">{hint.at}</div>
             </div>
           ))}
+          </div>
 
           <div className="ask-block">
             <div className="hints-title">
@@ -662,6 +667,7 @@ export default function LivePage({
                 видит разговор целиком
               </span>
             </div>
+            <div className="ask-log">
             {chatLog.length === 0 && (
               <div className="empty" style={{ padding: "14px 8px" }}>
                 Задайте вопрос или отметьте реплики кнопкой «?» и спросите про них.
@@ -693,6 +699,7 @@ export default function LivePage({
                 )}
               </div>
             )}
+            </div>
             {pickedIds.size > 0 && (
               <div className="ask-picked">
                 Выделено реплик: {pickedIds.size}
