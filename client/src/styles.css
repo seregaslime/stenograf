@@ -267,7 +267,7 @@ label.field > span { display: block; font-size: 12.5px; color: var(--muted); mar
    подсказки и чат. Раньше скролл был один на всё, и, листая подсказки, человек
    уводил с экрана окно чата вместе со строкой ввода. */
 .hints-panel {
-  width: 300px; flex-shrink: 0;
+  width: 380px; flex-shrink: 0;
   border-left: 1px solid var(--border);
   background: var(--bg-2);
   padding: 16px;
@@ -280,6 +280,9 @@ label.field > span { display: block; font-size: 12.5px; color: var(--muted); mar
   flex: 1 1 0; min-height: 0; overflow-y: auto;
   display: flex; flex-direction: column; gap: 10px;
 }
+/* Ответы модели длиннее подсказок — им и места вдвое. Подсказка это две-три
+   строки, а в ответ теперь может прийти скрипт целиком. */
+.ask-block { flex: 2 1 0; }
 /* flex-wrap: в панели 300px заголовок и пояснение не помещаются в строку, и без
    переноса оба ломались по словам («Подсказки / ИИ»). Пояснение занимает всю
    ширину и уходит на свою строку целиком. */
@@ -292,12 +295,33 @@ label.field > span { display: block; font-size: 12.5px; color: var(--muted); mar
   margin-top: 14px; padding-top: 14px;
   border-top: 1px solid var(--border);
   display: flex; flex-direction: column; gap: 8px;
-  flex: 1 1 0; min-height: 0;   /* строка ввода всегда внизу и всегда видна */
+  min-height: 0;   /* строка ввода всегда внизу и всегда видна */
 }
 .ask-log { gap: 8px; }
 .ask-msg { font-size: 13px; line-height: 1.45; padding: 8px 10px; border-radius: 10px; }
 .ask-msg.you { background: var(--self-bubble); align-self: flex-end; max-width: 90%; }
 .ask-msg.model { background: var(--bg-3); }
+/* Разметка в ответе модели: списки, выделения, блоки кода. */
+.ask-md > *:first-child { margin-top: 0; }
+.ask-md > *:last-child { margin-bottom: 0; }
+.ask-md p { margin: 6px 0; }
+.ask-md ul, .ask-md ol { margin: 6px 0; padding-left: 20px; }
+.ask-md li { margin: 2px 0; }
+.ask-md h1, .ask-md h2, .ask-md h3 { font-size: 13.5px; margin: 8px 0 4px; }
+.ask-md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; background: var(--bg); padding: 1px 4px; border-radius: 4px;
+}
+/* Код не переносим по словам — он от этого нечитаем. Вместо этого своя
+   горизонтальная прокрутка внутри блока, чтобы длинная строка не растягивала
+   панель и не ломала вёрстку. */
+.ask-md pre {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px; margin: 8px 0;
+  overflow-x: auto; max-width: 100%;
+}
+.ask-md pre code { background: none; padding: 0; white-space: pre; }
+
 .ask-picked {
   font-size: 12px; color: var(--muted);
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
