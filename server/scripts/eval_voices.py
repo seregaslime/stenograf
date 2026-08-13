@@ -38,7 +38,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import SAMPLE_RATE, Settings  # noqa: E402
 from app.diarization.embedder import VoiceEmbedder  # noqa: E402
 
-
 # ------------------------------------------------------------------ загрузка аудио
 
 def _read_wave_16k(path: Path) -> np.ndarray | None:
@@ -165,7 +164,9 @@ def similarity_report(names: list[str], embeddings: dict[str, list[np.ndarray]])
     return worst_intra, best_inter
 
 
-def simulate(names: list[str], embeddings: dict[str, list[np.ndarray]], threshold: float) -> tuple[int, int, int]:
+def simulate(
+    names: list[str], embeddings: dict[str, list[np.ndarray]], threshold: float
+) -> tuple[int, int, int]:
     """Прогоняет фразы по кругу через настоящий SpeakerRegistry.
 
     Возвращает (профилей_создано, раздвоений, склеек)."""

@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session, joinedload
 
 from .models import Meeting, Segment, Speaker, VoicePrint
 
-
 # --- Спикеры ---
 
 def get_or_create_self_speaker(db: Session) -> Speaker:

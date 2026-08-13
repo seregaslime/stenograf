@@ -30,6 +30,12 @@ jobs:
           pip install --extra-index-url https://download.pytorch.org/whl/cpu \
             -r requirements.txt -r requirements-dev.txt
 
+      # Линтер идёт до тестов: если сломан импорт или осталась мёртвая
+      # переменная, знать об этом лучше за секунду, а не за полторы минуты
+      # прогона. Правила выбраны узко — см. server/ruff.toml.
+      - name: Линтер
+        run: ruff check app scripts tests
+
       # Медленные уровни (integration/e2e/load) требуют весов моделей и живого
       # сервера — в CI гоняется быстрый набор. Полный прогон: локально с --all.
       - name: Тесты и отчёт

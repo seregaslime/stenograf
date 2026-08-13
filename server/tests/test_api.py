@@ -19,7 +19,6 @@ from app.db.database import init_db, session_scope
 from app.db.models import Meeting
 from app.llm import openai_client as openai_mod
 
-
 # Поддерживается только Groq: остальные провайдеры не сообщают контекст модели
 GROQ = "https://api.groq.com/openai/v1"
 

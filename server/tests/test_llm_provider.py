@@ -16,7 +16,6 @@ from app.llm.base import LlmError
 from app.llm.openai_client import OpenAIClient
 from app.llm.router import LlmRouter
 
-
 # Сохранять можно только поддерживаемый хост (см. LLM_API_ALLOWED_HOSTS):
 # чужой провайдер не сообщает контекст модели.
 GROQ = "https://api.groq.com/openai/v1"

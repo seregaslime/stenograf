@@ -667,7 +667,10 @@ class LiveSession:
 
         # Приводим id к целым: клиент может прислать что угодно, а дальше они
         # уходят в запрос к БД
-        ids = [int(i) for i in segment_ids if isinstance(i, (int, float, str)) and str(i).lstrip("-").isdigit()]
+        ids = [
+            int(i) for i in segment_ids
+            if isinstance(i, (int, float, str)) and str(i).lstrip("-").isdigit()
+        ]
         with session_scope() as db:
             quoted_rows = crud.segments_by_ids(db, self._meeting_id, ids)
             quoted = "\n".join(

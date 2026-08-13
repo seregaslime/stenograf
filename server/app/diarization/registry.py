@@ -119,14 +119,15 @@ class SpeakerRegistry:
                     bonus = max(bonus, cfg.speaker_recent_bonus)
                 return cfg.speaker_match_threshold - bonus
 
-            best: Optional[tuple[int, _Print]] = None
+            # Лучшая близость нужна только для журнала: по ней видно, насколько
+            # мимо промахнулись, когда завели нового спикера. Сам «лучший»
+            # отпечаток при этом не используется — линтер это и заметил.
             best_sim = -1.0
             matched: Optional[tuple[int, _Print, float]] = None
             for speaker_id, prints in self._prints.items():
                 for print_ in prints:
                     sim = float(np.dot(print_.vector, embedding))
-                    if sim > best_sim:
-                        best, best_sim = (speaker_id, print_), sim
+                    best_sim = max(best_sim, sim)
                     if sim >= required(speaker_id) and (matched is None or sim > matched[2]):
                         matched = (speaker_id, print_, sim)
 
