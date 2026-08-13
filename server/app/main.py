@@ -8,23 +8,30 @@ import logging
 import shutil
 import threading
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket
-from sqlalchemy import select
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from .asr.transcriber import GIGAAM_AVAILABLE, MLX_AVAILABLE, Transcriber
 from .config import (
-    API_HOST_HINT, ASR_ENGINES, ASR_MODELS, LLM_API_DEFAULT_BASE_URL,
-    api_host_supported, save_asr_choice, save_llm_choice, save_tpm_limits, settings,
+    API_HOST_HINT,
+    ASR_ENGINES,
+    ASR_MODELS,
+    LLM_API_DEFAULT_BASE_URL,
+    api_host_supported,
+    save_asr_choice,
+    save_llm_choice,
+    save_tpm_limits,
+    settings,
 )
 from .db import crud
 from .db.database import init_db, session_scope
 from .db.models import Meeting, Speaker, VoicePrint
-from datetime import datetime, timezone
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import SpeakerRegistry
 from .llm.openai_client import OpenAIClient

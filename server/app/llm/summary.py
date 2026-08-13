@@ -196,7 +196,10 @@ async def generate_summary(llm: LlmRouter, meeting_id: int, on_progress=None) ->
     # получит 413 — на подсказках эта же ошибка уже была.
     chunks = [transcript]
     if budget.summary_tokens:
-        limit_chars = int(budget.summary_tokens * llm.chars_per_token) - len(system) - len(prompt) + len(transcript)
+        limit_chars = (
+            int(budget.summary_tokens * llm.chars_per_token)
+            - len(system) - len(prompt) + len(transcript)
+        )
         if len(transcript) > limit_chars:
             if limit_chars < MIN_CHUNK_CHARS:
                 # Бюджет меньше самого промпта. Резать по крохам нельзя: на

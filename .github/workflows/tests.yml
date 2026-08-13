@@ -30,6 +30,12 @@ jobs:
           pip install --extra-index-url https://download.pytorch.org/whl/cpu \
             -r requirements.txt -r requirements-dev.txt
 
+      # Линтер идёт до тестов: если сломан импорт или осталась мёртвая
+      # переменная, знать об этом лучше за секунду, а не за полторы минуты
+      # прогона. Правила выбраны узко — см. server/ruff.toml.
+      - name: Линтер
+        run: ruff check app scripts tests
+
       # Медленные уровни (integration/e2e/load) требуют весов моделей и живого
       # сервера — в CI гоняется быстрый набор. Полный прогон: локально с --all.
       - name: Тесты и отчёт
@@ -65,5 +71,27 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
       - run: npm ci
+      # Линтер ловит то, чего не видит компилятор типов: условно вызванный хук
+      # или забытую зависимость эффекта. Предупреждения прогон не валят —
+      # красным становится только настоящая ошибка (см. client/eslint.config.mjs).
+      - run: npm run lint
       - run: npm run typecheck
       - run: npm run test
+
+  # Dockerfile ломается тише всего: тесты зелёные, приложение у Сергея
+  # работает, а на сервере организации образ не собирается — и выясняется это
+  # в худший момент. Собираем на каждый PR, но не публикуем: нам нужна
+  # проверка, а не артефакт.
+  image:
+    name: Docker-образ сервера
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Сборка
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

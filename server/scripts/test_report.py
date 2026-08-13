@@ -379,7 +379,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Отчёт о тестировании Стенографа")
     ap.add_argument("--all", action="store_true",
                     help="включая медленные уровни (модели, живой сервер, нагрузка)")
-    ap.add_argument("--levels", help="через запятую: " + ",".join(l.key for l in LEVELS))
+    ap.add_argument("--levels", help="через запятую: " + ",".join(level.key for level in LEVELS))
     ap.add_argument("--verbose", action="store_true", help="показывать вывод pytest")
     ap.add_argument("--out", default=str(REPO_DIR / "TEST_REPORT.md"))
     args = ap.parse_args()
@@ -387,9 +387,9 @@ def main() -> None:
     chosen = LEVELS
     if args.levels:
         keys = {k.strip() for k in args.levels.split(",")}
-        chosen = [l for l in LEVELS if l.key in keys]
+        chosen = [level for level in LEVELS if level.key in keys]
     elif not args.all:
-        chosen = [l for l in LEVELS if not l.slow]
+        chosen = [level for level in LEVELS if not level.slow]
 
     REPORTS.mkdir(parents=True, exist_ok=True)
     results: list[Result] = []

@@ -21,7 +21,6 @@ _recent_speakers, накопление сегментов в БД.
 import argparse
 import asyncio
 import json
-import statistics
 import sys
 import time
 from datetime import datetime
@@ -35,7 +34,12 @@ SERVER_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SERVER_DIR / "scripts"))
 
 from loadtest import (  # noqa: E402
-    FRAME_S, SR, _docker_mem_mb, _pcm, _percentile, container_state, synth_phrase,
+    FRAME_S,
+    SR,
+    _docker_mem_mb,
+    _pcm,
+    container_state,
+    synth_phrase,
 )
 
 

@@ -5,10 +5,10 @@ API. Роль-ориентирован — вызывающий код прос�
 сразу, в том числе во время идущей встречи."""
 from dataclasses import dataclass
 
+from ..config import Settings, save_tpm_limits
 from .base import LlmClient
 from .ollama_client import OllamaClient
 from .openai_client import OpenAIClient
-from ..config import Settings, save_tpm_limits
 
 
 @dataclass(frozen=True)

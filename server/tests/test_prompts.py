@@ -7,7 +7,6 @@ import pytest
 
 from app.llm import prompts
 
-
 # ------------------------------------------------------------------ режимы
 
 def test_normalize_mode_falls_back_to_default():

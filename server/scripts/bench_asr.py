@@ -82,8 +82,8 @@ def word_errors(reference: str, hypothesis: str) -> tuple[int, int]:
 
 def run_single(engine: str, model: str, wav_dir: Path) -> None:
     """Меряет одну модель и печатает JSON. Вызывается родителем в подпроцессе."""
-    from app.config import Settings
     from app.asr.transcriber import Transcriber
+    from app.config import Settings
 
     rss_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     cfg = Settings(asr_engine=engine, asr_model=model, _env_file=None)
