@@ -1,0 +1,56 @@
+{
+  "speech": [
+    {
+      "file": "speech/00.wav",
+      "text": "Коллеги, давайте начнём совещание по проекту Стенограф"
+    },
+    {
+      "file": "speech/01.wav",
+      "text": "Илья Петрович предлагает перенести дедлайн на середину сентября"
+    },
+    {
+      "file": "speech/02.wav",
+      "text": "Бюджет на третий квартал уже согласован с руководством"
+    },
+    {
+      "file": "speech/03.wav",
+      "text": "Нужно связать распознавание речи с базой данных"
+    },
+    {
+      "file": "speech/04.wav",
+      "text": "Протокол встречи будет готов к завтрашнему утру"
+    },
+    {
+      "file": "speech/05.wav",
+      "text": "Качество распознавания зависит от микрофона и фонового шума"
+    },
+    {
+      "file": "speech/06.wav",
+      "text": "Есть вопросы по диаризации голосов и определению спикеров"
+    },
+    {
+      "file": "speech/07.wav",
+      "text": "Подведём итоги и назначим следующую встречу на конец недели"
+    }
+  ],
+  "voices": {
+    "milena": [
+      "voices/milena/00.wav",
+      "voices/milena/01.wav",
+      "voices/milena/02.wav",
+      "voices/milena/03.wav"
+    ],
+    "daniel": [
+      "voices/daniel/00.wav",
+      "voices/daniel/01.wav",
+      "voices/daniel/02.wav",
+      "voices/daniel/03.wav"
+    ],
+    "anna": [
+      "voices/anna/00.wav",
+      "voices/anna/01.wav",
+      "voices/anna/02.wav",
+      "voices/anna/03.wav"
+    ]
+  }
+}
