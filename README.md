@@ -155,6 +155,31 @@ Ollama включается переменными `STENOGRAF_LLM_*` в `docker-
 (`server/run.sh`) — при установке в обычное окружение torch сам подтянет сборку
 с CUDA. Отдельного GPU-образа пока нет.
 
+## Регрессионный прогон
+
+Тесты проверяют логику, но не качество: после правки VAD, ASR или диаризации всё
+зелёное, а распознаёт хуже — и заметить это можно только на слух и поздно.
+
+```bash
+cd server && .venv/bin/python scripts/regress.py
+```
+
+Считает два числа на эталонном наборе и сравнивает с `baseline.json`: долю
+ошибок в словах (WER) и ошибки диаризации — раздвоения и склейки. Стало хуже
+допуска — выход с кодом 1.
+
+Набор синтезирован системным голосом macOS (`scripts/make_regress_fixtures.py`)
+и лежит в репозитории: расшифровка известна заранее, а живые записи участников
+встреч в публичный репозиторий класть нельзя.
+
+Модели живут в контейнере, поэтому на практике:
+
+```bash
+docker compose cp server/scripts/regress.py server:/tmp/regress.py
+docker compose cp server/tests/fixtures server:/tmp/fixtures
+docker compose exec -e PYTHONPATH=/srv server python /tmp/regress.py --fixtures /tmp/fixtures/regress
+```
+
 ## Конфигурация сервера
 
 Все параметры — переменные окружения с префиксом `STENOGRAF_` (или `server/.env`):
