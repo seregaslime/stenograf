@@ -1,5 +1,8 @@
 # 🎙️ Стенограф
 
+[![Tests](https://github.com/seregaslime/stenograf/actions/workflows/tests.yml/badge.svg)](https://github.com/seregaslime/stenograf/actions/workflows/tests.yml)
+[![Build installers](https://github.com/seregaslime/stenograf/actions/workflows/build.yml/badge.svg)](https://github.com/seregaslime/stenograf/actions/workflows/build.yml)
+
 Десктоп-приложение для протоколирования встреч: превращает речь с **микрофона**
 и **системного звука** (корпоративный звонок, вебинар) в текстовый чат в реальном
 времени, различает голоса участников и по окончании встречи составляет протокол

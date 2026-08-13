@@ -77,3 +77,21 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test
+
+  # Dockerfile ломается тише всего: тесты зелёные, приложение у Сергея
+  # работает, а на сервере организации образ не собирается — и выясняется это
+  # в худший момент. Собираем на каждый PR, но не публикуем: нам нужна
+  # проверка, а не артефакт.
+  image:
+    name: Docker-образ сервера
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Сборка
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
