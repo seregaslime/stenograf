@@ -163,7 +163,8 @@ export default function LivePage({
   function togglePicked(id: number) {
     setPickedIds((previous) => {
       const next = new Set(previous);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }

@@ -71,5 +71,9 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
       - run: npm ci
+      # Линтер ловит то, чего не видит компилятор типов: условно вызванный хук
+      # или забытую зависимость эффекта. Предупреждения прогон не валят —
+      # красным становится только настоящая ошибка (см. client/eslint.config.mjs).
+      - run: npm run lint
       - run: npm run typecheck
       - run: npm run test
