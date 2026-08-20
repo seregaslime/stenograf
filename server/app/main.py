@@ -11,12 +11,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from . import search
 from .asr.transcriber import GIGAAM_AVAILABLE, MLX_AVAILABLE, Transcriber
 from .config import (
     API_HOST_HINT,
@@ -37,6 +38,7 @@ from .db.database import init_db, session_scope
 from .db.models import Meeting, Speaker, VoicePrint
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import SpeakerRegistry
+from .llm.base import LlmError
 from .llm.ollama_client import OllamaClient
 from .llm.openai_client import OpenAIClient
 from .llm.router import LlmRouter
@@ -461,6 +463,26 @@ class RenameBody(BaseModel):
 
 class MergeBody(BaseModel):
     speaker_ids: list[int]  # ровно два id; сервер сам выбирает целевой профиль
+
+
+@app.get("/api/search")
+async def search_meetings(q: str, limit: int | None = Query(None, ge=1, le=50)):
+    """Куски прошлых встреч, ближайшие по смыслу к вопросу.
+
+    Индексация ленивая, прямо здесь: встречи могли пройти до появления поиска,
+    а модель эмбеддингов — смениться в настройках. Крючок в конвейере обошёлся
+    бы дороже и молчал бы про старые встречи.
+    """
+    try:
+        with session_scope() as db:
+            посчитано = await search.reindex_missing(db, settings)
+            if посчитано:
+                log.info("Проиндексировано кусков: %d", посчитано)
+            return {"results": await search.search(db, settings, q, limit)}
+    except LlmError as exc:
+        # Модель эмбеддингов не скачана или Ollama не запущена — это чинится
+        # одной командой, и текст ошибки должен эту команду называть.
+        raise HTTPException(503, str(exc))
 
 
 @app.get("/api/speakers")

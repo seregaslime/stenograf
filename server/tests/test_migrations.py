@@ -111,6 +111,34 @@ def test_meeting_mode_migration_runs_before_autoincrement(temp_engine):
         ).fetchone() == (7, "work")
 
 
+def test_chunks_table_appears_in_existing_db(temp_engine, monkeypatch):
+    """У базы, заведённой до поиска, таблица кусков появляется сама.
+
+    Отдельной миграции для неё нет намеренно: create_all добавляет
+    ОТСУТСТВУЮЩИЕ таблицы (в отличие от колонок в существующих). Тест
+    сторожит именно это — если таблицу однажды заменят колонкой в segments,
+    у Сергея и куратора сервер молча останется без поиска.
+    """
+    with temp_engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE meetings (id INTEGER PRIMARY KEY, title VARCHAR, status VARCHAR, "
+            "started_at DATETIME, ended_at DATETIME, record_audio BOOLEAN, audio_dir VARCHAR, "
+            "summary TEXT, summary_model VARCHAR, summary_error TEXT)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO meetings (id, title, status, started_at, record_audio) "
+            "VALUES (1, 'Старая встреча', 'done', '2026-01-01 00:00:00', 0)"
+        )
+    assert "chunks" not in _tables(temp_engine)
+
+    database.init_db()
+
+    assert "chunks" in _tables(temp_engine)
+    assert {"meeting_id", "text", "vector", "model"} <= set(_columns(temp_engine, "chunks"))
+    with temp_engine.begin() as conn:
+        assert conn.exec_driver_sql("SELECT title FROM meetings WHERE id=1").scalar() == "Старая встреча"
+
+
 def test_migrate_voiceprints_moves_centroid(temp_engine):
     """Центроид голоса переезжает из строки спикера в отдельную таблицу отпечатков."""
     models.Base.metadata.tables["voiceprints"].create(temp_engine)

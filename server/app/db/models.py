@@ -78,6 +78,41 @@ class Meeting(Base):
     segments: Mapped[list["Segment"]] = relationship(
         back_populates="meeting", cascade="all, delete-orphan"
     )
+    # Куски поиска умирают вместе со встречей: осиротевший вектор нашёлся бы в
+    # поиске и указывал бы на удалённый разговор.
+    chunks: Mapped[list["Chunk"]] = relationship(
+        cascade="all, delete-orphan", overlaps="meeting"
+    )
+
+
+class Chunk(Base):
+    """Кусок разговора для поиска: несколько подряд идущих реплик и их вектор.
+
+    Ищем не по репликам: они короткие (на живых встречах в среднем 49 символов),
+    и вектор от «Да-да, согласен» ничего не значит. Кусок набирается до
+    search_chunk_chars символов, а в выдаче показываются реплики, попавшие в
+    него, — их границы хранятся здесь же.
+
+    Таблица создаётся сама (create_all добавляет ОТСУТСТВУЮЩИЕ таблицы), поэтому
+    отдельной миграции не нужно — в отличие от новой колонки в существующей.
+    """
+
+    __tablename__ = "chunks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"))
+    first_segment_id: Mapped[int] = mapped_column(ForeignKey("segments.id", ondelete="CASCADE"))
+    last_segment_id: Mapped[int] = mapped_column(ForeignKey("segments.id", ondelete="CASCADE"))
+    start_s: Mapped[float] = mapped_column(Float)
+    text: Mapped[str] = mapped_column(Text)
+    # Какой моделью посчитан вектор: сменили модель — старые куски надо
+    # пересчитать, иначе в одном индексе окажутся несравнимые векторы.
+    model: Mapped[str] = mapped_column(String(80))
+    # float32, L2-нормированный. BLOB, а не JSON: 1024 числа текстом весят
+    # вчетверо больше и разбираются на порядок дольше.
+    vector: Mapped[bytes] = mapped_column(LargeBinary)
+
+    meeting: Mapped[Meeting] = relationship()
 
 
 class Segment(Base):

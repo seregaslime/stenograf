@@ -30,6 +30,44 @@ class OllamaClient:
         except Exception:
             return {"reachable": False, "models": []}
 
+    async def embed(self, model: str, texts: list[str]) -> list[list[float]]:
+        """Векторы для списка текстов (модель эмбеддингов, не разговорная).
+
+        Одним запросом на всю пачку: у Ollama на каждый запрос приходится
+        загрузка модели в память, и по одному тексту за раз индексация встречи
+        занимала бы минуты вместо секунд.
+        """
+        if not texts:
+            return []
+        timeout = httpx.Timeout(600.0, connect=5.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    f"{self._cfg.ollama_url}/api/embed",
+                    json={"model": model, "input": texts,
+                          "keep_alive": self._cfg.llm_keep_alive},
+                )
+        except httpx.ConnectError as exc:
+            raise OllamaError(
+                f"Ollama недоступен по адресу {self._cfg.ollama_url}. "
+                "Запустите его командой `ollama serve`."
+            ) from exc
+
+        if response.status_code == 404:
+            raise OllamaError(
+                f"Модель «{model}» не найдена в Ollama. Скачайте её: `ollama pull {model}`."
+            )
+        if response.status_code != 200:
+            raise OllamaError(f"Ollama вернул ошибку {response.status_code}: {response.text[:200]}")
+
+        векторы = response.json().get("embeddings") or []
+        if len(векторы) != len(texts):
+            raise OllamaError(
+                f"Ollama вернула {len(векторы)} векторов на {len(texts)} текстов — "
+                "модель не для эмбеддингов?"
+            )
+        return векторы
+
     async def generate(
         self,
         model: str,
