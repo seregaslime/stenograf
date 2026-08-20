@@ -13,8 +13,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:cov": "vitest run --coverage",
-    "dist:mac": "npm run build && electron-builder --mac dmg",
-    "dist:win": "npm run build && electron-builder --win nsis --x64",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip",
+    "dist:win": "npm run build && electron-builder --win nsis portable --x64",
     "lint": "eslint src"
   },
   "build": {
@@ -31,7 +31,10 @@
     ],
     "asar": false,
     "mac": {
-      "target": "dmg",
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "identity": null,
       "category": "public.app-category.productivity",
       "extendInfo": {
@@ -40,11 +43,17 @@
       }
     },
     "win": {
-      "target": "nsis"
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
+    },
+    "portable": {
+      "artifactName": "Stenograf-${version}-portable-${arch}.${ext}"
     }
   },
   "dependencies": {
