@@ -2,7 +2,7 @@ import { useEffect, useState, type MouseEvent } from "react";
 import type { Page } from "../App";
 import { api } from "../api/rest";
 import { formatTime } from "../components/Transcript";
-import type { MeetingListItem } from "../types";
+import type { SearchHit, MeetingListItem } from "../types";
 
 const STATUS_LABEL: Record<MeetingListItem["status"], string> = {
   live: "идёт",
@@ -26,9 +26,19 @@ function duration(meeting: MeetingListItem): string {
   return formatTime(seconds);
 }
 
+function mmss(seconds: number): string {
+  const м = Math.floor(seconds / 60);
+  return `${м}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+}
+
 export default function HistoryPage({ navigate }: { navigate: (page: Page) => void }) {
   const [meetings, setMeetings] = useState<MeetingListItem[] | null>(null);
   const [error, setError] = useState("");
+  // Поиск по смыслу: вопрос своими словами, в ответ — цитаты из прошлых встреч
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<SearchHit[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
 
   const load = () =>
     api
@@ -42,6 +52,26 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
   useEffect(() => {
     void load();
   }, []);
+
+  async function find() {
+    const текст = query.trim();
+    if (!текст) {
+      setHits(null);
+      return;
+    }
+    setSearching(true);
+    setSearchError("");
+    try {
+      // Первый запрос после новой встречи заодно её индексирует — он дольше
+      const { results } = await api.search(текст);
+      setHits(results);
+    } catch (exc) {
+      setSearchError((exc as Error).message);
+      setHits(null);
+    } finally {
+      setSearching(false);
+    }
+  }
 
   async function remove(meeting: MeetingListItem, event: MouseEvent) {
     event.stopPropagation();
@@ -59,6 +89,51 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
       <h1>История встреч</h1>
       <p className="page-sub">Транскрипты и протоколы сохраняются локально на сервере.</p>
       {error && <div className="banner error">{error}</div>}
+
+      <div className="card settings-block">
+        <div style={{ display: "flex", gap: 10 }}>
+          <input
+            className="input grow"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => event.key === "Enter" && void find()}
+            placeholder="О чём говорили? Например: что решили по срокам"
+          />
+          <button className="btn primary" onClick={() => void find()} disabled={searching}>
+            {searching ? <span className="spinner" /> : "Найти"}
+          </button>
+        </div>
+        <span className="hint">
+          Ищет по смыслу, а не по словам: «что решили по срокам» найдёт разговор,
+          где говорили «двигаем сдачу на следующий месяц»
+        </span>
+        {searchError && (
+          <div className="banner error" style={{ marginTop: 10 }}>
+            {searchError}
+          </div>
+        )}
+        {hits?.length === 0 && (
+          <div className="hint" style={{ marginTop: 10 }}>
+            Ничего похожего не нашлось
+          </div>
+        )}
+        {hits?.map((hit, i) => (
+          <div
+            key={`${hit.meeting_id}-${i}`}
+            className="list-item"
+            style={{ marginTop: 10 }}
+            onClick={() => navigate({ name: "meeting", id: hit.meeting_id })}
+          >
+            <div className="grow">
+              <div className="meta">
+                {hit.meeting_title} · {formatDate(hit.started_at)} · {mmss(hit.start_s)} ·
+                близость {hit.similarity.toFixed(2)}
+              </div>
+              <div>{hit.text}</div>
+            </div>
+          </div>
+        ))}
+      </div>
       {meetings && meetings.length === 0 && (
         <div className="empty">
           <div className="big-icon">🗂️</div>
