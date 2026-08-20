@@ -1,4 +1,8 @@
-# Сборка инсталляторов клиента на родных платформах.
+# Сборка клиента на родных платформах: и установщики, и портативные сборки.
+# Портативная — просьба куратора с созвона 20.08.2026: запустить приложение,
+# ничего не устанавливая и не собирая. По тегу v* сборки уезжают в Releases,
+# где на них есть постоянная ссылка; артефакты прогона живут 90 дней и видны
+# только тому, кто вошёл в GitHub.
 # Запуск: вручную (Actions → Build installers → Run workflow) или тегом v*.
 name: Build installers
 
@@ -35,3 +39,45 @@ jobs:
           path: |
             client/release/*.dmg
             client/release/*.exe
+            client/release/*.zip
+
+  # Отдельным job-ом, а не внутри матрицы: релиз один на обе платформы, и два
+  # параллельных job-а гонялись бы за право его создать.
+  release:
+    name: Релиз с готовыми сборками
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # gh release create пишет в репозиторий
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true   # обе платформы в одну папку
+
+      # Имена файлов берут версию из package.json, а имя релиза — из тега.
+      # Разойдясь, они дают релиз «v0.3.0» с файлами Stenograf-0.2.0-*: со
+      # стороны это выглядит как выложенная не та сборка, и проверить нечем.
+      - name: Тег совпадает с версией клиента
+        run: |
+          version=$(jq -r .version client/package.json)
+          [ "v$version" = "$GITHUB_REF_NAME" ] || {
+            echo "::error::тег $GITHUB_REF_NAME, а версия клиента $version — поднимите version в client/package.json"
+            exit 1
+          }
+
+      # Долив через upload --clobber: если загрузка оборвалась на полпути (сеть
+      # в проекте ненадёжна), релиз уже создан, и повторный запуск упал бы на
+      # «release already exists», хотя чинить нужно ровно недогруженные файлы.
+      - name: Выложить релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            release/*.dmg release/*.exe release/*.zip \
+            --title "Стенограф $GITHUB_REF_NAME" \
+            --notes-file .github/release-notes.md \
+          || gh release upload "$GITHUB_REF_NAME" \
+            release/*.dmg release/*.exe release/*.zip --clobber
