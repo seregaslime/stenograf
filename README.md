@@ -215,9 +215,9 @@ docker compose exec -e PYTHONPATH=/srv server python /tmp/regress.py --fixtures 
 | `STENOGRAF_SPEAKER_MATCH_THRESHOLD` | `0.35` | Порог «тот же голос» (косинусная близость, см. `scripts/eval_voices.py`) |
 | `STENOGRAF_SPEAKER_CHANNEL_DOMINANCE` | `2.0` | Во сколько раз канал должен быть громче, чтобы считаться источником голоса |
 | `STENOGRAF_DENOISE` | `off` | Этап чистки шума в конвейере (заготовка) |
-| `STENOGRAF_SUMMARY_MODEL` | `qwen3:4b` | Локальная модель Ollama для протокола |
-| `STENOGRAF_HINTS_MODEL` | `qwen3:1.7b` | Локальная модель Ollama для подсказок |
-| `STENOGRAF_OLLAMA_URL` | `http://127.0.0.1:11434` | Адрес Ollama |
+| `STENOGRAF_SUMMARY_MODEL` | `qwen3:4b` | Локальная модель Ollama для протокола (можно задать в настройках приложения) |
+| `STENOGRAF_HINTS_MODEL` | `qwen3:1.7b` | Локальная модель Ollama для подсказок (можно задать в настройках приложения) |
+| `STENOGRAF_OLLAMA_URL` | `http://127.0.0.1:11434` | Адрес Ollama (можно задать в настройках приложения) |
 | `STENOGRAF_LLM_PROVIDER` | `local` | Провайдер LLM: `local` (Ollama) или `api` (Groq) |
 | `STENOGRAF_LLM_API_MIN_CONTEXT_TOKENS` | `32768` | Модели с меньшим контекстом не показываются в выборе |
 | `STENOGRAF_LLM_API_BASE_URL` | — | Адрес API при `provider=api` (напр. `https://api.groq.com/openai/v1`) |
@@ -226,6 +226,12 @@ docker compose exec -e PYTHONPATH=/srv server python /tmp/regress.py --fixtures 
 | `STENOGRAF_LLM_API_HINTS_MODEL` | — | Модель API для подсказок |
 | `STENOGRAF_LLM_API_TPM_FALLBACK` | `6000` | Запасной лимит токенов в минуту, если измерить не удалось (`0` — не ограничивать) |
 | `STENOGRAF_LLM_API_OUTPUT_SHARE` | `0.25` | Доля минутного лимита, оставляемая модели на ответ (он тоже считается в лимит) |
+
+Настройки обоих провайдеров задаются и в приложении: **Настройки → Модель для
+подсказок и резюме**. Для локальной модели это адрес Ollama и две модели, для
+API — адрес, ключ и две модели. Введённое в приложении сохраняется в
+`server/data/llm.json` и **перекрывает** переменные окружения: у сервера в
+контейнере иначе пришлось бы менять модель пересозданием контейнера.
 
 Лимит токенов в минуту — то ограничение, в которое упираются подсказки (размер
 контекста модели тут ни при чём: у неё он в разы больше). В списке моделей

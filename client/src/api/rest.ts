@@ -4,6 +4,7 @@ import type {
   HealthDto,
   LlmModelsDto,
   LlmSettings,
+  OllamaModelsDto,
   LlmStateDto,
   MeetingDetail,
   MeetingListItem,
@@ -49,6 +50,12 @@ export const api = {
     request<LlmModelsDto>("/api/llm/models", {
       method: "POST",
       body: JSON.stringify({ api_base_url, api_key }),
+    }),
+  // То же для Ollama: какие модели скачаны по ещё не сохранённому адресу
+  probeOllama: (ollama_url: string) =>
+    request<OllamaModelsDto>("/api/llm/ollama/models", {
+      method: "POST",
+      body: JSON.stringify({ ollama_url }),
     }),
 
   meetings: () => request<MeetingListItem[]>("/api/meetings"),

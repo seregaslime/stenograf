@@ -94,6 +94,11 @@ export interface LlmStateDto {
   models: string[];
   models_info: LlmModelInfo[];
   models_rejected: number;
+  /** Настройки Ollama — приходят всегда, даже когда активен api: форма
+   *  показывает оба набора, и локальный не должен подменяться API-шным. */
+  ollama_url: string;
+  local_summary_model: string;
+  local_hints_model: string;
   summary_model: string; // модели активного провайдера (строка статуса)
   hints_model: string;
   api_summary_model: string; // модели API — отдельно, для формы настроек
@@ -120,6 +125,15 @@ export interface LlmSettings {
   api_key?: string;
   summary_model?: string;
   hints_model?: string;
+  ollama_url?: string;
+  local_summary_model?: string;
+  local_hints_model?: string;
+}
+
+/** Ответ пробы Ollama: у неё нет ни размера контекста, ни отсева моделей. */
+export interface OllamaModelsDto {
+  reachable: boolean;
+  models: string[];
 }
 
 export interface AsrStateDto {

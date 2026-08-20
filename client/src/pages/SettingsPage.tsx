@@ -53,6 +53,12 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
   const [hintsModel, setHintsModel] = useState("");
   const [probing, setProbing] = useState(false);
   const [probeError, setProbeError] = useState("");
+  // Настройки локальной модели — те же, что у API. Раньше адрес Ollama и её
+  // модели задавались только переменными окружения сервера.
+  const [ollamaUrl, setOllamaUrl] = useState("");
+  const [localModels, setLocalModels] = useState<string[]>([]);
+  const [localSummaryModel, setLocalSummaryModel] = useState("");
+  const [localHintsModel, setLocalHintsModel] = useState("");
 
   async function test() {
     setTesting(true);
@@ -129,8 +135,16 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     setSummaryModel(state.api_summary_model ?? "");
     setHintsModel(state.api_hints_model ?? "");
     setApiKey(""); // ключ с сервера не приходит — пустое поле = «оставить прежний»
-    // models из status() (для api — уже отфильтрованный список пригодных моделей)
-    setApiModels(state.models ?? []);
+    setOllamaUrl(state.ollama_url ?? "");
+    setLocalSummaryModel(state.local_summary_model ?? "");
+    setLocalHintsModel(state.local_hints_model ?? "");
+    // models из status() — это модели АКТИВНОГО провайдера, и класть их надо
+    // в свой список: у api они уже отфильтрованы по пригодности, у local это
+    // просто скачанные Ollama. Свалив их в одну переменную, мы бы показывали
+    // имена qwen3 в списке моделей API сразу после переключения провайдера.
+    const модели = state.models ?? [];
+    setApiModels(state.provider === "api" ? модели : []);
+    setLocalModels(state.provider === "local" ? модели : []);
     setModelsInfo(state.models_info ?? []);
     setModelsRejected(state.models_rejected ?? 0);
   }
@@ -161,6 +175,33 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     } catch {
       setLlm(null); // старый сервер без /api/llm — карточку просто не показываем
       return null;
+    }
+  }
+
+  async function probeLocal() {
+    setProbing(true);
+    setProbeError("");
+    try {
+      const res = await api.probeOllama(ollamaUrl.trim());
+      setLocalModels(res.models);
+      if (!res.reachable) {
+        setProbeError("Ollama по этому адресу не отвечает — проверьте, что она запущена.");
+        return;
+      }
+      // Пустой список — не поломка, а не скачанные модели. Без подсказки это
+      // выглядит одинаково, и человек идёт искать несуществующую ошибку.
+      if (!res.models.length) {
+        setProbeError("Ollama отвечает, но моделей нет. Скачайте: ollama pull qwen3:4b");
+        return;
+      }
+      if (!localSummaryModel || !res.models.includes(localSummaryModel))
+        setLocalSummaryModel(res.models[0]);
+      if (!localHintsModel || !res.models.includes(localHintsModel))
+        setLocalHintsModel(res.models[0]);
+    } catch (exc) {
+      setProbeError((exc as Error).message);
+    } finally {
+      setProbing(false);
     }
   }
 
@@ -204,6 +245,9 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
         api_key: apiKey || undefined, // пусто — сервер оставит сохранённый ключ
         summary_model: summaryModel,
         hints_model: hintsModel,
+        ollama_url: ollamaUrl.trim(),
+        local_summary_model: localSummaryModel,
+        local_hints_model: localHintsModel,
       });
       setLlm(state);
       fillLlmForm(state);
@@ -368,6 +412,84 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
             </select>
           </label>
 
+          {provider === "local" && (
+            <>
+              <label className="field">
+                <span>Адрес Ollama</span>
+                <input
+                  className="input"
+                  value={ollamaUrl}
+                  onChange={(event) => setOllamaUrl(event.target.value)}
+                  placeholder="http://127.0.0.1:11434"
+                />
+                <span className="hint">
+                  Ollama может работать не на этой машине: в контуре с
+                  докером — соседним контейнером (<code>http://ollama:11434</code>),
+                  в организации — на отдельном сервере
+                </span>
+              </label>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 6 }}>
+                <button className="btn" onClick={probeLocal} disabled={probing || !ollamaUrl.trim()}>
+                  {probing ? <span className="spinner" /> : "Запросить модели"}
+                </button>
+                <span style={{ color: "var(--muted)", fontSize: 12.5 }}>
+                  {localModels.length
+                    ? `скачанных моделей: ${localModels.length}`
+                    : "введите адрес и запросите список"}
+                </span>
+              </div>
+              {probeError && (
+                <div className="banner error" style={{ marginBottom: 10 }}>
+                  {probeError}
+                </div>
+              )}
+              <label className="field">
+                <span>Модель для протокола (резюме)</span>
+                <select
+                  className="input"
+                  value={localSummaryModel}
+                  onChange={(event) => setLocalSummaryModel(event.target.value)}
+                >
+                  {localSummaryModel && !localModels.includes(localSummaryModel) && (
+                    <option value={localSummaryModel}>{localSummaryModel}</option>
+                  )}
+                  {!localSummaryModel && <option value="">— выберите модель —</option>}
+                  {localModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+                <span className="hint">
+                  Протокол собирается из всей встречи, поэтому модель нужна
+                  покрупнее: qwen3:4b и выше
+                </span>
+              </label>
+              <label className="field">
+                <span>Модель для подсказок (можно ту же; полегче — быстрее)</span>
+                <select
+                  className="input"
+                  value={localHintsModel}
+                  onChange={(event) => setLocalHintsModel(event.target.value)}
+                >
+                  {localHintsModel && !localModels.includes(localHintsModel) && (
+                    <option value={localHintsModel}>{localHintsModel}</option>
+                  )}
+                  {!localHintsModel && <option value="">— выберите модель —</option>}
+                  {localModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+                <span className="hint">
+                  Подсказка должна успеть за разговором: на 8 ГБ памяти это
+                  qwen3:1.7b, модель покрупнее не успевает
+                </span>
+              </label>
+            </>
+          )}
+
           {provider === "api" && (
             <>
               <label className="field">
@@ -466,6 +588,9 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
               onClick={applyLlm}
               disabled={
                 applyingLlm ||
+                // Пустой адрес сервер игнорирует (пустое = «не меняли»), и
+                // «Применить» выглядело бы как молчаливый отказ.
+                (provider === "local" && !ollamaUrl.trim()) ||
                 (provider === "api" &&
                   (!baseUrl.trim() ||
                     !summaryModel ||

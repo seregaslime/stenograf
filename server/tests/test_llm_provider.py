@@ -328,6 +328,11 @@ def test_save_llm_choice_persists_creds(tmp_path, monkeypatch):
     monkeypatch.setattr(config.settings, "data_dir", tmp_path)
     monkeypatch.setattr(config.settings, "llm_api_base_url", "")
     monkeypatch.setattr(config.settings, "llm_api_key", "")
+    # Локальные поля фиксируем: файл сверяется целиком, а их значения иначе
+    # приехали бы из настроек окружения.
+    monkeypatch.setattr(config.settings, "ollama_url", "http://127.0.0.1:11434")
+    monkeypatch.setattr(config.settings, "summary_model", "qwen3:4b")
+    monkeypatch.setattr(config.settings, "hints_model", "qwen3:1.7b")
     config.save_llm_choice(
         "api", api_base_url=GROQ, api_key="secret",
         summary_model="sum-m", hints_model="hint-m",
@@ -339,9 +344,62 @@ def test_save_llm_choice_persists_creds(tmp_path, monkeypatch):
         # измеренные лимиты живут рядом с выбором: их дописывает save_tpm_limits
         # уже после сохранения, поэтому здесь они пустые
         "tpm_limits": {},
+        # настройки Ollama пишутся всегда, даже когда выбран api: провайдера
+        # переключают туда-обратно, и второй набор не должен теряться
+        "ollama_url": "http://127.0.0.1:11434",
+        "local_summary_model": "qwen3:4b",
+        "local_hints_model": "qwen3:1.7b",
     }
     assert config.settings.llm_api_base_url == GROQ
     assert config.settings.llm_api_summary_model == "sum-m"
+
+
+def test_save_llm_choice_persists_local_settings(tmp_path, monkeypatch):
+    """Адрес Ollama и её модели сохраняются наравне с API-шными.
+
+    До 20.08.2026 они жили только в переменных окружения: у сервера в
+    контейнере поменять их можно было лишь пересозданием контейнера.
+    """
+    monkeypatch.setattr(config.settings, "data_dir", tmp_path)
+    config.save_llm_choice(
+        "local", ollama_url="http://ollama.corp:11434/",
+        local_summary_model="qwen3:8b", local_hints_model="qwen3:4b",
+    )
+    data = json.loads((tmp_path / "llm.json").read_text())
+    # Хвостовой слэш срезается: с ним адрес запроса стал бы .../ /api/tags
+    assert data["ollama_url"] == "http://ollama.corp:11434"
+    assert data["local_summary_model"] == "qwen3:8b"
+    assert config.settings.ollama_url == "http://ollama.corp:11434"
+    assert config.settings.hints_model == "qwen3:4b"
+
+
+def test_load_llm_choice_restores_local_settings(tmp_path, monkeypatch):
+    """Локальные настройки переживают перезапуск сервера."""
+    monkeypatch.setattr(config.settings, "data_dir", tmp_path)
+    config.save_llm_choice(
+        "local", ollama_url="http://ollama.corp:11434",
+        local_summary_model="qwen3:8b", local_hints_model="qwen3:4b",
+    )
+    monkeypatch.setattr(config.settings, "ollama_url", "http://127.0.0.1:11434")
+    monkeypatch.setattr(config.settings, "summary_model", "другая")
+    config.load_llm_choice()
+    assert config.settings.ollama_url == "http://ollama.corp:11434"
+    assert config.settings.summary_model == "qwen3:8b"
+
+
+@pytest.mark.parametrize("плохой", ["file:///etc/passwd", "127.0.0.1:11434", "", "ollama"])
+def test_save_llm_choice_rejects_bad_ollama_url(tmp_path, monkeypatch, плохой):
+    """Адрес без схемы http(s) не сохраняется: сервер пошёл бы стучаться в мусор."""
+    monkeypatch.setattr(config.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(config.settings, "ollama_url", "http://127.0.0.1:11434")
+    if плохой == "":
+        # пустая строка — это «не меняли», а не ошибка
+        config.save_llm_choice("local", ollama_url=плохой)
+        assert config.settings.ollama_url == "http://127.0.0.1:11434"
+        return
+    with pytest.raises(ValueError):
+        config.save_llm_choice("local", ollama_url=плохой)
+    assert config.settings.ollama_url == "http://127.0.0.1:11434"
 
 
 def test_tpm_limits_persist_and_reload(tmp_path, monkeypatch):

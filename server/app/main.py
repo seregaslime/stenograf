@@ -23,7 +23,10 @@ from .config import (
     ASR_ENGINES,
     ASR_MODELS,
     LLM_API_DEFAULT_BASE_URL,
+    OLLAMA_URL_HINT,
+    Settings,
     api_host_supported,
+    ollama_url_valid,
     save_asr_choice,
     save_llm_choice,
     save_tpm_limits,
@@ -34,6 +37,7 @@ from .db.database import init_db, session_scope
 from .db.models import Meeting, Speaker, VoicePrint
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import SpeakerRegistry
+from .llm.ollama_client import OllamaClient
 from .llm.openai_client import OpenAIClient
 from .llm.router import LlmRouter
 from .llm.summary import build_transcript, generate_summary
@@ -223,12 +227,21 @@ class LlmBody(BaseModel):
     api_key: str | None = None
     summary_model: str | None = None
     hints_model: str | None = None
+    # Для provider="local" — то же самое для Ollama: адрес и две модели.
+    ollama_url: str | None = None
+    local_summary_model: str | None = None
+    local_hints_model: str | None = None
 
 
 class ModelsProbeBody(BaseModel):
     """Проверка ещё не сохранённых кредов: запрос списка моделей у API."""
     api_base_url: str
     api_key: str | None = None
+
+
+class OllamaProbeBody(BaseModel):
+    """То же для Ollama по ещё не сохранённому адресу."""
+    ollama_url: str
 
 
 async def _llm_state() -> dict:
@@ -254,6 +267,11 @@ async def _llm_state() -> dict:
         # модели API отдельно: форма настроек показывает их и когда активен local
         "api_summary_model": settings.llm_api_summary_model,
         "api_hints_model": settings.llm_api_hints_model,
+        # и симметрично — настройки Ollama, чтобы форма показывала их при
+        # активном api и не выдавала чужие значения за локальные
+        "ollama_url": settings.ollama_url,
+        "local_summary_model": settings.summary_model,
+        "local_hints_model": settings.hints_model,
     }
 
 
@@ -273,6 +291,9 @@ async def set_llm(body: LlmBody):
             api_key=body.api_key,
             summary_model=body.summary_model,
             hints_model=body.hints_model,
+            ollama_url=body.ollama_url,
+            local_summary_model=body.local_summary_model,
+            local_hints_model=body.local_hints_model,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -301,6 +322,21 @@ async def _measure_tpm_limits() -> None:
             measured[model] = limit
             log.info("Лимит модели «%s»: %d токенов/мин", model, limit)
     save_tpm_limits(measured)
+
+
+@app.post("/api/llm/ollama/models")
+async def probe_ollama_models(body: OllamaProbeBody):
+    """Какие модели скачаны у Ollama по ещё не сохранённому адресу.
+
+    Отдельно от /api/llm/models: там проверка хоста по белому списку и отсев
+    моделей по размеру контекста — у Ollama ни того, ни другого не нужно, а
+    ветвление внутри одного эндпоинта пришлось бы читать в обе стороны.
+    """
+    if not ollama_url_valid(body.ollama_url):
+        raise HTTPException(400, OLLAMA_URL_HINT)
+    проба = Settings(_env_file=None)
+    проба.ollama_url = body.ollama_url.strip().rstrip("/")
+    return await OllamaClient(проба).status()
 
 
 @app.post("/api/llm/models")
