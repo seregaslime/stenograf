@@ -17,6 +17,7 @@ from app import config
 from app.db import crud
 from app.db.database import init_db, session_scope
 from app.db.models import Meeting
+from app.llm import ollama_client as ollama_mod
 from app.llm import openai_client as openai_mod
 
 # Поддерживается только Groq: остальные провайдеры не сообщают контекст модели
@@ -32,6 +33,17 @@ def _mock_openai(monkeypatch, handler):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(openai_mod.httpx, "AsyncClient", factory)
+
+
+def _mock_ollama(monkeypatch, handler):
+    """То же для клиента Ollama: /api/tags отвечает мок, а не живой демон."""
+    real = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ollama_mod.httpx, "AsyncClient", factory)
 
 
 @pytest.fixture(scope="module")
@@ -142,6 +154,55 @@ def test_llm_probe_models(client, monkeypatch):
     ).json()
     assert body["reachable"] is True
     assert body["models"] == ["m1", "m2"]
+
+
+def test_llm_get_includes_local_settings(client):
+    """/api/llm отдаёт настройки Ollama — форма показывает их и когда активен api."""
+    body = client.get("/api/llm").json()
+    assert set(body) >= {"ollama_url", "local_summary_model", "local_hints_model"}
+    assert body["ollama_url"].startswith("http")
+
+
+def test_llm_probe_ollama_models(client, monkeypatch):
+    """/api/llm/ollama/models спрашивает список моделей по ещё не сохранённому адресу."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/tags"
+        assert request.url.host == "ollama.corp"
+        return httpx.Response(200, json={"models": [{"name": "qwen3:4b"}, {"name": "qwen3:1.7b"}]})
+
+    _mock_ollama(monkeypatch, handler)
+    body = client.post(
+        "/api/llm/ollama/models", json={"ollama_url": "http://ollama.corp:11434"},
+    ).json()
+    assert body["reachable"] is True
+    assert body["models"] == ["qwen3:4b", "qwen3:1.7b"]
+
+
+def test_llm_probe_ollama_bad_url_400(client):
+    """Адрес без схемы http(s) отклоняется до запроса, а не молча превращается в ошибку связи."""
+    response = client.post("/api/llm/ollama/models", json={"ollama_url": "file:///etc/passwd"})
+    assert response.status_code == 400
+
+
+def test_llm_set_local_with_settings(client, monkeypatch):
+    """Адрес Ollama и её модели принимаются из настроек приложения и возвращаются обратно."""
+    monkeypatch.setattr(config.settings, "ollama_url", "http://127.0.0.1:11434")
+    body = client.post("/api/llm", json={
+        "provider": "local",
+        "ollama_url": "http://ollama.corp:11434",
+        "local_summary_model": "qwen3:8b",
+        "local_hints_model": "qwen3:4b",
+    }).json()
+    assert body["ollama_url"] == "http://ollama.corp:11434"
+    assert body["local_summary_model"] == "qwen3:8b"
+
+
+def test_llm_set_local_bad_ollama_url_400(client):
+    """Мусорный адрес Ollama не сохраняется — 400 с объяснением."""
+    response = client.post(
+        "/api/llm", json={"provider": "local", "ollama_url": "просто текст"},
+    )
+    assert response.status_code == 400
 
 
 def test_llm_set_api_with_creds(client, monkeypatch):

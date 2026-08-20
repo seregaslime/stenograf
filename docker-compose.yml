@@ -14,6 +14,9 @@ services:
       - "8765:8765"
     environment:
       STENOGRAF_DATA_DIR: /data
+      # Значение по умолчанию. Как только адрес Ollama сохранят в настройках
+      # приложения, он ляжет в /data/llm.json и будет важнее этой переменной —
+      # правка здесь перестанет что-либо менять (том переживает пересборку).
       STENOGRAF_OLLAMA_URL: http://ollama:11434
       # Слабый сервер — модель полегче:
       # STENOGRAF_ASR_ENGINE: faster_whisper

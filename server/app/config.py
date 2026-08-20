@@ -242,6 +242,22 @@ def api_host_supported(base_url: str) -> bool:
     return urlparse(base_url).hostname in LLM_API_ALLOWED_HOSTS
 
 
+def ollama_url_valid(url: str) -> bool:
+    """Адрес Ollama проверяем только по схеме, без белого списка хостов.
+
+    В отличие от внешнего API, здесь адрес свой: Ollama живёт то на этой же
+    машине, то соседним контейнером (`http://ollama:11434` в docker-compose),
+    то на другой машине в сети организации — перечислить это списком нельзя.
+    Схему проверяем, чтобы сервер не пошёл стучаться в мусор вроде «file://».
+    """
+    from urllib.parse import urlparse
+    разобрано = urlparse(url.strip())
+    return разобрано.scheme in ("http", "https") and bool(разобрано.hostname)
+
+
+OLLAMA_URL_HINT = "Адрес Ollama должен начинаться с http:// или https://"
+
+
 API_HOST_HINT = (
     f"Пока поддерживается только Groq ({LLM_API_DEFAULT_BASE_URL}): только он "
     "сообщает размер контекста модели, без которого нельзя проверить, что "
@@ -290,6 +306,11 @@ def load_llm_choice() -> None:
         settings.llm_api_summary_model = data["summary_model"]
     if data.get("hints_model"):
         settings.llm_api_hints_model = data["hints_model"]
+    for ключ, поле in (("ollama_url", "ollama_url"),
+                      ("local_summary_model", "summary_model"),
+                      ("local_hints_model", "hints_model")):
+        if data.get(ключ):
+            setattr(settings, поле, data[ключ])
     if isinstance(data.get("tpm_limits"), dict):
         settings.llm_api_tpm_limits = {
             model: int(limit) for model, limit in data["tpm_limits"].items()
@@ -308,10 +329,17 @@ def save_llm_choice(
     api_key: str | None = None,
     summary_model: str | None = None,
     hints_model: str | None = None,
+    ollama_url: str | None = None,
+    local_summary_model: str | None = None,
+    local_hints_model: str | None = None,
 ) -> None:
-    """Сохраняет провайдера и (для 'api') креды/модели, введённые в приложении.
+    """Сохраняет провайдера и введённые в приложении настройки обоих провайдеров.
+
     None-поля не трогаются; пустой api_key НЕ затирает сохранённый (клиент
-    присылает ключ только когда его меняют — прежний обратно не отдаётся)."""
+    присылает ключ только когда его меняют — прежний обратно не отдаётся).
+    Локальные поля сохраняются наравне с API-шными: до 20.08.2026 адрес Ollama
+    и её модели жили только в переменных окружения, то есть менялись
+    пересозданием контейнера."""
     if provider not in LLM_PROVIDERS:
         raise ValueError(f"Неизвестный провайдер LLM: {provider}")
     if api_base_url is not None:
@@ -322,6 +350,16 @@ def save_llm_choice(
         settings.llm_api_summary_model = summary_model.strip()
     if hints_model is not None:
         settings.llm_api_hints_model = hints_model.strip()
+    # Пустую строку в локальных полях игнорируем: иначе «сохранить» с пустым
+    # адресом оставило бы сервер без Ollama вообще, без единого сообщения.
+    if ollama_url:
+        if not ollama_url_valid(ollama_url):
+            raise ValueError(OLLAMA_URL_HINT)
+        settings.ollama_url = ollama_url.strip().rstrip("/")
+    if local_summary_model:
+        settings.summary_model = local_summary_model.strip()
+    if local_hints_model:
+        settings.hints_model = local_hints_model.strip()
     if provider == "api" and not (settings.llm_api_base_url and settings.llm_api_key):
         raise ValueError(
             "API не настроен: укажите адрес и ключ API в настройках приложения "
@@ -337,6 +375,9 @@ def save_llm_choice(
         "summary_model": settings.llm_api_summary_model,
         "hints_model": settings.llm_api_hints_model,
         "tpm_limits": settings.llm_api_tpm_limits,
+        "ollama_url": settings.ollama_url,
+        "local_summary_model": settings.summary_model,
+        "local_hints_model": settings.hints_model,
     }))
     settings.llm_provider = provider
 
