@@ -180,6 +180,10 @@ docker compose cp server/tests/fixtures server:/tmp/fixtures
 docker compose exec -e PYTHONPATH=/srv server python /tmp/regress.py --fixtures /tmp/fixtures/regress
 ```
 
+Руками этот прогон запускать больше не обязательно: его же делает CI на каждый
+пул-реквест (job «Медленные уровни и эталон голоса»), и числа видны в сводке
+запуска, а не только в логах.
+
 ## Конфигурация сервера
 
 Все параметры — переменные окружения с префиксом `STENOGRAF_` (или `server/.env`):
@@ -311,8 +315,14 @@ Linux-машине, а не только на макбуке разработч�
 docker build --target test -t stenograf-test ./server && docker run --rm stenograf-test
 ```
 
-Те же тесты гоняет CI на каждый push — [.github/workflows/tests.yml](.github/workflows/tests.yml);
+Те же тесты гоняет CI — [.github/workflows/tests.yml](.github/workflows/tests.yml);
 HTML-покрытие и JUnit XML можно скачать из вкладки Actions.
+
+Быстрый набор идёт на Linux, а `integration`, `e2e` и регрессионный прогон — на
+macOS-раннере: оба медленных уровня синтезируют голоса командой `say`, и на
+Linux они бы просто скипнулись, оставив зелёный прогон, в котором ничего не
+выполнилось. Веса моделей (~500 МБ) кешируются между запусками, поэтому прогон
+укладывается в три минуты.
 
 Ручной чек-лист перед показом (реальный микрофон, звонки, железо) — [TESTING.md](TESTING.md).
 

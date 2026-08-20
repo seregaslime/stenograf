@@ -95,3 +95,105 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # «Регрессионный тест» в исходном смысле — после правки прогнать то, что
+  # работало раньше. Быстрый набор это уже делает (job server), но уровни
+  # integration и e2e не гоняются нигде, кроме макбука и вручную: оба
+  # синтезируют голоса командой `say`, и на ubuntu честно скипаются — прогон
+  # был бы зелёным, ничего не выполнив. Отсюда macOS-раннер; заодно он arm64,
+  # то есть та же архитектура, на которой померен эталон regress.py.
+  slow:
+    name: Медленные уровни и эталон голоса (macOS)
+    runs-on: macos-latest
+    # Промах кеша добавляет ~500 МБ загрузки; потолок нужен, чтобы зависший
+    # прогон не жёг раннер до отсечки GitHub в 6 часов.
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Голоса синтеза — расходный материал этих тестов, и их отсутствие
+      # ничего не ломает: integration просто скипнется, а прогон останется
+      # зелёным. Зелёный прогон, в котором не выполнилось ничего, хуже
+      # красного, поэтому проверяем голоса до всего остального.
+      - name: Голоса синтеза на месте
+        run: |
+          for voice in Milena Daniel Anna; do
+            say -v "$voice" -o /tmp/voice-check.wav --data-format=LEI16@16000 проверка || {
+              echo "::error::на раннере нет голоса $voice — integration и e2e без него бессмысленны"
+              exit 1
+            }
+          done
+
+      # Веса неизменны, поэтому ключ фиксированный и restore-keys не нужны.
+      # restore и save раздельно намеренно: обычный actions/cache сохраняет
+      # кеш только при зелёном job, а красный прогон здесь — штатное дело
+      # (регрессия по WER, мигнувший e2e). С единым шагом веса качались бы
+      # заново на каждой итерации по красному PR, то есть ровно там, где
+      # прогонов больше всего.
+      - name: Веса моделей из кеша
+        id: models
+        uses: actions/cache/restore@v4
+        with:
+          path: server/data/models
+          key: models-macos-gigaam-v3_e2e_rnnt-ecapa-v1
+
+      - name: Зависимости
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # Регресс идёт первым, потому что он же скачивает GigaAM и ECAPA: без
+      # папки server/data/models уровень e2e скипается (test_e2e_live.py:44).
+      # shell: bash — ради pipefail. По умолчанию GitHub запускает шаг как
+      # `bash -e`, и в конвейере с tee код возврата берётся от tee: упавший
+      # regress.py оставил бы шаг зелёным, а проверку — бессмысленной.
+      - name: Эталон распознавания и диаризации
+        id: regress
+        shell: bash
+        run: python scripts/regress.py | tee ../regress.log
+
+      # Условие вместо простого always(): выросший WER не должен прятать
+      # результат самих тестов (красным тут могут стать разные вещи, и знать
+      # нужно про обе), но если упали зависимости — гонять тесты незачем,
+      # они посыплются на импортах и заметут настоящую причину.
+      # Сохраняем сразу после загрузки, не дожидаясь исхода тестов. Условие
+      # `outcome != skipped` — чтобы не записать в кеш пустую папку, если до
+      # загрузки дело не дошло. Если в кеш всё же попадут битые веса (обрыв
+      # сети посреди файла), лечится сменой суффикса в ключе на -v2.
+      - name: Веса моделей в кеш
+        if: always() && steps.models.outputs.cache-hit != 'true' && steps.regress.outcome != 'skipped'
+        uses: actions/cache/save@v4
+        with:
+          path: server/data/models
+          key: models-macos-gigaam-v3_e2e_rnnt-ecapa-v1
+
+      - name: Медленные уровни (integration + e2e)
+        if: success() || steps.regress.conclusion == 'failure'
+        run: |
+          # Без весов уровень e2e скипается молча (test_e2e_live.py:44): шаг
+          # отчитался бы зелёным, выполнив 3 теста из 13. Проверка голосов
+          # выше стоит ровно за этим же — не оставлять зелёное «ничего».
+          test -d data/models || {
+            echo "::error::нет весов моделей — все e2e скипнутся, прогон окажется пустым"
+            exit 1
+          }
+          python -m pytest -m "integration or e2e" -rs
+
+      # Куратор читает GitHub между созвонами: числа прогона должны быть
+      # видны на странице проверки, а не в логах на 400 строк.
+      - name: Числа эталона в сводку Actions
+        if: always()
+        run: |
+          if [ -f ../regress.log ]; then
+            {
+              echo '### Эталон распознавания и диаризации'
+              echo '```'
+              cat ../regress.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
