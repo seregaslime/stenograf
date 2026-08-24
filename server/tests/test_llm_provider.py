@@ -349,6 +349,8 @@ def test_save_llm_choice_persists_creds(tmp_path, monkeypatch):
         "ollama_url": "http://127.0.0.1:11434",
         "local_summary_model": "qwen3:4b",
         "local_hints_model": "qwen3:1.7b",
+        # роль модели для ответов по прошлым встречам — тоже часть выбора
+        "search_answer_model": "summary",
     }
     assert config.settings.llm_api_base_url == GROQ
     assert config.settings.llm_api_summary_model == "sum-m"
@@ -385,6 +387,31 @@ def test_load_llm_choice_restores_local_settings(tmp_path, monkeypatch):
     config.load_llm_choice()
     assert config.settings.ollama_url == "http://ollama.corp:11434"
     assert config.settings.summary_model == "qwen3:8b"
+
+
+def test_search_answer_model_persists(tmp_path, monkeypatch):
+    """Роль модели для ответов по встречам сохраняется и переживает перезапуск.
+
+    Не имя модели, а роль: имена у провайдеров разные, а «отвечать как на
+    подсказки» одинаково понятно и локальной модели, и API.
+    """
+    monkeypatch.setattr(config.settings, "data_dir", tmp_path)
+    config.save_llm_choice("local", search_answer_model="hints")
+    assert config.settings.search_answer_model == "hints"
+
+    monkeypatch.setattr(config.settings, "search_answer_model", "summary")
+    config.load_llm_choice()
+    assert config.settings.search_answer_model == "hints"
+
+
+def test_unknown_search_answer_model_rejected(tmp_path, monkeypatch):
+    """Чужая роль отклоняется: молча сохранённая опечатка означала бы, что
+    настройка не работает, а понять это можно только по скорости ответа."""
+    monkeypatch.setattr(config.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(config.settings, "search_answer_model", "summary")
+    with pytest.raises(ValueError, match="summary"):
+        config.save_llm_choice("local", search_answer_model="qwen3:4b")
+    assert config.settings.search_answer_model == "summary"
 
 
 @pytest.mark.parametrize("плохой", ["file:///etc/passwd", "127.0.0.1:11434", "", "ollama"])

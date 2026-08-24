@@ -8,6 +8,7 @@ import type {
   LlmStateDto,
   MeetingDetail,
   MeetingListItem,
+  SearchAnswer,
   SearchHit,
   SpeakerDto,
 } from "../types";
@@ -64,6 +65,14 @@ export const api = {
     request<{ results: SearchHit[] }>(
       `/api/search?q=${encodeURIComponent(q)}` + (limit ? `&limit=${limit}` : ""),
     ),
+
+  // Ответ модели по найденному — отдельным запросом: поиск отвечает за доли
+  // секунды, модель за секунды, и цитаты успевают появиться раньше ответа
+  searchAnswer: (q: string, limit?: number) =>
+    request<SearchAnswer>("/api/search/answer", {
+      method: "POST",
+      body: JSON.stringify({ q, limit }),
+    }),
 
   meetings: () => request<MeetingListItem[]>("/api/meetings"),
   meeting: (id: number) => request<MeetingDetail>(`/api/meetings/${id}`),

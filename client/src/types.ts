@@ -99,6 +99,8 @@ export interface LlmStateDto {
   ollama_url: string;
   local_summary_model: string;
   local_hints_model: string;
+  /** Роль модели для ответов по прошлым встречам: summary | hints. */
+  search_answer_model: string;
   summary_model: string; // модели активного провайдера (строка статуса)
   hints_model: string;
   api_summary_model: string; // модели API — отдельно, для формы настроек
@@ -128,6 +130,7 @@ export interface LlmSettings {
   ollama_url?: string;
   local_summary_model?: string;
   local_hints_model?: string;
+  search_answer_model?: string;
 }
 
 /** Ответ пробы Ollama: у неё нет ни размера контекста, ни отсева моделей. */
@@ -186,4 +189,10 @@ export interface SearchHit {
   text: string;
   /** Косинусная близость к запросу, 0…1 — та же мера, что у голосов. */
   similarity: number;
+}
+
+/** Ответ модели по найденным фрагментам — всегда вместе с ними самими. */
+export interface SearchAnswer {
+  answer: string;
+  results: SearchHit[];
 }

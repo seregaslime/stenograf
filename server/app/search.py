@@ -21,7 +21,9 @@ from sqlalchemy.orm import Session
 
 from .config import Settings
 from .db.models import Chunk, Meeting, Segment
+from .llm import prompts
 from .llm.ollama_client import OllamaClient
+from .llm.router import LlmRouter
 
 log = logging.getLogger(__name__)
 
@@ -156,6 +158,33 @@ async def search(db: Session, cfg: Settings, query: str, limit: int | None = Non
     близости = матрица @ q
     лучшие = np.argsort(-близости)[: (limit or cfg.search_top_k)]
     return [_result(куски[i], float(близости[i])) for i in лучшие]
+
+
+async def answer(db: Session, cfg: Settings, llm: LlmRouter, query: str,
+                 limit: int | None = None) -> dict:
+    """Ответ модели по найденным фрагментам плюс сами фрагменты.
+
+    Цитаты возвращаются вместе с ответом и всегда показываются рядом с ним:
+    модель не помнит встреч, она пересказывает показанное, и проверить её можно
+    только по тому, что видно на экране. Ответ без цитат про договорённости —
+    это уверенное враньё, которое невозможно поймать.
+
+    Какой моделью отвечать — настройка search_answer_model. По умолчанию
+    моделью протокола: ответ по нескольким фрагментам ближе к резюме, чем к
+    реплике на лету. Но на слабой машине разница в скорости решает (замер на
+    M3: qwen3:4b — 36 с, qwen3:1.7b — 13 с), поэтому можно переключить на
+    модель подсказок. Фрагментов немного и по другой причине — промпт должен
+    помещаться в контекст локальной модели.
+    """
+    найденное = await search(db, cfg, query, limit)
+    if not найденное:
+        return {"answer": "", "results": []}
+
+    system, prompt = prompts.build_search_answer_prompt(query, найденное)
+    если_подсказки = cfg.search_answer_model == "hints"
+    текст = await (llm.hint(prompt, system=system) if если_подсказки
+                   else llm.summarize(prompt, system=system))
+    return {"answer": текст.strip(), "results": найденное}
 
 
 def _result(chunk: Chunk, similarity: float) -> dict:

@@ -19,6 +19,7 @@ from app.db.database import init_db, session_scope
 from app.db.models import Meeting
 from app.llm import ollama_client as ollama_mod
 from app.llm import openai_client as openai_mod
+from app.llm import router as router_mod
 from app.llm.base import LlmError
 
 # Поддерживается только Groq: остальные провайдеры не сообщают контекст модели
@@ -434,6 +435,48 @@ def test_search_without_model_answers_503(client, done_meeting, monkeypatch):
     response = client.get("/api/search", params={"q": "бюджет"})
     assert response.status_code == 503
     assert "ollama pull" in response.json()["detail"]
+
+
+def test_search_answer_returns_answer_with_citations(client, done_meeting, monkeypatch):
+    """/api/search/answer отдаёт ответ модели и фрагменты, по которым он собран.
+
+    Проверяем содержимое цитат, а не конкретную встречу: фикстура done_meeting
+    создаёт свою встречу на каждый тест, все с одним текстом, и какая из
+    одинаково близких попадёт в тройку — не про эту проверку.
+    """
+    async def embed(self, model, texts):
+        return [[1.0, 0.0] if "привет коллеги" in т else [0.0, 1.0] for т in texts]
+
+    async def summarize(self, prompt, system=None, temperature=0.3):
+        assert "привет коллеги" in prompt   # фрагменты дошли до модели
+        return "Обсуждали приветствие."
+
+    monkeypatch.setattr(ollama_mod.OllamaClient, "embed", embed)
+    monkeypatch.setattr(router_mod.LlmRouter, "summarize", summarize)
+    body = client.post("/api/search/answer",
+                       json={"q": "привет коллеги, о чём говорили", "limit": 3}).json()
+    assert body["answer"] == "Обсуждали приветствие."
+    assert body["results"] and all("привет коллеги" in r["text"] for r in body["results"])
+
+
+@pytest.mark.parametrize("limit", [0, -3, 999])
+def test_search_answer_rejects_absurd_limit(client, limit):
+    """Нелепый limit отклоняется до похода к модели, а не после."""
+    response = client.post("/api/search/answer", json={"q": "бюджет", "limit": limit})
+    assert response.status_code == 422
+
+
+def test_both_search_endpoints_share_limit_bounds(client):
+    """Границы limit одинаковы у поиска и у ответа.
+
+    Один и тот же по смыслу параметр, ведущий себя по-разному у двух
+    эндпоинтов одного поиска, — ловушка для того, кто ходит в API скриптом.
+    """
+    предел = main.SEARCH_LIMIT_MAX
+    assert client.get("/api/search", params={"q": "б", "limit": предел + 1}).status_code == 422
+    assert client.post(
+        "/api/search/answer", json={"q": "б", "limit": предел + 1}
+    ).status_code == 422
 
 
 def test_llm_state_offers_default_base_url(client):
