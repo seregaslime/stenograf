@@ -8,6 +8,7 @@ import type {
   LlmStateDto,
   MeetingDetail,
   MeetingListItem,
+  SearchHit,
   SpeakerDto,
 } from "../types";
 
@@ -57,6 +58,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ ollama_url }),
     }),
+
+  // Поиск по смыслу среди прошлых встреч; сервер сам доиндексирует новые
+  search: (q: string, limit?: number) =>
+    request<{ results: SearchHit[] }>(
+      `/api/search?q=${encodeURIComponent(q)}` + (limit ? `&limit=${limit}` : ""),
+    ),
 
   meetings: () => request<MeetingListItem[]>("/api/meetings"),
   meeting: (id: number) => request<MeetingDetail>(`/api/meetings/${id}`),

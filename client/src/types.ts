@@ -176,3 +176,14 @@ declare global {
     };
   }
 }
+
+/** Найденный кусок разговора: цитата со ссылкой на встречу и момент. */
+export interface SearchHit {
+  meeting_id: number;
+  meeting_title: string;
+  started_at: string | null;
+  start_s: number;
+  text: string;
+  /** Косинусная близость к запросу, 0…1 — та же мера, что у голосов. */
+  similarity: number;
+}

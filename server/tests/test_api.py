@@ -19,6 +19,7 @@ from app.db.database import init_db, session_scope
 from app.db.models import Meeting
 from app.llm import ollama_client as ollama_mod
 from app.llm import openai_client as openai_mod
+from app.llm.base import LlmError
 
 # Поддерживается только Groq: остальные провайдеры не сообщают контекст модели
 GROQ = "https://api.groq.com/openai/v1"
@@ -380,6 +381,59 @@ def test_llm_probe_filters_models(client, monkeypatch):
     assert body["models"] == ["good"]
     assert body["models_rejected"] == 2
     assert body["models_info"][0]["context_window"] == 131072
+
+
+# ------------------------------------------------------------------ поиск по встречам
+
+def test_search_indexes_and_finds(client, done_meeting, monkeypatch):
+    """/api/search сам индексирует прошедшие встречи и возвращает цитату со ссылкой.
+
+    Индексация ленивая: встречи могли пройти до появления поиска, и требовать
+    от пользователя «нажмите переиндексировать» — значит гарантировать, что
+    поиск у него не заработает.
+    """
+    # Вектор задаётся по содержимому: иначе у всех кусков в общей тестовой базе
+    # он одинаковый, близость у всех единица, и в выдачу попадают случайные пять.
+    async def embed(self, model, texts):
+        return [[1.0, 0.0] if "привет коллеги" in т else [0.0, 1.0] for т in texts]
+
+    monkeypatch.setattr(ollama_mod.OllamaClient, "embed", embed)
+    body = client.get("/api/search", params={"q": "привет коллеги, о чём говорили"}).json()
+    найдено = [r for r in body["results"] if r["meeting_id"] == done_meeting]
+    assert найдено and найдено[0]["text"] == "привет коллеги"
+    assert найдено[0]["meeting_title"] == "Тестовая встреча"
+
+
+def test_search_empty_query_returns_empty(client, monkeypatch):
+    """Пустой запрос не будит модель эмбеддингов — она грузится в память секундами."""
+    async def embed(self, model, texts):
+        raise AssertionError("к модели ходить не должны")
+
+    monkeypatch.setattr(ollama_mod.OllamaClient, "embed", embed)
+    assert client.get("/api/search", params={"q": "  "}).json()["results"] == []
+
+
+@pytest.mark.parametrize("limit", [0, -3, 999])
+def test_search_rejects_absurd_limit(client, limit):
+    """limit вне разумных границ отклоняется на входе.
+
+    Отрицательный особенно коварен: он не падает, а превращает срез в «все
+    результаты, кроме последних трёх» — на большом архиве это мегабайты ответа
+    вместо пяти цитат.
+    """
+    assert client.get("/api/search", params={"q": "бюджет", "limit": limit}).status_code == 422
+
+
+def test_search_without_model_answers_503(client, done_meeting, monkeypatch):
+    """Модель эмбеддингов не скачана — 503 с командой, которая это чинит,
+    а не пустая выдача: пустая выглядит как «ничего не нашлось»."""
+    async def embed(self, model, texts):
+        raise LlmError("Модель «bge-m3» не найдена в Ollama. Скачайте её: `ollama pull bge-m3`.")
+
+    monkeypatch.setattr(ollama_mod.OllamaClient, "embed", embed)
+    response = client.get("/api/search", params={"q": "бюджет"})
+    assert response.status_code == 503
+    assert "ollama pull" in response.json()["detail"]
 
 
 def test_llm_state_offers_default_base_url(client):
