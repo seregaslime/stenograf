@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { Page } from "../App";
 import { api } from "../api/rest";
 import { formatTime } from "../components/Transcript";
@@ -39,6 +39,13 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [answering, setAnswering] = useState(false);
+  // Вопрос, ответ на который сейчас ждём. Модель думает секунды (локально —
+  // десятки), и без этой сверки ответ на прошлый вопрос успевает вернуться
+  // последним и лечь под цитаты к новому: ровно то «уверенно не про то»,
+  // ради защиты от которого цитаты и показываются.
+  const ждём = useRef("");
 
   const load = () =>
     api
@@ -61,15 +68,36 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
     }
     setSearching(true);
     setSearchError("");
+    setAnswer("");
     try {
       // Первый запрос после новой встречи заодно её индексирует — он дольше
       const { results } = await api.search(текст);
       setHits(results);
+      if (results.length) void ask(текст);
     } catch (exc) {
       setSearchError((exc as Error).message);
       setHits(null);
     } finally {
       setSearching(false);
+    }
+  }
+
+  /** Ответ модели вторым шагом: цитаты уже на экране, их читают, пока она думает. */
+  async function ask(текст: string) {
+    ждём.current = текст;
+    setAnswering(true);
+    try {
+      const итог = await api.searchAnswer(текст);
+      if (ждём.current !== текст) return;  // пока думали, спросили другое
+      setAnswer(итог.answer);
+      setHits(итог.results);
+    } catch (exc) {
+      if (ждём.current !== текст) return;
+      // Цитаты уже показаны и сами по себе полезны — ошибку ответа показываем
+      // рядом с ними, а не вместо них.
+      setSearchError((exc as Error).message);
+    } finally {
+      if (ждём.current === текст) setAnswering(false);
     }
   }
 
@@ -110,6 +138,17 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
         {searchError && (
           <div className="banner error" style={{ marginTop: 10 }}>
             {searchError}
+          </div>
+        )}
+        {(answering || answer) && (
+          <div className="banner" style={{ marginTop: 10 }}>
+            {answering ? (
+              <span style={{ color: "var(--muted)" }}>
+                <span className="spinner" /> модель читает найденное…
+              </span>
+            ) : (
+              <div style={{ whiteSpace: "pre-wrap" }}>{answer}</div>
+            )}
           </div>
         )}
         {hits?.length === 0 && (

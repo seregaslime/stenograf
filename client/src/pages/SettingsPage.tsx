@@ -59,6 +59,8 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
   const [localModels, setLocalModels] = useState<string[]>([]);
   const [localSummaryModel, setLocalSummaryModel] = useState("");
   const [localHintsModel, setLocalHintsModel] = useState("");
+  // Роль модели для ответов по прошлым встречам — общая для обоих провайдеров
+  const [searchAnswerModel, setSearchAnswerModel] = useState("summary");
 
   async function test() {
     setTesting(true);
@@ -138,6 +140,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     setOllamaUrl(state.ollama_url ?? "");
     setLocalSummaryModel(state.local_summary_model ?? "");
     setLocalHintsModel(state.local_hints_model ?? "");
+    setSearchAnswerModel(state.search_answer_model || "summary");
     // models из status() — это модели АКТИВНОГО провайдера, и класть их надо
     // в свой список: у api они уже отфильтрованы по пригодности, у local это
     // просто скачанные Ollama. Свалив их в одну переменную, мы бы показывали
@@ -248,6 +251,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
         ollama_url: ollamaUrl.trim(),
         local_summary_model: localSummaryModel,
         local_hints_model: localHintsModel,
+        search_answer_model: searchAnswerModel,
       });
       setLlm(state);
       fillLlmForm(state);
@@ -581,6 +585,23 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
               </label>
             </>
           )}
+
+          <label className="field">
+            <span>Модель для ответов по прошлым встречам</span>
+            <select
+              className="input"
+              value={searchAnswerModel}
+              onChange={(event) => setSearchAnswerModel(event.target.value)}
+            >
+              <option value="summary">Как для протокола — точнее</option>
+              <option value="hints">Как для подсказок — быстрее</option>
+            </select>
+            <span className="hint">
+              Поиск по истории встреч отдаёт найденное модели, и она отвечает по
+              нему. Модель протокола обычно крупнее: на локальной машине ответ
+              занимает втрое больше времени (замер на M3: 36 секунд против 13)
+            </span>
+          </label>
 
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <button
