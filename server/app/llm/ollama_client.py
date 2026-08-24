@@ -44,8 +44,13 @@ class OllamaClient:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
                     f"{self._cfg.ollama_url}/api/embed",
-                    json={"model": model, "input": texts,
-                          "keep_alive": self._cfg.llm_keep_alive},
+                    # keep_alive короче, чем у разговорной модели, и это
+                    # измерено: после индексации bge-m3 висела в памяти две
+                    # минуты, следом грузилась qwen3:4b — «loaded runners
+                    # count=2», и контейнер Ollama получал OOM на 6.3 ГБ
+                    # виртуалки. Эмбеддер нужен вспышками, держать его между
+                    # запросами незачем.
+                    json={"model": model, "input": texts, "keep_alive": "30s"},
                 )
         except httpx.ConnectError as exc:
             raise OllamaError(
