@@ -241,6 +241,7 @@ ollama pull bge-m3
 | `STENOGRAF_SEARCH_EMBED_MODEL` | `bge-m3` | Модель эмбеддингов для поиска по встречам (`ollama pull bge-m3`) |
 | `STENOGRAF_SEARCH_CHUNK_CHARS` | `600` | Сколько символов набирать в кусок разговора перед подсчётом вектора |
 | `STENOGRAF_SEARCH_TOP_K` | `5` | Сколько кусков отдавать на один запрос |
+| `STENOGRAF_SEARCH_ANSWER_MODEL` | `summary` | Чем отвечать по найденному: `summary` (модель протокола) или `hints` (быстрее) |
 | `STENOGRAF_SUMMARY_MODEL` | `qwen3:4b` | Локальная модель Ollama для протокола (можно задать в настройках приложения) |
 | `STENOGRAF_HINTS_MODEL` | `qwen3:1.7b` | Локальная модель Ollama для подсказок (можно задать в настройках приложения) |
 | `STENOGRAF_OLLAMA_URL` | `http://127.0.0.1:11434` | Адрес Ollama (можно задать в настройках приложения) |

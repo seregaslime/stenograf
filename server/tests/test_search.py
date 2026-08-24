@@ -227,6 +227,86 @@ def test_mixed_dimensions_are_survived(db_session, cfg, monkeypatch):
     assert all(r["meeting_id"] != чужой.meeting_id for r in найдено)
 
 
+# ------------------------------------------------------------------ ответ по найденному
+
+class _Модель:
+    """Роутер-подставка: запоминает промпт и отдаёт заготовленный ответ."""
+
+    def __init__(self, ответ: str = "На встрече 14 августа решили двигать сдачу."):
+        self.ответ, self.промпт, self.system = ответ, None, None
+
+    async def summarize(self, prompt, system=None, temperature=0.3):
+        self.промпт, self.system = prompt, system
+        return f"  {self.ответ}  "  # с пробелами: ответ модели обрезается
+
+
+def test_answer_uses_found_fragments(db_session, cfg, monkeypatch):
+    """Модель получает найденные фрагменты, а ответ возвращается вместе с ними.
+
+    Цитаты идут рядом с ответом всегда: модель не помнит встреч, она
+    пересказывает показанное, и проверить её можно только по ним.
+    """
+    _наполнить(db_session, cfg, monkeypatch)
+    модель = _Модель()
+    итог = asyncio.run(search.answer(db_session, cfg, модель, "куда делись деньги", limit=1))
+
+    assert итог["answer"] == "На встрече 14 августа решили двигать сдачу."
+    assert итог["results"] and итог["results"][0]["meeting_title"] == "Встреча про бюджет"
+    assert "обсудили бюджет на квартал" in модель.промпт   # фрагмент попал в промпт
+    assert "Встреча про бюджет" in модель.промпт           # и с указанием встречи
+    assert "куда делись деньги" in модель.промпт           # и сам вопрос
+
+
+def test_answer_can_use_hints_model(db_session, cfg, monkeypatch):
+    """Настройка переключает ответ на модель подсказок.
+
+    На слабой машине это решает: замер на M3 дал 36 секунд у модели протокола
+    против 13 у модели подсказок при одинаково верном ответе.
+    """
+    _наполнить(db_session, cfg, monkeypatch)
+    cfg.search_answer_model = "hints"
+
+    звали = []
+
+    class Роутер:
+        async def summarize(self, prompt, system=None, temperature=0.3):
+            звали.append("summary")
+            return "ответ протоколом"
+
+        async def hint(self, prompt, system=None, temperature=0.5, on_delta=None):
+            звали.append("hints")
+            return "ответ подсказкой"
+
+    итог = asyncio.run(search.answer(db_session, cfg, Роутер(), "деньги", limit=1))
+    assert звали == ["hints"] and итог["answer"] == "ответ подсказкой"
+
+
+def test_answer_without_hits_does_not_wake_model(db_session, cfg, monkeypatch):
+    """Ничего не нашлось — модель не зовём.
+
+    Локальная модель грузится в память секундами, и будить её ради ответа
+    «нечего пересказывать» — это ожидание на ровном месте.
+    """
+    подставить(monkeypatch, {"деньги": [1.0, 0.0, 0.0]})
+    модель = _Модель()
+    итог = asyncio.run(search.answer(db_session, cfg, модель, "деньги"))
+    assert итог == {"answer": "", "results": []}
+    assert модель.промпт is None
+
+
+def test_answer_forbids_general_knowledge(db_session, cfg, monkeypatch):
+    """В правилах промпта запрещено достраивать ответ из общих знаний.
+
+    Это отличие от чата по текущей встрече, где это как раз разрешено: там
+    человек спрашивает про мир, здесь — про договорённости, и придуманная
+    договорённость хуже её отсутствия.
+    """
+    _наполнить(db_session, cfg, monkeypatch)
+    модель = _Модель()
+    asyncio.run(search.answer(db_session, cfg, модель, "деньги", limit=1))
+    assert "в записях встреч этого нет" in модель.system
+
+
 def test_missing_model_error_is_explained(db_session, cfg, monkeypatch):
     """Не скачанная модель эмбеддингов объясняется словами: это чинится одной
     командой, и она должна быть в тексте ошибки."""

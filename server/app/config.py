@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SAMPLE_RATE = 16_000  # весь пайплайн работает на 16 кГц mono
@@ -18,6 +18,10 @@ ASR_MODELS = {
 }
 
 _SERVER_DIR = Path(__file__).resolve().parent.parent
+
+
+# Роли моделей, которыми можно отвечать по найденному в прошлых встречах.
+SEARCH_ANSWER_MODELS = ("summary", "hints")
 
 
 class Settings(BaseSettings):
@@ -96,6 +100,33 @@ class Settings(BaseSettings):
     # идущие реплики, пока не наберётся столько символов.
     search_chunk_chars: int = 600
     search_top_k: int = 5           # сколько кусков отдавать на один запрос
+    # Какой из УЖЕ настроенных моделей отвечать по найденному: "summary" —
+    # моделью протокола, "hints" — моделью подсказок. Не новое поле с именем
+    # модели: имена у провайдеров разные (qwen3:4b против openai/gpt-oss-120b),
+    # и пришлось бы заводить пару полей на каждого. Выбор по роли работает для
+    # обоих сразу.
+    #
+    # Замер на M3 (Ollama на хосте, Metal), ответ по трём фрагментам:
+    # qwen3:4b — 36 с, qwen3:1.7b — 13 с, оба ответили верно. На слабой машине
+    # разница решает, поэтому выбор вынесен в настройки.
+    search_answer_model: str = "summary"
+
+    @field_validator("search_answer_model")
+    @classmethod
+    def _известная_роль(cls, значение: str) -> str:
+        """Проверяем и при старте, а не только при сохранении из приложения.
+
+        Иначе опечатка в переменной окружения (`hint` вместо `hints`, или сразу
+        имя модели) тихо игнорируется: сравнение в search.answer не совпадёт,
+        отвечать будет модель протокола, и единственным симптомом станет ответ
+        втрое дольше ожидаемого.
+        """
+        if значение not in SEARCH_ANSWER_MODELS:
+            raise ValueError(
+                f"search_answer_model={значение!r}: допустимо "
+                f"{', '.join(SEARCH_ANSWER_MODELS)}"
+            )
+        return значение
 
     # --- Подсказки во время встречи ---
     # Подсказка выдаётся не по таймеру, а когда накопилось достаточно нового
@@ -326,7 +357,8 @@ def load_llm_choice() -> None:
         settings.llm_api_hints_model = data["hints_model"]
     for ключ, поле in (("ollama_url", "ollama_url"),
                       ("local_summary_model", "summary_model"),
-                      ("local_hints_model", "hints_model")):
+                      ("local_hints_model", "hints_model"),
+                      ("search_answer_model", "search_answer_model")):
         if data.get(ключ):
             setattr(settings, поле, data[ключ])
     if isinstance(data.get("tpm_limits"), dict):
@@ -350,6 +382,7 @@ def save_llm_choice(
     ollama_url: str | None = None,
     local_summary_model: str | None = None,
     local_hints_model: str | None = None,
+    search_answer_model: str | None = None,
 ) -> None:
     """Сохраняет провайдера и введённые в приложении настройки обоих провайдеров.
 
@@ -378,6 +411,13 @@ def save_llm_choice(
         settings.summary_model = local_summary_model.strip()
     if local_hints_model:
         settings.hints_model = local_hints_model.strip()
+    if search_answer_model:
+        if search_answer_model not in SEARCH_ANSWER_MODELS:
+            raise ValueError(
+                f"Неизвестная роль модели для ответов: {search_answer_model} "
+                f"(допустимо: {', '.join(SEARCH_ANSWER_MODELS)})"
+            )
+        settings.search_answer_model = search_answer_model
     if provider == "api" and not (settings.llm_api_base_url and settings.llm_api_key):
         raise ValueError(
             "API не настроен: укажите адрес и ключ API в настройках приложения "
@@ -396,6 +436,7 @@ def save_llm_choice(
         "ollama_url": settings.ollama_url,
         "local_summary_model": settings.summary_model,
         "local_hints_model": settings.hints_model,
+        "search_answer_model": settings.search_answer_model,
     }))
     settings.llm_provider = provider
 

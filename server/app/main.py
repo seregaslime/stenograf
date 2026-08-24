@@ -14,7 +14,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from . import search
@@ -221,6 +221,10 @@ async def set_asr(body: AsrBody):
 
 # ---------------------------------------------------------------- LLM-провайдер
 
+# Потолок на число цитат в одном ответе — общий для обоих эндпоинтов поиска.
+SEARCH_LIMIT_MAX = 20
+
+
 class LlmBody(BaseModel):
     provider: str
     # Для provider="api" — вводятся в настройках приложения. None-поля не меняются;
@@ -233,6 +237,8 @@ class LlmBody(BaseModel):
     ollama_url: str | None = None
     local_summary_model: str | None = None
     local_hints_model: str | None = None
+    # Роль модели для ответов по прошлым встречам: summary | hints
+    search_answer_model: str | None = None
 
 
 class ModelsProbeBody(BaseModel):
@@ -274,6 +280,7 @@ async def _llm_state() -> dict:
         "ollama_url": settings.ollama_url,
         "local_summary_model": settings.summary_model,
         "local_hints_model": settings.hints_model,
+        "search_answer_model": settings.search_answer_model,
     }
 
 
@@ -296,6 +303,7 @@ async def set_llm(body: LlmBody):
             ollama_url=body.ollama_url,
             local_summary_model=body.local_summary_model,
             local_hints_model=body.local_hints_model,
+            search_answer_model=body.search_answer_model,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -466,7 +474,7 @@ class MergeBody(BaseModel):
 
 
 @app.get("/api/search")
-async def search_meetings(q: str, limit: int | None = Query(None, ge=1, le=50)):
+async def search_meetings(q: str, limit: int | None = Query(None, ge=1, le=SEARCH_LIMIT_MAX)):
     """Куски прошлых встреч, ближайшие по смыслу к вопросу.
 
     Индексация ленивая, прямо здесь: встречи могли пройти до появления поиска,
@@ -482,6 +490,29 @@ async def search_meetings(q: str, limit: int | None = Query(None, ge=1, le=50)):
     except LlmError as exc:
         # Модель эмбеддингов не скачана или Ollama не запущена — это чинится
         # одной командой, и текст ошибки должен эту команду называть.
+        raise HTTPException(503, str(exc))
+
+
+class SearchAnswerBody(BaseModel):
+    q: str
+    # Границы те же, что у GET /api/search: один и тот же по смыслу параметр
+    # не должен вести себя по-разному у двух эндпоинтов одного поиска.
+    limit: int | None = Field(None, ge=1, le=SEARCH_LIMIT_MAX)
+
+
+@app.post("/api/search/answer")
+async def answer_from_meetings(body: SearchAnswerBody):
+    """Ответ модели по найденным фрагментам прошлых встреч.
+
+    Отдельно от /api/search, а не флагом к нему: поиск отвечает за доли
+    секунды, ответ модели — за секунды. Клиент сначала показывает цитаты, и
+    человек уже читает их, пока думает модель.
+    """
+    try:
+        with session_scope() as db:
+            await search.reindex_missing(db, settings)
+            return await search.answer(db, settings, llm, body.q, body.limit)
+    except LlmError as exc:
         raise HTTPException(503, str(exc))
 
 
