@@ -74,7 +74,11 @@ export default function App() {
         <div className="server-status" title={getServerUrl()}>
           <span className={`dot ${health ? "ok" : "err"}`} />
           <span className="status-text">
-            {health ? `сервер на связи · ${health.asr.model}` : "сервер недоступен"}
+            {!health
+              ? "сервер недоступен"
+              : health.asr
+                ? `сервер на связи · ${health.asr.model}`
+                : "сервер требует токен"}
           </span>
         </div>
       </aside>

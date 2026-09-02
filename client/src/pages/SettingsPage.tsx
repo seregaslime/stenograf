@@ -301,7 +301,14 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
             <code>server</code>.
           </div>
         )}
-        {health && (
+        {health && health.authorized === false && (
+          <div className="hint" style={{ marginTop: 14 }}>
+            Сервер отвечает, но не признаёт нас: он закрыт токеном. Версия{" "}
+            {health.version}. Введите токен доступа, который выдал администратор
+            сервера.
+          </div>
+        )}
+        {health && health.asr && (
           <div style={{ marginTop: 14 }}>
             <div className="kv">
               <span className="k">Версия сервера</span>
@@ -318,15 +325,15 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
             <div className="kv">
               <span className="k">Идентификация голосов</span>
               <span>
-                {health.diarization.loaded
-                  ? `ECAPA · ${DEVICE_LABELS[health.diarization.device ?? ""] ?? health.diarization.device ?? ""} · загружена`
+                {health.diarization?.loaded
+                  ? `ECAPA · ${DEVICE_LABELS[health.diarization?.device ?? ""] ?? health.diarization?.device ?? ""} · загружена`
                   : "грузится…"}
               </span>
             </div>
             <div className="kv">
               <span className="k">Локальная LLM (Ollama)</span>
               <span>
-                {health.ollama.reachable
+                {health.ollama?.reachable
                   ? `доступна · ${health.ollama.models.length ? health.ollama.models.join(", ") : "нет моделей"}`
                   : "недоступна — резюме работать не будет"}
               </span>

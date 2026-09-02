@@ -11,13 +11,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from . import search
+from . import auth, search
 from .asr.transcriber import GIGAAM_AVAILABLE, MLX_AVAILABLE, Transcriber
 from .config import (
     API_HOST_HINT,
@@ -27,6 +27,7 @@ from .config import (
     OLLAMA_URL_HINT,
     Settings,
     api_host_supported,
+    cors_origin_list,
     ollama_url_valid,
     save_asr_choice,
     save_llm_choice,
@@ -138,9 +139,56 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Стенограф API", version="0.1.0", lifespan=lifespan)
+
+# Что отвечает без токена. Только состояние сервера — по нему видно, жив ли он,
+# ещё до того как человек ввёл токен, и это единственная причина исключения.
+# Данных встреч здоровье не отдаёт (см. health): без токена оно урезано.
+ОТКРЫТЫЕ_ПУТИ = ("/api/health",)
+
+
+@app.middleware("http")
+async def проверить_доступ(request: Request, call_next):
+    """Токен спрашиваем в одном месте, а не зависимостью на каждом эндпоинте.
+
+    Причина в том, чем ошибиться дороже: забытая зависимость у нового эндпоинта
+    открывает его молча, и заметить это можно только специально глядя. Здесь
+    новый путь закрыт по умолчанию, а открывать его надо руками — ошибка
+    становится видимой.
+    """
+    # WebSocket сюда не попадает: у него нет заголовков (ограничение браузерного
+    # API), токен придёт первым кадром — это следующий коммит серии.
+    # Закрыто ВСЁ, кроме явно открытого, а не только /api: под /api не попадают
+    # автодокументация FastAPI (/docs, /redoc, /openapi.json), и по ней сервер,
+    # который только что закрыли токеном, выдал бы посторонним полную карту API.
+    # Слэш на конце срезаем: путь «/api/health/» — это тот же health, и отвечать
+    # на него отказом значит показывать мониторингу упавший сервер вместо живого.
+    путь = request.url.path.rstrip("/") or "/"
+    if request.method == "OPTIONS" or путь in ОТКРЫТЫЕ_ПУТИ:
+        return await call_next(request)
+
+    with session_scope() as db:
+        if auth.auth_required(db):
+            user = auth.user_by_token(
+                db, auth.token_from_header(request.headers.get("authorization"))
+            )
+            if user is None:
+                return JSONResponse(
+                    {"detail": "Нужен токен доступа. Настройки → Токен сервера."},
+                    status_code=401,
+                )
+            # Кладём id и имя, а не объект: сессия закроется на выходе из блока,
+            # и отсоединённый объект развалится при первом же обращении к полю.
+            request.state.user_id = user.id
+            request.state.user_name = user.name
+    return await call_next(request)
+
+
+# Добавляется ПОСЛЕ проверки доступа, поэтому оказывается снаружи неё: иначе
+# ответ 401 уходил бы без заголовков CORS, и браузер показывал бы вместо
+# внятного «нужен токен» невнятную сетевую ошибку.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # клиент — локальное Electron-приложение
+    allow_origins=cors_origin_list(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -149,10 +197,23 @@ app.add_middleware(
 # ---------------------------------------------------------------- здоровье
 
 @app.get("/api/health")
-async def health():
+async def health(request: Request):
+    """Открыт без токена намеренно: иначе не понять, жив ли сервер, до того как
+    человек ввёл токен. Поэтому чужому отдаём только «жив» — какие модели
+    настроены и какой провайдер выбран, посторонним знать незачем."""
+    with session_scope() as db:
+        свой = not auth.auth_required(db) or auth.user_by_token(
+            db, auth.token_from_header(request.headers.get("authorization"))
+        ) is not None
+    if not свой:
+        # Поля не выбрасываем молча: клиент читает health.asr.model, и ответ без
+        # asr ронял бы ему экран настроек. Отдаём признак, по которому видно, что
+        # подробностей не будет, и клиент показывает «нужен токен».
+        return {"status": "ok", "version": app.version, "authorized": False}
     return {
         "status": "ok",
         "version": app.version,
+        "authorized": True,
         "asr": {
             "engine": transcriber.engine,
             "model": transcriber.model_name,

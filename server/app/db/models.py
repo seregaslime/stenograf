@@ -13,6 +13,24 @@ class Base(DeclarativeBase):
     pass
 
 
+class User(Base):
+    """Человек, работающий с сервером.
+
+    Появился 02.09.2026. До этого сервер был однопользовательским: список встреч,
+    библиотека голосов и профиль «Вы» — общие, и двое подключившихся видели одну
+    кучу. Токен хранится хешем: восстанавливать его некому — при утере выдаётся
+    новый, а украденная копия базы входа не даёт.
+    """
+
+    __tablename__ = "users"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Speaker(Base):
     """Человек. Живёт между встречами; у него 1..N отпечатков голоса."""
 

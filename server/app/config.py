@@ -29,6 +29,16 @@ class Settings(BaseSettings):
 
     data_dir: Path = _SERVER_DIR / "data"
 
+    # --- Доступ ---
+    # Кому браузер разрешит читать ответы сервера. Список, а не звёздочка, но
+    # иллюзий на его счёт быть не должно: CORS защищает пользователя браузера от
+    # чужих сайтов, а сервер от curl не защищает вообще. Сервер закрывает токен.
+    # «null» здесь обязателен: собранное приложение грузится с file://, и
+    # Chromium шлёт для него именно такой Origin — без него сборка у куратора
+    # перестанет ходить на сервер, а в dev-режиме всё будет работать.
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,null"
+
+
     # --- ASR ---
     # Целевой движок — GigaAM (Сбер): для русского на порядок точнее whisper
     # (замер: WER 1.2% против 9.8% у whisper small) и быстрее реального времени
@@ -289,6 +299,13 @@ LLM_API_DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 def api_host_supported(base_url: str) -> bool:
     from urllib.parse import urlparse
     return urlparse(base_url).hostname in LLM_API_ALLOWED_HOSTS
+
+
+def cors_origin_list() -> list[str]:
+    """Разрешённые Origin списком. Пусто — не разрешаем никому: приложение
+    ходит на сервер и без CORS (Electron), а браузерная версия должна быть
+    вписана явно."""
+    return [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 
 
 def ollama_url_valid(url: str) -> bool:

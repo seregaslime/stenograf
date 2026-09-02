@@ -71,14 +71,21 @@ export interface SpeakerDto {
 export interface HealthDto {
   status: string;
   version: string;
+  /**
+   * Признали ли нас своим. Сервер, на котором заведены люди, отдаёт без токена
+   * только status и version — подробности ниже приходят лишь авторизованному,
+   * поэтому они необязательные. Старый сервер поля не шлёт вовсе, и тогда
+   * подробности есть: отличаем по !== false, а не по истинности.
+   */
+  authorized?: boolean;
   // device — на чём считают модели: cuda | mps | cpu. Старый сервер поля не
   // шлёт, поэтому необязательное.
-  asr: { engine: string; model: string; loaded: boolean; device?: string };
-  diarization: { loaded: boolean; device?: string };
-  ollama: { reachable: boolean; models: string[] };
-  llm: { provider: "local" | "api"; api_configured: boolean };
-  summary_model: string;
-  hints_model: string;
+  asr?: { engine: string; model: string; loaded: boolean; device?: string };
+  diarization?: { loaded: boolean; device?: string };
+  ollama?: { reachable: boolean; models: string[] };
+  llm?: { provider: "local" | "api"; api_configured: boolean };
+  summary_model?: string;
+  hints_model?: string;
 }
 
 export interface LlmStateDto {
