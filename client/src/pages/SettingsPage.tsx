@@ -27,6 +27,7 @@ const MODEL_HINTS: Record<string, string> = {
 
 export default function SettingsPage({ onServerChange }: { onServerChange: () => void }) {
   const [url, setUrl] = useState(getSetting("serverUrl", DEFAULT_SERVER_URL));
+  const [token, setToken] = useState(getSetting("serverToken"));
   const [debug, setDebug] = useState(isDebugMode());
   const [health, setHealth] = useState<HealthDto | null>(null);
   const [testError, setTestError] = useState("");
@@ -102,6 +103,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
 
   function save() {
     setSetting("serverUrl", url.trim().replace(/\/+$/, "") || DEFAULT_SERVER_URL);
+    setSetting("serverToken", token.trim());
     onServerChange();
     void test();
   }
@@ -285,6 +287,20 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
             value={url}
             onChange={(event) => setUrl(event.target.value)}
             placeholder={DEFAULT_SERVER_URL}
+          />
+        </label>
+        <label className="field">
+          <span>
+            Токен доступа — если сервер его требует. Личный сервер обходится без
+            токена, общий выдаёт его командой <code>python -m app.users add</code>
+          </span>
+          <input
+            className="input"
+            type="password"
+            value={token}
+            onChange={(event) => setToken(event.target.value)}
+            placeholder="не требуется"
+            autoComplete="off"
           />
         </label>
         <div style={{ display: "flex", gap: 8 }}>

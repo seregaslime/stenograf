@@ -189,6 +189,10 @@ async def проверить_доступ(request: Request, call_next):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origin_list(),
+    # Локальные адреса — выражением, а не списком: vite берёт свободный порт,
+    # если 5173 занят, и перечислить их заранее невозможно. Проверено живьём —
+    # со списком браузерная превью на порту 62953 получала отказ CORS.
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_methods=["*"],
     allow_headers=["*"],
 )

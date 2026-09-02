@@ -1,8 +1,12 @@
 """Живая сессия встречи поверх WebSocket.
 
 Клиент шлёт бинарные кадры: [1 байт канала (0=mic, 1=system)] + PCM16LE 16 кГц mono,
-и JSON-команды (start / stop / hints / hint_now). Сервер отвечает JSON-событиями:
-ready, segment, speaker_new, hint, stopped, error.
+и JSON-команды (auth / start / stop / hints / hint_now). Сервер отвечает
+JSON-событиями: ready, segment, speaker_new, hint, stopped, error.
+
+Если на сервере заведены люди, первым кадром обязан прийти auth с токеном:
+заголовок сюда не поставить — браузерный WebSocket их задавать не умеет, а в
+адресе токен оказался бы в журналах сервера.
 
 Конвейер из обособленных этапов (каждый заменяем независимо):
     микшер каналов → денойз → VAD-сегментация → разрез по смене канала →
@@ -29,6 +33,7 @@ from typing import Optional
 import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 
+from . import auth
 from .asr.transcriber import Transcriber
 from .audio.denoise import create_denoiser
 from .audio.mixer import ChannelMixer
@@ -145,11 +150,62 @@ class LiveSession:
         self._last_by_channel: dict[str, tuple[MatchResult, float]] = {}
         # Кто говорил недавно — приор для диаризации (speaker_id → конец реплики)
         self._recent_speakers: dict[int, float] = {}
+        # Чья это сессия. Заполняется при проверке токена; None — сервер личный,
+        # людей на нём не заведено. Понадобится, когда у данных появится владелец.
+        self._user_id: Optional[int] = None
 
     # ------------------------------------------------------------------ основной цикл
 
+    # Сколько ждём кадр auth. Без потолка молчащее соединение висит вечно, и
+    # достаточно открыть их пачку, чтобы занять сервер, не зная токена.
+    AUTH_TIMEOUT_S = 10.0
+
+    async def _authenticate(self) -> bool:
+        """Первый кадр — auth с токеном. Возвращает False, если пускать нельзя.
+
+        Пока людей на сервере нет, соединение принимается как раньше: сервер
+        личный, спрашивать не у кого (см. app/auth.py).
+        """
+        with session_scope() as db:
+            if not auth.auth_required(db):
+                return True
+        try:
+            message = await asyncio.wait_for(self._ws.receive(), self.AUTH_TIMEOUT_S)
+        except (asyncio.TimeoutError, WebSocketDisconnect):
+            await self._close_unauthorized("Токен не пришёл")
+            return False
+        if message["type"] == "websocket.disconnect":
+            return False
+
+        токен = None
+        if message.get("text"):
+            try:
+                команда = json.loads(message["text"])
+            except json.JSONDecodeError:
+                команда = {}
+            if команда.get("type") == "auth":
+                токен = str(команда.get("token") or "")
+        with session_scope() as db:
+            пользователь = auth.user_by_token(db, токен)
+            if пользователь is None:
+                await self._close_unauthorized("Нужен токен доступа")
+                return False
+            self._user_id = пользователь.id
+        return True
+
+    async def _close_unauthorized(self, причина: str) -> None:
+        """Сначала событие, потом закрытие: код 1008 клиент видит числом, а
+        человеку нужно сказать словами, что делать."""
+        try:
+            await self._send({"type": "error", "message": f"{причина}. Настройки → Токен сервера."})
+            await self._ws.close(code=1008, reason=причина)
+        except Exception:  # соединение уже могло отвалиться — это не ошибка
+            pass
+
     async def run(self) -> None:
         await self._ws.accept()
+        if not await self._authenticate():
+            return
         try:
             while True:
                 message = await self._ws.receive()
@@ -176,6 +232,8 @@ class LiveSession:
             await self._start(command)
         elif kind == "hints":
             self._hints_enabled = bool(command.get("enabled"))
+        elif kind == "auth":
+            pass  # уже проверен до начала сессии; повтор игнорируем
         elif kind == "hint_now":
             await self._emit_hint(force=True)  # «подсказать сейчас» — в обход триггера
         elif kind == "ask":

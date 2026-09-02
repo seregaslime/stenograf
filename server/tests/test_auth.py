@@ -7,6 +7,9 @@
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from starlette.websockets import WebSocketDisconnect
+
+from app.ws import LiveSession
 
 import app.main as main
 from app import auth
@@ -118,3 +121,71 @@ def test_токен_хранится_хешем(человек):
 
 def test_токены_разные():
     assert auth.create_token() != auth.create_token()
+
+
+# --- живая встреча: токен первым кадром ---
+#
+# Заголовок сюда поставить нельзя: браузерный WebSocket их не умеет, а в адресе
+# токен попал бы в журналы сервера. Поэтому первый кадр — auth.
+
+def test_ws_без_людей_пускает_без_токена(client):
+    with client.websocket_connect("/ws/live") as ws:
+        ws.send_json({"type": "не-такая-команда"})
+        assert ws.receive_json()["type"] == "error"  # цикл сессии работает
+
+
+def test_ws_с_чужим_токеном_закрывается(client, человек):
+    with client.websocket_connect("/ws/live") as ws:
+        ws.send_json({"type": "auth", "token": "wrong-token"})
+        событие = ws.receive_json()
+        assert событие["type"] == "error"
+        assert "токен" in событие["message"].lower()
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_json()
+
+
+def test_ws_с_пустым_токеном_отвечает_сразу(client, человек):
+    """Клиент шлёт кадр auth даже без токена — чтобы отказ пришёл сразу, а не
+    через десять секунд ожидания, пока человек уже говорит."""
+    with client.websocket_connect("/ws/live") as ws:
+        ws.send_json({"type": "auth", "token": ""})
+        assert ws.receive_json()["type"] == "error"
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_json()
+
+
+def test_ws_без_кадра_auth_закрывается(client, человек):
+    """Первым кадром пришло аудио, а не токен — соединение не начинается."""
+    with client.websocket_connect("/ws/live") as ws:
+        ws.send_bytes(b"\x00" + b"\x00" * 320)
+        assert ws.receive_json()["type"] == "error"
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_json()
+
+
+def test_ws_молчание_обрывается_по_таймауту(client, человек, monkeypatch):
+    """Молчащее соединение не висит вечно: иначе их пачкой занимают сервер,
+    не зная токена. Таймаут в тесте укорочен, чтобы не ждать десять секунд."""
+    monkeypatch.setattr(LiveSession, "AUTH_TIMEOUT_S", 0.05)
+    with client.websocket_connect("/ws/live") as ws:
+        assert ws.receive_json()["type"] == "error"
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_json()
+
+
+def test_ws_со_своим_токеном_работает(client, человек):
+    with client.websocket_connect("/ws/live") as ws:
+        ws.send_json({"type": "auth", "token": человек})
+        ws.send_json({"type": "не-такая-команда"})
+        событие = ws.receive_json()
+        assert событие["type"] == "error"
+        assert "Неизвестная команда" in событие["message"]
+
+
+def test_ws_повторный_auth_не_ошибка(client, человек):
+    """Клиент может прислать auth ещё раз — это не «неизвестная команда»."""
+    with client.websocket_connect("/ws/live") as ws:
+        ws.send_json({"type": "auth", "token": человек})
+        ws.send_json({"type": "auth", "token": человек})
+        ws.send_json({"type": "не-такая-команда"})
+        assert "Неизвестная команда" in ws.receive_json()["message"]

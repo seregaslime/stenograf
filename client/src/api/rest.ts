@@ -1,4 +1,4 @@
-import { getServerUrl } from "../store";
+import { getServerUrl, getToken } from "../store";
 import type {
   AsrStateDto,
   HealthDto,
@@ -14,9 +14,16 @@ import type {
 } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getToken();
   const response = await fetch(getServerUrl() + path, {
-    headers: { "Content-Type": "application/json" },
     ...init,
+    // Заголовки собираем после разбора init: раньше «...init» затирал их
+    // целиком, и вызов со своими заголовками терял и тип содержимого, и токен.
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   if (!response.ok) {
     let detail = `HTTP ${response.status}`;
