@@ -106,16 +106,32 @@ def reassign_segments(db: Session, from_speaker_id: int, to_speaker_id: Optional
 # --- Встречи ---
 
 def create_meeting(
-    db: Session, title: str, record_audio: bool, meeting_mode: str = "work"
+    db: Session, title: str, record_audio: bool, meeting_mode: str = "work",
+    owner_id: Optional[int] = None,
 ) -> Meeting:
     # meeting_mode последним и с дефолтом — есть позиционные вызовы в тестах
     meeting = Meeting(
         title=title.strip() or "Встреча",
         record_audio=record_audio,
         meeting_mode=meeting_mode,
+        owner_id=owner_id,
     )
     db.add(meeting)
     db.flush()
+    return meeting
+
+
+def meeting_for_owner(db: Session, meeting_id: int, owner_id: Optional[int]) -> Optional[Meeting]:
+    """Встреча, если она существует и доступна этому человеку.
+
+    Чужая встреча неотличима от несуществующей намеренно: иначе по разнице
+    между 403 и 404 перебором узнаётся, сколько встреч у соседа и когда они шли.
+    """
+    meeting = db.get(Meeting, meeting_id)
+    if meeting is None:
+        return None
+    if owner_id is not None and meeting.owner_id != owner_id:
+        return None
     return meeting
 
 
@@ -151,13 +167,21 @@ def add_segment(
     return segment
 
 
-def list_meetings(db: Session) -> list[dict]:
-    rows = db.execute(
+def list_meetings(db: Session, owner_id: Optional[int] = None) -> list[dict]:
+    """Встречи владельца. owner_id=None — личный сервер, показываем все.
+
+    Разделение по людям включается вместе с токенами: пока их нет, фильтровать
+    не по чему, и пустой список вместо архива был бы поломкой, а не защитой.
+    """
+    запрос = (
         select(Meeting, func.count(Segment.id))
         .outerjoin(Segment)
         .group_by(Meeting.id)
         .order_by(Meeting.started_at.desc())
-    ).all()
+    )
+    if owner_id is not None:
+        запрос = запрос.where(Meeting.owner_id == owner_id)
+    rows = db.execute(запрос).all()
     return [
         {
             "id": m.id,

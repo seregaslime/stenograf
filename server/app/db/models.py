@@ -80,6 +80,13 @@ class Meeting(Base):
     __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Чья встреча. NULL — сервер личный, людей на нём не заводили; как только
+    # заводят первого, ничейные встречи достаются ему (см. auth.create_user).
+    # SET NULL, а не CASCADE: отзыв доступа у человека не должен стирать записи
+    # его встреч — это отзыв ключа, а не удаление архива.
+    owner_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     title: Mapped[str] = mapped_column(String(300), default="Встреча")
     status: Mapped[str] = mapped_column(String(20), default="live")  # live | summarizing | done
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

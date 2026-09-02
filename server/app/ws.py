@@ -257,6 +257,7 @@ class LiveSession:
                 title=command.get("title", "Встреча"),
                 record_audio=bool(command.get("record_audio")),
                 meeting_mode=self._mode,
+                owner_id=self._user_id,  # чья это встреча; None — сервер личный
             )
             self._meeting_id = meeting.id
             if meeting.record_audio:

@@ -13,8 +13,9 @@ from app.ws import LiveSession
 
 import app.main as main
 from app import auth
+from app.db import crud
 from app.db.database import session_scope
-from app.db.models import User
+from app.db.models import Meeting, User
 
 
 @pytest.fixture()
@@ -189,3 +190,92 @@ def test_ws_повторный_auth_не_ошибка(client, человек):
         ws.send_json({"type": "auth", "token": человек})
         ws.send_json({"type": "не-такая-команда"})
         assert "Неизвестная команда" in ws.receive_json()["message"]
+
+
+# --- разделение данных: у каждого свои встречи ---
+
+def test_первый_человек_получает_ничейные_встречи(db_session):
+    """Полгода работы на личном сервере не должны исчезнуть в момент, когда его
+    закрывают токеном: записи на месте, но не видны никому — это выглядит как
+    потеря архива, а не как защита."""
+    старая = crud.create_meeting(db_session, "До токенов", False)
+    assert старая.owner_id is None
+
+    сергей, _ = auth.create_user(db_session, "Сергей")
+    assert db_session.get(Meeting, старая.id).owner_id == сергей.id
+
+
+def test_второй_человек_чужого_не_получает(db_session):
+    """Усыновление разовое: иначе каждый новый сотрудник забирал бы себе всё,
+    что успело осиротеть."""
+    сергей, _ = auth.create_user(db_session, "Сергей")
+    его = crud.create_meeting(db_session, "Планёрка", False, owner_id=сергей.id)
+
+    куратор, _ = auth.create_user(db_session, "Куратор")
+    assert db_session.get(Meeting, его.id).owner_id == сергей.id
+
+
+def test_список_встреч_только_свои(db_session):
+    сергей, _ = auth.create_user(db_session, "Сергей")
+    куратор, _ = auth.create_user(db_session, "Куратор")
+    crud.create_meeting(db_session, "Моя", False, owner_id=сергей.id)
+    crud.create_meeting(db_session, "Чужая", False, owner_id=куратор.id)
+
+    названия = [m["title"] for m in crud.list_meetings(db_session, сергей.id)]
+    assert названия == ["Моя"]
+    # Без владельца (личный сервер) фильтровать не по чему — видно всё
+    assert len(crud.list_meetings(db_session, None)) == 2
+
+
+def test_чужая_встреча_неотличима_от_несуществующей(db_session):
+    """404, а не 403: по разнице между ними перебором узнаётся, сколько встреч
+    у соседа и когда они шли."""
+    сергей, _ = auth.create_user(db_session, "Сергей")
+    куратор, _ = auth.create_user(db_session, "Куратор")
+    чужая = crud.create_meeting(db_session, "Чужая", False, owner_id=куратор.id)
+
+    assert crud.meeting_for_owner(db_session, чужая.id, сергей.id) is None
+    assert crud.meeting_for_owner(db_session, 9999, сергей.id) is None
+    assert crud.meeting_for_owner(db_session, чужая.id, куратор.id) is not None
+    # Личный сервер: владельца нет, доступно всё
+    assert crud.meeting_for_owner(db_session, чужая.id, None) is not None
+
+
+def test_двое_через_http_видят_только_своё(client):
+    """Тот же запрет, но через реальный конвейер: middleware → эндпоинт → БД."""
+    with session_scope() as db:
+        сергей, токен_сергея = auth.create_user(db, "Сергей")
+        куратор, токен_куратора = auth.create_user(db, "Куратор")
+        crud.create_meeting(db, "Планёрка Сергея", False, owner_id=сергей.id)
+        crud.create_meeting(db, "Разбор куратора", False, owner_id=куратор.id)
+    try:
+        свои = client.get("/api/meetings",
+                          headers={"Authorization": f"Bearer {токен_сергея}"}).json()
+        чужие = client.get("/api/meetings",
+                           headers={"Authorization": f"Bearer {токен_куратора}"}).json()
+        assert [m["title"] for m in свои] == ["Планёрка Сергея"]
+        assert [m["title"] for m in чужие] == ["Разбор куратора"]
+
+        # И поштучно: чужая встреча отвечает «не найдена», а не «нельзя»
+        чужой_id = чужие[0]["id"]
+        ответ = client.get(f"/api/meetings/{чужой_id}",
+                           headers={"Authorization": f"Bearer {токен_сергея}"})
+        assert ответ.status_code == 404
+    finally:
+        with session_scope() as db:
+            for встреча in db.scalars(select(Meeting)):
+                db.delete(встреча)
+            for человек in db.scalars(select(User)):
+                db.delete(человек)
+
+
+def test_повторное_удаление_не_роняет_сервер(client):
+    """Проверка прав и удаление — в разных сессиях, между ними встречу могли
+    удалить (двойной клик, два клиента). Второй запрос должен ответить, а не
+    упасть на None."""
+    with session_scope() as db:
+        meeting_id = crud.create_meeting(db, "Дважды удалённая", False).id
+    первый = client.delete(f"/api/meetings/{meeting_id}")
+    второй = client.delete(f"/api/meetings/{meeting_id}")
+    assert первый.status_code == 200
+    assert второй.status_code in (200, 404)

@@ -17,7 +17,7 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .db.models import User
+from .db.models import Meeting, User
 
 # 32 байта случайности — 43 символа в urlsafe-виде. Подбирать нечего.
 TOKEN_BYTES = 32
@@ -71,9 +71,17 @@ def create_user(db: Session, name: str) -> tuple[User, str]:
     """Заводит человека и возвращает его вместе с токеном.
 
     Токен показывается ровно один раз — в базе лежит только хеш.
+
+    Первому заведённому достаются все ничейные встречи. Иначе человек, который
+    полгода работал на личном сервере и закрыл его токеном, обнаружил бы пустой
+    архив: записи на месте, но принадлежат никому и не видны никому.
     """
+    первый = not auth_required(db)
     token = create_token()
     user = User(name=name.strip() or "Без имени", token_hash=hash_token(token))
     db.add(user)
     db.flush()
+    if первый:
+        for встреча in db.scalars(select(Meeting).where(Meeting.owner_id.is_(None))):
+            встреча.owner_id = user.id
     return user, token

@@ -198,6 +198,12 @@ app.add_middleware(
 )
 
 
+def владелец(request: Request) -> int | None:
+    """Кто спрашивает. None — сервер личный, людей на нём не заводили, и
+    фильтровать данные не по чему (проверку ставит middleware выше)."""
+    return getattr(request.state, "user_id", None)
+
+
 # ---------------------------------------------------------------- здоровье
 
 @app.get("/api/health")
@@ -434,15 +440,15 @@ async def probe_llm_models(body: ModelsProbeBody):
 # ---------------------------------------------------------------- встречи
 
 @app.get("/api/meetings")
-def get_meetings():
+def get_meetings(request: Request):
     with session_scope() as db:
-        return crud.list_meetings(db)
+        return crud.list_meetings(db, владелец(request))
 
 
 @app.get("/api/meetings/{meeting_id}")
-def get_meeting(meeting_id: int):
+def get_meeting(meeting_id: int, request: Request):
     with session_scope() as db:
-        meeting = db.get(Meeting, meeting_id)
+        meeting = crud.meeting_for_owner(db, meeting_id, владелец(request))
         if meeting is None:
             raise HTTPException(404, "Встреча не найдена")
         segments = crud.meeting_segments(db, meeting_id)
@@ -466,13 +472,21 @@ def get_meeting(meeting_id: int):
 
 
 @app.delete("/api/meetings/{meeting_id}")
-async def delete_meeting(meeting_id: int):
-    # async: отмена задачи резюме должна происходить в том же event loop
+async def delete_meeting(meeting_id: int, request: Request):
+    with session_scope() as db:
+        meeting = crud.meeting_for_owner(db, meeting_id, владелец(request))
+        if meeting is None:
+            raise HTTPException(404, "Встреча не найдена")
+    # Отмена резюме — после проверки прав и до удаления: чужой запрос не должен
+    # ронять чужую фоновую задачу. async нужен, чтобы отменять в том же loop.
     _cancel_summary(meeting_id)
     with session_scope() as db:
         meeting = db.get(Meeting, meeting_id)
         if meeting is None:
-            raise HTTPException(404, "Встреча не найдена")
+            # Между проверкой прав и удалением встречу успели удалить (двойной
+            # клик, два открытых клиента). Это не ошибка сервера: результат тот
+            # же, которого просили.
+            return {"deleted": meeting_id}
         if meeting.status == "live":
             # Встреча могла зависнуть после обрыва клиента — принудительно завершаем
             meeting.status = "done"
@@ -484,9 +498,9 @@ async def delete_meeting(meeting_id: int):
 
 
 @app.post("/api/meetings/{meeting_id}/summarize")
-async def summarize_meeting(meeting_id: int):
+async def summarize_meeting(meeting_id: int, request: Request):
     with session_scope() as db:
-        meeting = db.get(Meeting, meeting_id)
+        meeting = crud.meeting_for_owner(db, meeting_id, владелец(request))
         if meeting is None:
             raise HTTPException(404, "Встреча не найдена")
         if meeting.status == "live":
@@ -498,9 +512,9 @@ async def summarize_meeting(meeting_id: int):
 
 
 @app.get("/api/meetings/{meeting_id}/export")
-def export_meeting(meeting_id: int, fmt: str = "md"):
+def export_meeting(meeting_id: int, request: Request, fmt: str = "md"):
     with session_scope() as db:
-        meeting = db.get(Meeting, meeting_id)
+        meeting = crud.meeting_for_owner(db, meeting_id, владелец(request))
         if meeting is None:
             raise HTTPException(404, "Встреча не найдена")
         segments = crud.meeting_segments(db, meeting_id)
@@ -539,19 +553,21 @@ class MergeBody(BaseModel):
 
 
 @app.get("/api/search")
-async def search_meetings(q: str, limit: int | None = Query(None, ge=1, le=SEARCH_LIMIT_MAX)):
+async def search_meetings(request: Request, q: str,
+                          limit: int | None = Query(None, ge=1, le=SEARCH_LIMIT_MAX)):
     """Куски прошлых встреч, ближайшие по смыслу к вопросу.
 
     Индексация ленивая, прямо здесь: встречи могли пройти до появления поиска,
     а модель эмбеддингов — смениться в настройках. Крючок в конвейере обошёлся
     бы дороже и молчал бы про старые встречи.
     """
+    кто = владелец(request)
     try:
         with session_scope() as db:
-            посчитано = await search.reindex_missing(db, settings)
+            посчитано = await search.reindex_missing(db, settings, кто)
             if посчитано:
                 log.info("Проиндексировано кусков: %d", посчитано)
-            return {"results": await search.search(db, settings, q, limit)}
+            return {"results": await search.search(db, settings, q, limit, кто)}
     except LlmError as exc:
         # Модель эмбеддингов не скачана или Ollama не запущена — это чинится
         # одной командой, и текст ошибки должен эту команду называть.
@@ -566,17 +582,18 @@ class SearchAnswerBody(BaseModel):
 
 
 @app.post("/api/search/answer")
-async def answer_from_meetings(body: SearchAnswerBody):
+async def answer_from_meetings(body: SearchAnswerBody, request: Request):
     """Ответ модели по найденным фрагментам прошлых встреч.
 
     Отдельно от /api/search, а не флагом к нему: поиск отвечает за доли
     секунды, ответ модели — за секунды. Клиент сначала показывает цитаты, и
     человек уже читает их, пока думает модель.
     """
+    кто = владелец(request)
     try:
         with session_scope() as db:
-            await search.reindex_missing(db, settings)
-            return await search.answer(db, settings, llm, body.q, body.limit)
+            await search.reindex_missing(db, settings, кто)
+            return await search.answer(db, settings, llm, body.q, body.limit, кто)
     except LlmError as exc:
         raise HTTPException(503, str(exc))
 
