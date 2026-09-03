@@ -9,13 +9,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from starlette.websockets import WebSocketDisconnect
 
-from app.ws import LiveSession
-
 import app.main as main
 from app import auth
 from app.db import crud
 from app.db.database import session_scope
 from app.db.models import Meeting, Speaker, User
+from app.ws import LiveSession
 
 
 @pytest.fixture()

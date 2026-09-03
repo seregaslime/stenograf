@@ -36,7 +36,7 @@ from .config import (
 )
 from .db import crud
 from .db.database import init_db, session_scope
-from .db.models import Meeting, Speaker, VoicePrint
+from .db.models import Meeting, VoicePrint
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import SpeakerRegistry
 from .llm.base import LlmError
