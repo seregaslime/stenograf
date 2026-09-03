@@ -22,6 +22,7 @@ def init_db() -> None:
     _migrate_voiceprints(models.Base.metadata)
     _migrate_meeting_mode()
     _migrate_meeting_owner()
+    _migrate_speaker_owner()
     _migrate_autoincrement(models.Base.metadata)
     _migrate_samples_into_prints()
 
@@ -80,9 +81,28 @@ def _migrate_meeting_owner() -> None:
     """
     with engine.begin() as conn:
         columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(meetings)")]
-        if "owner_id" in columns:
+        # Пустой список — таблицы ещё нет: create_all создаст её сразу с колонкой,
+        # мигрировать нечего (пустой PRAGMA для отсутствующей таблицы не ошибка).
+        if not columns or "owner_id" in columns:
             return
         conn.exec_driver_sql("ALTER TABLE meetings ADD COLUMN owner_id INTEGER")
+
+
+def _migrate_speaker_owner() -> None:
+    """Добавляет владельца профилю голоса (базы до v0.6).
+
+    Как и предыдущие добавления колонок — строго ДО _migrate_autoincrement:
+    таблица speakers там тоже перестраивается по списку колонок из модели.
+
+    Существующие профили остаются ничейными и достаются первому заведённому
+    человеку вместе со встречами (auth.create_user): библиотека голосов и архив
+    встреч принадлежат одному и тому же человеку, разделять их нечем.
+    """
+    with engine.begin() as conn:
+        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(speakers)")]
+        if not columns or "owner_id" in columns:  # таблицы ещё нет — см. выше
+            return
+        conn.exec_driver_sql("ALTER TABLE speakers ADD COLUMN owner_id INTEGER")
 
 
 def _migrate_autoincrement(metadata) -> None:

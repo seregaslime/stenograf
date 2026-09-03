@@ -51,6 +51,7 @@ def test_migrate_autoincrement_rebuilds_and_preserves(temp_engine):
     # перестройка (она берёт список колонок из актуальной модели)
     database._migrate_meeting_mode()
     database._migrate_meeting_owner()
+    database._migrate_speaker_owner()
     database._migrate_autoincrement(models.Base.metadata)
 
     assert "AUTOINCREMENT" in _table_sql(temp_engine, "meetings").upper()
@@ -109,6 +110,7 @@ def test_meeting_mode_migration_runs_before_autoincrement(temp_engine):
 
     database._migrate_meeting_mode()
     database._migrate_meeting_owner()
+    database._migrate_speaker_owner()
     database._migrate_autoincrement(models.Base.metadata)  # теперь проходит
     with temp_engine.begin() as conn:
         assert conn.exec_driver_sql(
@@ -220,3 +222,28 @@ def test_migrate_meeting_owner_adds_column(temp_engine):
         assert conn.exec_driver_sql(
             "SELECT id, owner_id FROM meetings"
         ).fetchone() == (3, None)
+
+
+def test_migrate_speaker_owner_adds_column(temp_engine):
+    """Колонка владельца добавляется к таблице голосов; профили остаются
+    ничейными и достаются первому заведённому человеку вместе со встречами.
+
+    Порядок тот же, что у встреч: строго ДО перестройки таблиц — speakers там
+    тоже пересобирается по списку колонок из модели.
+    """
+    with temp_engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE speakers (id INTEGER PRIMARY KEY, name VARCHAR, "
+            "is_self BOOLEAN, created_at DATETIME)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO speakers (id, name, is_self) VALUES (1, 'Вы', 1), (2, 'Иван', 0)"
+        )
+    database._migrate_speaker_owner()
+    database._migrate_speaker_owner()  # повторный запуск безопасен
+
+    assert "owner_id" in _columns(temp_engine, "speakers")
+    with temp_engine.begin() as conn:
+        assert conn.exec_driver_sql(
+            "SELECT id, owner_id FROM speakers ORDER BY id"
+        ).fetchall() == [(1, None), (2, None)]

@@ -15,7 +15,7 @@ import app.main as main
 from app import auth
 from app.db import crud
 from app.db.database import session_scope
-from app.db.models import Meeting, User
+from app.db.models import Meeting, Speaker, User
 
 
 @pytest.fixture()
@@ -201,8 +201,14 @@ def test_первый_человек_получает_ничейные_встр�
     старая = crud.create_meeting(db_session, "До токенов", False)
     assert старая.owner_id is None
 
+    профиль = crud.create_speaker(db_session)
+    assert профиль.owner_id is None
+
     сергей, _ = auth.create_user(db_session, "Сергей")
     assert db_session.get(Meeting, старая.id).owner_id == сергей.id
+    # Библиотека голосов уезжает вместе с архивом: разделять их нечем, это
+    # данные одного и того же человека
+    assert db_session.get(Speaker, профиль.id).owner_id == сергей.id
 
 
 def test_второй_человек_чужого_не_получает(db_session):
@@ -279,3 +285,38 @@ def test_повторное_удаление_не_роняет_сервер(clie
     второй = client.delete(f"/api/meetings/{meeting_id}")
     assert первый.status_code == 200
     assert второй.status_code in (200, 404)
+
+
+def test_чужие_голоса_через_http_недоступны(client):
+    """Библиотека голосов у каждого своя — включая переименование и удаление.
+
+    Отпечаток голоса это биометрия: без проверки владельца её забрал бы любой,
+    кто подставит номер профиля.
+    """
+    with session_scope() as db:
+        сергей, токен_сергея = auth.create_user(db, "Сергей")
+        куратор, токен_куратора = auth.create_user(db, "Куратор")
+        мой = crud.create_speaker(db, owner_id=сергей.id).id
+        чужой = crud.create_speaker(db, owner_id=куратор.id).id
+    заголовки = {"Authorization": f"Bearer {токен_сергея}"}
+    try:
+        видно = client.get("/api/speakers", headers=заголовки).json()
+        assert [s["id"] for s in видно] == [мой]
+
+        assert client.patch(f"/api/speakers/{чужой}", json={"name": "Мой теперь"},
+                            headers=заголовки).status_code == 404
+        assert client.delete(f"/api/speakers/{чужой}", headers=заголовки).status_code == 404
+        assert client.get(f"/api/speakers/{чужой}/voiceprints/1/audio",
+                          headers=заголовки).status_code == 404
+        assert client.post("/api/speakers/merge", json={"speaker_ids": [мой, чужой]},
+                           headers=заголовки).status_code == 400
+
+        # Своё при этом работает как раньше
+        assert client.patch(f"/api/speakers/{мой}", json={"name": "Иван"},
+                            headers=заголовки).json()["name"] == "Иван"
+    finally:
+        with session_scope() as db:
+            for профиль in db.scalars(select(Speaker)):
+                db.delete(профиль)
+            for человек in db.scalars(select(User)):
+                db.delete(человек)

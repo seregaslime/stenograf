@@ -57,16 +57,22 @@ _LIVE_SESSIONS: set["LiveSession"] = set()
 
 
 def notify_speakers_merged(source_id: int, target_id: int, name: str,
-                           was_named: list[str]) -> None:
-    """Сообщает идущим встречам, что двух спикеров объединили.
+                           was_named: list[str], owner_id: Optional[int] = None) -> None:
+    """Сообщает идущим встречам ЭТОГО человека, что двух спикеров объединили.
 
     Слияние приходит по REST (страница «Спикеры» открыта окном поверх встречи),
     а живая сессия держит id спикеров в памяти и про удаление профиля сама не
     узнает. Без этого следующая короткая реплика уехала бы на удалённого:
     внешние ключи в SQLite выключены, поэтому она не упала бы с ошибкой, а молча
     записалась ссылкой в никуда — и не нашлась бы потом ни у одного участника.
+
+    Чужие сессии пропускаем: окно разговора правится по ИМЕНИ спикера, и
+    объединение своего «Ивана» переименовывало бы строки в чужой идущей встрече,
+    где просто есть однофамилец. Эти строки уходят в промпт подсказок.
     """
     for session in list(_LIVE_SESSIONS):
+        if session._user_id != owner_id:
+            continue
         session.on_speakers_merged(source_id, target_id, name, was_named)
 
 
@@ -420,7 +426,7 @@ class LiveSession:
         )
         return self._registry.match_all(
             db, embedding, mic_dominant=dominance == "mic", recent_ids=recent,
-            audio=segment.audio,
+            audio=segment.audio, owner_id=self._user_id,
         )
 
     def _short_segment_donor(self, dominance: str, start_s: float) -> Optional[MatchResult]:

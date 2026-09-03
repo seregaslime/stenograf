@@ -48,15 +48,22 @@ def _unit(rng: np.random.Generator) -> np.ndarray:
 
 
 def _fill(registry: SpeakerRegistry, speakers: int, prints_each: int, rng) -> None:
-    """Набивает библиотеку, минуя БД: нам нужна только стоимость перебора."""
+    """Набивает библиотеку, минуя БД: нам нужна только стоимость перебора.
+
+    Библиотеки разделены по владельцам, здесь берём ключ None — «личный сервер».
+    Профиль «Вы» проставляем сразу, иначе registry.self_id пошёл бы заводить его
+    в базе, которой в бенчмарке нет.
+    """
     registry._prints = {
-        speaker_id: [
-            _Print(id=speaker_id * 100 + k, vector=_unit(rng), count=3)
-            for k in range(prints_each)
-        ]
-        for speaker_id in range(1, speakers + 1)
+        None: {
+            speaker_id: [
+                _Print(id=speaker_id * 100 + k, vector=_unit(rng), count=3)
+                for k in range(prints_each)
+            ]
+            for speaker_id in range(1, speakers + 1)
+        }
     }
-    registry._self_id = 1
+    registry._self_ids = {None: 1}
 
 
 class _StubRow:
@@ -90,8 +97,9 @@ def _probe_matching(registry: SpeakerRegistry, rng) -> np.ndarray:
     существующий отпечаток с лёгким шумом: близость высокая → узнавание без записи,
     а полный перебор всех отпечатков всё равно выполняется, его и меряем.
     """
-    speaker_ids = list(registry._prints)
-    donor = registry._prints[speaker_ids[rng.integers(len(speaker_ids))]][0]
+    библиотека = registry._prints[None]
+    speaker_ids = list(библиотека)
+    donor = библиотека[speaker_ids[rng.integers(len(speaker_ids))]][0]
     noisy = donor.vector + 0.01 * rng.standard_normal(EMBED_DIM).astype(np.float32)
     return noisy / np.linalg.norm(noisy)
 

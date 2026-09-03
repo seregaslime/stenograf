@@ -94,3 +94,29 @@ def test_notify_reaches_only_running_meetings(cfg):
 
     assert live._participants[5] == 2 and 3 not in live._participants
     assert finished._participants[3] == 2  # её никто не трогал
+
+
+def test_чужая_сессия_уведомление_не_получает(cfg):
+    """Окно разговора правится по ИМЕНИ спикера, поэтому объединение своего
+    «Ивана» переименовало бы строки в чужой идущей встрече, где есть однофамилец
+    — а эти строки уходят в промпт подсказок."""
+    моя = _session(cfg)
+    моя._user_id = 1
+    моя._participants.update({3: 5})
+    моя._recent.append("Иван: моя реплика")
+
+    чужая = _session(cfg)
+    чужая._user_id = 2
+    чужая._participants.update({3: 7})
+    чужая._recent.append("Иван: чужая реплика")
+
+    from app import ws as ws_mod
+    ws_mod._LIVE_SESSIONS.update({моя, чужая})
+    try:
+        notify_speakers_merged(3, 9, "Иван Петров", ["Иван"], owner_id=1)
+    finally:
+        ws_mod._LIVE_SESSIONS.difference_update({моя, чужая})
+
+    assert list(моя._recent) == ["Иван Петров: моя реплика"]
+    assert list(чужая._recent) == ["Иван: чужая реплика"]  # чужого не тронули
+    assert чужая._participants[3] == 7

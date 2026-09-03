@@ -10,24 +10,46 @@ from .models import Meeting, Segment, Speaker, VoicePrint
 
 # --- Спикеры ---
 
-def get_or_create_self_speaker(db: Session) -> Speaker:
-    speaker = db.scalar(select(Speaker).where(Speaker.is_self.is_(True)))
+def get_or_create_self_speaker(db: Session, owner_id: Optional[int] = None) -> Speaker:
+    """Профиль «Вы» — владелец микрофона. У каждого человека свой: это разные
+    люди, а на «Вы» висит скидка к порогу узнавания, и общий профиль сливал бы
+    их голоса в один."""
+    запрос = select(Speaker).where(Speaker.is_self.is_(True))
+    if owner_id is not None:
+        запрос = запрос.where(Speaker.owner_id == owner_id)
+    else:
+        запрос = запрос.where(Speaker.owner_id.is_(None))
+    speaker = db.scalar(запрос)
     if speaker is None:
-        speaker = Speaker(name="Вы", is_self=True)
+        speaker = Speaker(name="Вы", is_self=True, owner_id=owner_id)
         db.add(speaker)
         db.flush()
     return speaker
 
 
-def create_speaker(db: Session) -> Speaker:
-    speaker = Speaker(name="")
+def create_speaker(db: Session, owner_id: Optional[int] = None) -> Speaker:
+    speaker = Speaker(name="", owner_id=owner_id)
     db.add(speaker)
     db.flush()  # получаем id для имени по умолчанию
     speaker.name = f"Спикер {speaker.id}"
     return speaker
 
 
-def list_speakers(db: Session) -> list[dict]:
+def speaker_for_owner(db: Session, speaker_id: int, owner_id: Optional[int]) -> Optional[Speaker]:
+    """Профиль, если он существует и принадлежит этому человеку.
+
+    Как и со встречами: чужой профиль неотличим от несуществующего, иначе
+    перебором id узнаётся, сколько людей в чужой библиотеке голосов.
+    """
+    speaker = db.get(Speaker, speaker_id)
+    if speaker is None:
+        return None
+    if owner_id is not None and speaker.owner_id != owner_id:
+        return None
+    return speaker
+
+
+def list_speakers(db: Session, owner_id: Optional[int] = None) -> list[dict]:
     # скалярные подзапросы вместо join'ов — два outerjoin размножили бы строки
     meetings_sq = (
         select(func.count(func.distinct(Segment.meeting_id)))
@@ -44,10 +66,10 @@ def list_speakers(db: Session) -> list[dict]:
         .where(VoicePrint.speaker_id == Speaker.id)
         .scalar_subquery()
     )
-    rows = db.execute(
-        select(Speaker, meetings_sq, segments_sq, prints_sq)
-        .order_by(Speaker.is_self.desc(), Speaker.id)
-    ).all()
+    запрос = select(Speaker, meetings_sq, segments_sq, prints_sq)
+    if owner_id is not None:
+        запрос = запрос.where(Speaker.owner_id == owner_id)
+    rows = db.execute(запрос.order_by(Speaker.is_self.desc(), Speaker.id)).all()
     result = []
     for speaker, meetings, segments, prints in rows:
         result.append(

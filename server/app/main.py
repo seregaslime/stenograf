@@ -599,50 +599,59 @@ async def answer_from_meetings(body: SearchAnswerBody, request: Request):
 
 
 @app.get("/api/speakers")
-def get_speakers():
+def get_speakers(request: Request):
     with session_scope() as db:
-        return crud.list_speakers(db)
+        return crud.list_speakers(db, владелец(request))
 
 
 @app.patch("/api/speakers/{speaker_id}")
-def patch_speaker(speaker_id: int, body: RenameBody):
+def patch_speaker(speaker_id: int, body: RenameBody, request: Request):
     with session_scope() as db:
-        speaker = crud.rename_speaker(db, speaker_id, body.name)
-        if speaker is None:
+        if crud.speaker_for_owner(db, speaker_id, владелец(request)) is None:
             raise HTTPException(404, "Спикер не найден")
+        # Переименование остаётся в crud: правило «пустое имя не затирает
+        # прежнее» должно жить в одном месте, а не повторяться в эндпоинте.
+        speaker = crud.rename_speaker(db, speaker_id, body.name)
         return {"id": speaker.id, "name": speaker.name}
 
 
 @app.delete("/api/speakers/{speaker_id}")
-def delete_speaker(speaker_id: int):
+def delete_speaker(speaker_id: int, request: Request):
+    кто = владелец(request)
     with session_scope() as db:
-        speaker = db.get(Speaker, speaker_id)
+        speaker = crud.speaker_for_owner(db, speaker_id, кто)
         if speaker is None:
             raise HTTPException(404, "Спикер не найден")
         if speaker.is_self:
             raise HTTPException(400, "Нельзя удалить собственный профиль «Вы»")
         unassigned = crud.reassign_segments(db, speaker_id, None)
         db.delete(speaker)  # отпечатки и образцы каскадом
-    registry.forget(speaker_id)
+    registry.forget(speaker_id, кто)
     shutil.rmtree(settings.samples_dir / f"spk_{speaker_id}", ignore_errors=True)
     return {"deleted": speaker_id, "unassigned_segments": unassigned}
 
 
 @app.delete("/api/speakers/{speaker_id}/voiceprints/{print_id}")
-def delete_voiceprint(speaker_id: int, print_id: int):
+def delete_voiceprint(speaker_id: int, print_id: int, request: Request):
     """Удаляет одно «звучание» голоса (отпечаток и его аудио) — например,
     «испорченное» чужим звуком. Профиль и его реплики остаются."""
     with session_scope() as db:
-        if not registry.remove_print(db, speaker_id, print_id):
+        if not registry.remove_print(db, speaker_id, print_id, владелец(request)):
             raise HTTPException(404, "Отпечаток не найден")
     return {"deleted": print_id, "speaker_id": speaker_id}
 
 
 @app.get("/api/speakers/{speaker_id}/voiceprints/{print_id}/audio")
-def get_voiceprint_audio(speaker_id: int, print_id: int):
-    """Аудио-фрагмент реплики, из которой родился отпечаток."""
+def get_voiceprint_audio(speaker_id: int, print_id: int, request: Request):
+    """Аудио-фрагмент реплики, из которой родился отпечаток.
+
+    Владельца проверяем обязательно: это запись чужого голоса на диске, и без
+    проверки её забирал бы любой, кто подставит номер профиля.
+    """
     with session_scope() as db:
         row = db.get(VoicePrint, print_id)
+        if crud.speaker_for_owner(db, speaker_id, владелец(request)) is None:
+            raise HTTPException(404, "Аудио отпечатка не найдено")
         if (
             row is None or row.speaker_id != speaker_id
             or not row.audio_path or not Path(row.audio_path).exists()
@@ -652,18 +661,20 @@ def get_voiceprint_audio(speaker_id: int, print_id: int):
 
 
 @app.post("/api/speakers/merge")
-def merge_speakers(body: MergeBody):
+def merge_speakers(body: MergeBody, request: Request):
     if len(body.speaker_ids) != 2:
         raise HTTPException(400, "Нужно ровно два спикера")
     with session_scope() as db:
         try:
-            result = registry.merge(db, body.speaker_ids[0], body.speaker_ids[1])
+            result = registry.merge(db, body.speaker_ids[0], body.speaker_ids[1],
+                                    владелец(request))
         except ValueError as exc:
             raise HTTPException(400, str(exc))
     # Только после коммита: идущая встреча по этому сигналу перепишет своё
     # состояние, а профиля-источника к тому моменту уже не должно быть в базе.
     notify_speakers_merged(
         result["source_id"], result["target_id"], result["name"], result["was_named"],
+        владелец(request),
     )
     return result
 

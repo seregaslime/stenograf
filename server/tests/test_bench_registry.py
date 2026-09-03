@@ -20,8 +20,11 @@ def test_fill_creates_requested_library():
     rng = np.random.default_rng(1)
     registry = bench_registry.SpeakerRegistry(bench_registry.Settings(_env_file=None))
     bench_registry._fill(registry, speakers=7, prints_each=3, rng=rng)
-    assert len(registry._prints) == 7
-    assert all(len(p) == 3 for p in registry._prints.values())
+    # Библиотеки разделены по владельцам; бенчмарк набивает ключ None —
+    # «личный сервер», людей на нём не заводили.
+    библиотека = registry._prints[None]
+    assert len(библиотека) == 7
+    assert all(len(p) == 3 for p in библиотека.values())
 
 
 def test_embeddings_are_unit_vectors():
@@ -42,7 +45,7 @@ def test_probe_matches_existing_speaker():
 
     best = max(
         float(np.dot(pr.vector, probe))
-        for prints in registry._prints.values() for pr in prints
+        for prints in registry._prints[None].values() for pr in prints
     )
     assert best > 0.9  # заведомо выше рабочего порога 0.35
 
