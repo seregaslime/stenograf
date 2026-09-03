@@ -50,6 +50,8 @@ def test_migrate_autoincrement_rebuilds_and_preserves(temp_engine):
     # Порядок как в init_db: сначала добавляются недостающие колонки, потом
     # перестройка (она берёт список колонок из актуальной модели)
     database._migrate_meeting_mode()
+    database._migrate_meeting_owner()
+    database._migrate_speaker_owner()
     database._migrate_autoincrement(models.Base.metadata)
 
     assert "AUTOINCREMENT" in _table_sql(temp_engine, "meetings").upper()
@@ -99,11 +101,16 @@ def test_meeting_mode_migration_runs_before_autoincrement(temp_engine):
             "VALUES (7, 'До обновления', 'done', '2026-01-01 00:00:00', 0)"
         )
 
-    # обратный (неверный) порядок обязан падать — иначе регрессия незаметна
-    with pytest.raises(Exception, match="meeting_mode"):
+    # Обратный (неверный) порядок обязан падать — иначе регрессия незаметна.
+    # Имя колонки в тексте не проверяем: недостающих может быть несколько, и
+    # первой в SELECT окажется та, что раньше в модели (сейчас owner_id).
+    # Проверять надо факт падения, а не какая колонка не нашлась первой.
+    with pytest.raises(Exception, match="no such column"):
         database._migrate_autoincrement(models.Base.metadata)
 
     database._migrate_meeting_mode()
+    database._migrate_meeting_owner()
+    database._migrate_speaker_owner()
     database._migrate_autoincrement(models.Base.metadata)  # теперь проходит
     with temp_engine.begin() as conn:
         assert conn.exec_driver_sql(
@@ -186,3 +193,57 @@ def test_migrate_samples_adds_columns_and_merges(tmp_path, temp_engine):
         vp = conn.exec_driver_sql(
             "SELECT audio_path, audio_duration_s FROM voiceprints WHERE id=1").fetchone()
     assert vp == (str(sample_file), 2.5)  # образец прикреплён к отпечатку
+
+
+def test_migrate_meeting_owner_adds_column(temp_engine):
+    """Колонка владельца добавляется к старой базе, встречи остаются ничейными.
+
+    Ничейными намеренно: людей на личном сервере нет, приписывать записи некому.
+    Достанутся они первому заведённому человеку (см. auth.create_user) — иначе
+    он закрыл бы сервер токеном и обнаружил пустой архив.
+    """
+    with temp_engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE meetings (id INTEGER PRIMARY KEY, title VARCHAR, status VARCHAR, "
+            "started_at DATETIME, ended_at DATETIME, record_audio BOOLEAN, audio_dir VARCHAR, "
+            "summary TEXT, summary_model VARCHAR, summary_error TEXT)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO meetings (id, title, status, started_at, record_audio) "
+            "VALUES (3, 'До токенов', 'done', '2026-01-01 00:00:00', 0)"
+        )
+    assert "owner_id" not in _columns(temp_engine, "meetings")
+
+    database._migrate_meeting_owner()
+    database._migrate_meeting_owner()  # повторный запуск безопасен
+
+    assert "owner_id" in _columns(temp_engine, "meetings")
+    with temp_engine.begin() as conn:
+        assert conn.exec_driver_sql(
+            "SELECT id, owner_id FROM meetings"
+        ).fetchone() == (3, None)
+
+
+def test_migrate_speaker_owner_adds_column(temp_engine):
+    """Колонка владельца добавляется к таблице голосов; профили остаются
+    ничейными и достаются первому заведённому человеку вместе со встречами.
+
+    Порядок тот же, что у встреч: строго ДО перестройки таблиц — speakers там
+    тоже пересобирается по списку колонок из модели.
+    """
+    with temp_engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE speakers (id INTEGER PRIMARY KEY, name VARCHAR, "
+            "is_self BOOLEAN, created_at DATETIME)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO speakers (id, name, is_self) VALUES (1, 'Вы', 1), (2, 'Иван', 0)"
+        )
+    database._migrate_speaker_owner()
+    database._migrate_speaker_owner()  # повторный запуск безопасен
+
+    assert "owner_id" in _columns(temp_engine, "speakers")
+    with temp_engine.begin() as conn:
+        assert conn.exec_driver_sql(
+            "SELECT id, owner_id FROM speakers ORDER BY id"
+        ).fetchall() == [(1, None), (2, None)]

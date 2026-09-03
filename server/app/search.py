@@ -104,20 +104,25 @@ async def index_meeting(db: Session, cfg: Settings, meeting: Meeting) -> int:
     return len(куски)
 
 
-async def reindex_missing(db: Session, cfg: Settings) -> int:
+async def reindex_missing(db: Session, cfg: Settings, owner_id: int | None = None) -> int:
     """Индексирует завершённые встречи, у которых кусков нет или они от другой модели.
 
     Ленивая индексация вместо крючка в конвейере: встреча могла завершиться до
     того, как поиск появился, а модель — смениться в настройках. Проверка
     дешёвая (один запрос), пересчёт идёт только там, где его не хватает.
+
+    Считаем только свои встречи: чужие всё равно не попадут в выдачу, а платить
+    за них временем эмбеддера (и держать очередь к модели) незачем.
     """
     # Два запроса вместо запроса на каждую встречу: на архиве в тысячу встреч
     # цикл давал тысячу лишних обращений к базе перед КАЖДЫМ поиском.
     готовые = set(db.scalars(
         select(Chunk.meeting_id).where(Chunk.model == cfg.search_embed_model).distinct()
     ))
-    нужны = [m for m in db.scalars(select(Meeting).where(Meeting.status == "done"))
-             if m.id not in готовые]
+    запрос = select(Meeting).where(Meeting.status == "done")
+    if owner_id is not None:
+        запрос = запрос.where(Meeting.owner_id == owner_id)
+    нужны = [m for m in db.scalars(запрос) if m.id not in готовые]
     if not нужны:
         return 0
 
@@ -128,13 +133,24 @@ async def reindex_missing(db: Session, cfg: Settings) -> int:
     return посчитано
 
 
-async def search(db: Session, cfg: Settings, query: str, limit: int | None = None) -> list[dict]:
-    """Куски, ближайшие к вопросу. Пустой запрос — пустая выдача, без похода к модели."""
+async def search(db: Session, cfg: Settings, query: str, limit: int | None = None,
+                 owner_id: int | None = None) -> list[dict]:
+    """Куски, ближайшие к вопросу. Пустой запрос — пустая выдача, без похода к модели.
+
+    Владельца берём у встречи, а не у куска: отдельная колонка у Chunk была бы
+    вторым источником правды о том же самом, и рассинхрон вылезал бы как чужая
+    цитата в выдаче.
+    """
     query = (query or "").strip()
     if not query:
         return []
 
-    куски = list(db.scalars(select(Chunk).where(Chunk.model == cfg.search_embed_model)))
+    отбор = select(Chunk).where(Chunk.model == cfg.search_embed_model)
+    if owner_id is not None:
+        отбор = отбор.join(Meeting, Chunk.meeting_id == Meeting.id).where(
+            Meeting.owner_id == owner_id
+        )
+    куски = list(db.scalars(отбор))
     if not куски:
         return []
 
@@ -161,7 +177,7 @@ async def search(db: Session, cfg: Settings, query: str, limit: int | None = Non
 
 
 async def answer(db: Session, cfg: Settings, llm: LlmRouter, query: str,
-                 limit: int | None = None) -> dict:
+                 limit: int | None = None, owner_id: int | None = None) -> dict:
     """Ответ модели по найденным фрагментам плюс сами фрагменты.
 
     Цитаты возвращаются вместе с ответом и всегда показываются рядом с ним:
@@ -176,7 +192,7 @@ async def answer(db: Session, cfg: Settings, llm: LlmRouter, query: str,
     модель подсказок. Фрагментов немного и по другой причине — промпт должен
     помещаться в контекст локальной модели.
     """
-    найденное = await search(db, cfg, query, limit)
+    найденное = await search(db, cfg, query, limit, owner_id)
     if not найденное:
         return {"answer": "", "results": []}
 

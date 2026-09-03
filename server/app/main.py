@@ -11,13 +11,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from . import search
+from . import auth, search
 from .asr.transcriber import GIGAAM_AVAILABLE, MLX_AVAILABLE, Transcriber
 from .config import (
     API_HOST_HINT,
@@ -27,6 +27,7 @@ from .config import (
     OLLAMA_URL_HINT,
     Settings,
     api_host_supported,
+    cors_origin_list,
     ollama_url_valid,
     save_asr_choice,
     save_llm_choice,
@@ -35,7 +36,7 @@ from .config import (
 )
 from .db import crud
 from .db.database import init_db, session_scope
-from .db.models import Meeting, Speaker, VoicePrint
+from .db.models import Meeting, VoicePrint
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import SpeakerRegistry
 from .llm.base import LlmError
@@ -138,21 +139,91 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Стенограф API", version="0.1.0", lifespan=lifespan)
+
+# Что отвечает без токена. Только состояние сервера — по нему видно, жив ли он,
+# ещё до того как человек ввёл токен, и это единственная причина исключения.
+# Данных встреч здоровье не отдаёт (см. health): без токена оно урезано.
+ОТКРЫТЫЕ_ПУТИ = ("/api/health",)
+
+
+@app.middleware("http")
+async def проверить_доступ(request: Request, call_next):
+    """Токен спрашиваем в одном месте, а не зависимостью на каждом эндпоинте.
+
+    Причина в том, чем ошибиться дороже: забытая зависимость у нового эндпоинта
+    открывает его молча, и заметить это можно только специально глядя. Здесь
+    новый путь закрыт по умолчанию, а открывать его надо руками — ошибка
+    становится видимой.
+    """
+    # WebSocket сюда не попадает: у него нет заголовков (ограничение браузерного
+    # API), токен придёт первым кадром — это следующий коммит серии.
+    # Закрыто ВСЁ, кроме явно открытого, а не только /api: под /api не попадают
+    # автодокументация FastAPI (/docs, /redoc, /openapi.json), и по ней сервер,
+    # который только что закрыли токеном, выдал бы посторонним полную карту API.
+    # Слэш на конце срезаем: путь «/api/health/» — это тот же health, и отвечать
+    # на него отказом значит показывать мониторингу упавший сервер вместо живого.
+    путь = request.url.path.rstrip("/") or "/"
+    if request.method == "OPTIONS" or путь in ОТКРЫТЫЕ_ПУТИ:
+        return await call_next(request)
+
+    with session_scope() as db:
+        if auth.auth_required(db):
+            user = auth.user_by_token(
+                db, auth.token_from_header(request.headers.get("authorization"))
+            )
+            if user is None:
+                return JSONResponse(
+                    {"detail": "Нужен токен доступа. Настройки → Токен сервера."},
+                    status_code=401,
+                )
+            # Кладём id и имя, а не объект: сессия закроется на выходе из блока,
+            # и отсоединённый объект развалится при первом же обращении к полю.
+            request.state.user_id = user.id
+            request.state.user_name = user.name
+    return await call_next(request)
+
+
+# Добавляется ПОСЛЕ проверки доступа, поэтому оказывается снаружи неё: иначе
+# ответ 401 уходил бы без заголовков CORS, и браузер показывал бы вместо
+# внятного «нужен токен» невнятную сетевую ошибку.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # клиент — локальное Electron-приложение
+    allow_origins=cors_origin_list(),
+    # Локальные адреса — выражением, а не списком: vite берёт свободный порт,
+    # если 5173 занят, и перечислить их заранее невозможно. Проверено живьём —
+    # со списком браузерная превью на порту 62953 получала отказ CORS.
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+def владелец(request: Request) -> int | None:
+    """Кто спрашивает. None — сервер личный, людей на нём не заводили, и
+    фильтровать данные не по чему (проверку ставит middleware выше)."""
+    return getattr(request.state, "user_id", None)
+
+
 # ---------------------------------------------------------------- здоровье
 
 @app.get("/api/health")
-async def health():
+async def health(request: Request):
+    """Открыт без токена намеренно: иначе не понять, жив ли сервер, до того как
+    человек ввёл токен. Поэтому чужому отдаём только «жив» — какие модели
+    настроены и какой провайдер выбран, посторонним знать незачем."""
+    with session_scope() as db:
+        свой = not auth.auth_required(db) or auth.user_by_token(
+            db, auth.token_from_header(request.headers.get("authorization"))
+        ) is not None
+    if not свой:
+        # Поля не выбрасываем молча: клиент читает health.asr.model, и ответ без
+        # asr ронял бы ему экран настроек. Отдаём признак, по которому видно, что
+        # подробностей не будет, и клиент показывает «нужен токен».
+        return {"status": "ok", "version": app.version, "authorized": False}
     return {
         "status": "ok",
         "version": app.version,
+        "authorized": True,
         "asr": {
             "engine": transcriber.engine,
             "model": transcriber.model_name,
@@ -369,15 +440,15 @@ async def probe_llm_models(body: ModelsProbeBody):
 # ---------------------------------------------------------------- встречи
 
 @app.get("/api/meetings")
-def get_meetings():
+def get_meetings(request: Request):
     with session_scope() as db:
-        return crud.list_meetings(db)
+        return crud.list_meetings(db, владелец(request))
 
 
 @app.get("/api/meetings/{meeting_id}")
-def get_meeting(meeting_id: int):
+def get_meeting(meeting_id: int, request: Request):
     with session_scope() as db:
-        meeting = db.get(Meeting, meeting_id)
+        meeting = crud.meeting_for_owner(db, meeting_id, владелец(request))
         if meeting is None:
             raise HTTPException(404, "Встреча не найдена")
         segments = crud.meeting_segments(db, meeting_id)
@@ -401,13 +472,21 @@ def get_meeting(meeting_id: int):
 
 
 @app.delete("/api/meetings/{meeting_id}")
-async def delete_meeting(meeting_id: int):
-    # async: отмена задачи резюме должна происходить в том же event loop
+async def delete_meeting(meeting_id: int, request: Request):
+    with session_scope() as db:
+        meeting = crud.meeting_for_owner(db, meeting_id, владелец(request))
+        if meeting is None:
+            raise HTTPException(404, "Встреча не найдена")
+    # Отмена резюме — после проверки прав и до удаления: чужой запрос не должен
+    # ронять чужую фоновую задачу. async нужен, чтобы отменять в том же loop.
     _cancel_summary(meeting_id)
     with session_scope() as db:
         meeting = db.get(Meeting, meeting_id)
         if meeting is None:
-            raise HTTPException(404, "Встреча не найдена")
+            # Между проверкой прав и удалением встречу успели удалить (двойной
+            # клик, два открытых клиента). Это не ошибка сервера: результат тот
+            # же, которого просили.
+            return {"deleted": meeting_id}
         if meeting.status == "live":
             # Встреча могла зависнуть после обрыва клиента — принудительно завершаем
             meeting.status = "done"
@@ -419,9 +498,9 @@ async def delete_meeting(meeting_id: int):
 
 
 @app.post("/api/meetings/{meeting_id}/summarize")
-async def summarize_meeting(meeting_id: int):
+async def summarize_meeting(meeting_id: int, request: Request):
     with session_scope() as db:
-        meeting = db.get(Meeting, meeting_id)
+        meeting = crud.meeting_for_owner(db, meeting_id, владелец(request))
         if meeting is None:
             raise HTTPException(404, "Встреча не найдена")
         if meeting.status == "live":
@@ -433,9 +512,9 @@ async def summarize_meeting(meeting_id: int):
 
 
 @app.get("/api/meetings/{meeting_id}/export")
-def export_meeting(meeting_id: int, fmt: str = "md"):
+def export_meeting(meeting_id: int, request: Request, fmt: str = "md"):
     with session_scope() as db:
-        meeting = db.get(Meeting, meeting_id)
+        meeting = crud.meeting_for_owner(db, meeting_id, владелец(request))
         if meeting is None:
             raise HTTPException(404, "Встреча не найдена")
         segments = crud.meeting_segments(db, meeting_id)
@@ -474,19 +553,21 @@ class MergeBody(BaseModel):
 
 
 @app.get("/api/search")
-async def search_meetings(q: str, limit: int | None = Query(None, ge=1, le=SEARCH_LIMIT_MAX)):
+async def search_meetings(request: Request, q: str,
+                          limit: int | None = Query(None, ge=1, le=SEARCH_LIMIT_MAX)):
     """Куски прошлых встреч, ближайшие по смыслу к вопросу.
 
     Индексация ленивая, прямо здесь: встречи могли пройти до появления поиска,
     а модель эмбеддингов — смениться в настройках. Крючок в конвейере обошёлся
     бы дороже и молчал бы про старые встречи.
     """
+    кто = владелец(request)
     try:
         with session_scope() as db:
-            посчитано = await search.reindex_missing(db, settings)
+            посчитано = await search.reindex_missing(db, settings, кто)
             if посчитано:
                 log.info("Проиндексировано кусков: %d", посчитано)
-            return {"results": await search.search(db, settings, q, limit)}
+            return {"results": await search.search(db, settings, q, limit, кто)}
     except LlmError as exc:
         # Модель эмбеддингов не скачана или Ollama не запущена — это чинится
         # одной командой, и текст ошибки должен эту команду называть.
@@ -501,66 +582,76 @@ class SearchAnswerBody(BaseModel):
 
 
 @app.post("/api/search/answer")
-async def answer_from_meetings(body: SearchAnswerBody):
+async def answer_from_meetings(body: SearchAnswerBody, request: Request):
     """Ответ модели по найденным фрагментам прошлых встреч.
 
     Отдельно от /api/search, а не флагом к нему: поиск отвечает за доли
     секунды, ответ модели — за секунды. Клиент сначала показывает цитаты, и
     человек уже читает их, пока думает модель.
     """
+    кто = владелец(request)
     try:
         with session_scope() as db:
-            await search.reindex_missing(db, settings)
-            return await search.answer(db, settings, llm, body.q, body.limit)
+            await search.reindex_missing(db, settings, кто)
+            return await search.answer(db, settings, llm, body.q, body.limit, кто)
     except LlmError as exc:
         raise HTTPException(503, str(exc))
 
 
 @app.get("/api/speakers")
-def get_speakers():
+def get_speakers(request: Request):
     with session_scope() as db:
-        return crud.list_speakers(db)
+        return crud.list_speakers(db, владелец(request))
 
 
 @app.patch("/api/speakers/{speaker_id}")
-def patch_speaker(speaker_id: int, body: RenameBody):
+def patch_speaker(speaker_id: int, body: RenameBody, request: Request):
     with session_scope() as db:
-        speaker = crud.rename_speaker(db, speaker_id, body.name)
-        if speaker is None:
+        if crud.speaker_for_owner(db, speaker_id, владелец(request)) is None:
             raise HTTPException(404, "Спикер не найден")
+        # Переименование остаётся в crud: правило «пустое имя не затирает
+        # прежнее» должно жить в одном месте, а не повторяться в эндпоинте.
+        speaker = crud.rename_speaker(db, speaker_id, body.name)
         return {"id": speaker.id, "name": speaker.name}
 
 
 @app.delete("/api/speakers/{speaker_id}")
-def delete_speaker(speaker_id: int):
+def delete_speaker(speaker_id: int, request: Request):
+    кто = владелец(request)
     with session_scope() as db:
-        speaker = db.get(Speaker, speaker_id)
+        speaker = crud.speaker_for_owner(db, speaker_id, кто)
         if speaker is None:
             raise HTTPException(404, "Спикер не найден")
         if speaker.is_self:
             raise HTTPException(400, "Нельзя удалить собственный профиль «Вы»")
         unassigned = crud.reassign_segments(db, speaker_id, None)
         db.delete(speaker)  # отпечатки и образцы каскадом
-    registry.forget(speaker_id)
+    registry.forget(speaker_id, кто)
     shutil.rmtree(settings.samples_dir / f"spk_{speaker_id}", ignore_errors=True)
     return {"deleted": speaker_id, "unassigned_segments": unassigned}
 
 
 @app.delete("/api/speakers/{speaker_id}/voiceprints/{print_id}")
-def delete_voiceprint(speaker_id: int, print_id: int):
+def delete_voiceprint(speaker_id: int, print_id: int, request: Request):
     """Удаляет одно «звучание» голоса (отпечаток и его аудио) — например,
     «испорченное» чужим звуком. Профиль и его реплики остаются."""
     with session_scope() as db:
-        if not registry.remove_print(db, speaker_id, print_id):
+        if not registry.remove_print(db, speaker_id, print_id, владелец(request)):
             raise HTTPException(404, "Отпечаток не найден")
     return {"deleted": print_id, "speaker_id": speaker_id}
 
 
 @app.get("/api/speakers/{speaker_id}/voiceprints/{print_id}/audio")
-def get_voiceprint_audio(speaker_id: int, print_id: int):
-    """Аудио-фрагмент реплики, из которой родился отпечаток."""
+def get_voiceprint_audio(speaker_id: int, print_id: int, request: Request):
+    """Аудио-фрагмент реплики, из которой родился отпечаток.
+
+    Владельца проверяем обязательно: это запись чужого голоса на диске, и без
+    проверки её забирал бы любой, кто подставит номер профиля.
+    """
     with session_scope() as db:
         row = db.get(VoicePrint, print_id)
+        if crud.speaker_for_owner(db, speaker_id, владелец(request)) is None:
+            raise HTTPException(404, "Аудио отпечатка не найдено")
         if (
             row is None or row.speaker_id != speaker_id
             or not row.audio_path or not Path(row.audio_path).exists()
@@ -570,18 +661,20 @@ def get_voiceprint_audio(speaker_id: int, print_id: int):
 
 
 @app.post("/api/speakers/merge")
-def merge_speakers(body: MergeBody):
+def merge_speakers(body: MergeBody, request: Request):
     if len(body.speaker_ids) != 2:
         raise HTTPException(400, "Нужно ровно два спикера")
     with session_scope() as db:
         try:
-            result = registry.merge(db, body.speaker_ids[0], body.speaker_ids[1])
+            result = registry.merge(db, body.speaker_ids[0], body.speaker_ids[1],
+                                    владелец(request))
         except ValueError as exc:
             raise HTTPException(400, str(exc))
     # Только после коммита: идущая встреча по этому сигналу перепишет своё
     # состояние, а профиля-источника к тому моменту уже не должно быть в базе.
     notify_speakers_merged(
         result["source_id"], result["target_id"], result["name"], result["was_named"],
+        владелец(request),
     )
     return result
 

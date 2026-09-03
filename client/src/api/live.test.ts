@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { LiveClient } from "./live";
+import { setSetting } from "../store";
 
 function withFakeSocket(readyState: number) {
   const client = new LiveClient(
@@ -74,5 +75,53 @@ describe("LiveClient.ask", () => {
     const { client, sent } = withFakeSocket(WebSocket.OPEN);
     client.ask("что такое кубернетес");
     expect(JSON.parse(sent[0] as unknown as string).segment_ids).toEqual([]);
+  });
+});
+
+describe("LiveClient: токен первым кадром", () => {
+  /** Сокет-заглушка: запоминает отправленное и сам зовёт onopen. */
+  function fakeSocketClass(sent: string[]) {
+    return class {
+      static OPEN = 1;
+      readyState = 1;
+      binaryType = "";
+      onopen: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onmessage: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      constructor() {
+        queueMicrotask(() => this.onopen?.());
+      }
+      send(data: string) {
+        sent.push(data);
+      }
+    };
+  }
+
+  it("шлёт auth сразу после открытия, до всего остального", async () => {
+    setSetting("serverToken", "токен-встречи");
+    const sent: string[] = [];
+    vi.stubGlobal("WebSocket", fakeSocketClass(sent));
+    const client = new LiveClient(
+      () => {},
+      () => {},
+    );
+    await client.connect();
+    expect(JSON.parse(sent[0])).toEqual({ type: "auth", token: "токен-встречи" });
+    setSetting("serverToken", "");
+    vi.unstubAllGlobals();
+  });
+
+  it("шлёт кадр и с пустым токеном: отказ должен прийти сразу, а не по таймауту", async () => {
+    setSetting("serverToken", "");
+    const sent: string[] = [];
+    vi.stubGlobal("WebSocket", fakeSocketClass(sent));
+    const client = new LiveClient(
+      () => {},
+      () => {},
+    );
+    await client.connect();
+    expect(JSON.parse(sent[0])).toEqual({ type: "auth", token: "" });
+    vi.unstubAllGlobals();
   });
 });

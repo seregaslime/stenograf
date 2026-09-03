@@ -21,6 +21,8 @@ def init_db() -> None:
     models.Base.metadata.create_all(engine)
     _migrate_voiceprints(models.Base.metadata)
     _migrate_meeting_mode()
+    _migrate_meeting_owner()
+    _migrate_speaker_owner()
     _migrate_autoincrement(models.Base.metadata)
     _migrate_samples_into_prints()
 
@@ -64,6 +66,43 @@ def _migrate_meeting_mode() -> None:
             return
         conn.exec_driver_sql("ALTER TABLE meetings ADD COLUMN meeting_mode VARCHAR(20)")
         conn.exec_driver_sql("UPDATE meetings SET meeting_mode = 'work'")
+
+
+def _migrate_meeting_owner() -> None:
+    """Добавляет владельца встречи (базы до v0.6).
+
+    Как и _migrate_meeting_mode, обязана отработать ДО _migrate_autoincrement:
+    та перестройка берёт список колонок из актуальной модели и на старой таблице
+    упала бы с «no such column: owner_id» прямо при старте сервера.
+
+    Существующие встречи остаются ничейными намеренно: на личном сервере людей
+    нет вовсе, и приписывать записи некому. Первому заведённому человеку они
+    достанутся целиком — иначе он обновил бы сервер и обнаружил пустой архив.
+    """
+    with engine.begin() as conn:
+        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(meetings)")]
+        # Пустой список — таблицы ещё нет: create_all создаст её сразу с колонкой,
+        # мигрировать нечего (пустой PRAGMA для отсутствующей таблицы не ошибка).
+        if not columns or "owner_id" in columns:
+            return
+        conn.exec_driver_sql("ALTER TABLE meetings ADD COLUMN owner_id INTEGER")
+
+
+def _migrate_speaker_owner() -> None:
+    """Добавляет владельца профилю голоса (базы до v0.6).
+
+    Как и предыдущие добавления колонок — строго ДО _migrate_autoincrement:
+    таблица speakers там тоже перестраивается по списку колонок из модели.
+
+    Существующие профили остаются ничейными и достаются первому заведённому
+    человеку вместе со встречами (auth.create_user): библиотека голосов и архив
+    встреч принадлежат одному и тому же человеку, разделять их нечем.
+    """
+    with engine.begin() as conn:
+        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(speakers)")]
+        if not columns or "owner_id" in columns:  # таблицы ещё нет — см. выше
+            return
+        conn.exec_driver_sql("ALTER TABLE speakers ADD COLUMN owner_id INTEGER")
 
 
 def _migrate_autoincrement(metadata) -> None:

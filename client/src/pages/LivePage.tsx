@@ -537,11 +537,11 @@ export default function LivePage({
               <button
                 className="btn primary big"
                 onClick={start}
-                disabled={phase === "starting" || !health || !health.asr.loaded}
+                disabled={phase === "starting" || !health?.asr?.loaded}
               >
                 {phase === "starting" ? <span className="spinner" /> : "▶"} Начать встречу
               </button>
-              {health && !health.asr.loaded && (
+              {health?.asr && !health.asr.loaded && (
                 <span style={{ color: "var(--muted)", fontSize: 13 }}>
                   <span className="spinner" /> модель распознавания загружается — обычно до минуты
                 </span>

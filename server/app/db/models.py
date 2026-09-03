@@ -13,6 +13,24 @@ class Base(DeclarativeBase):
     pass
 
 
+class User(Base):
+    """Человек, работающий с сервером.
+
+    Появился 02.09.2026. До этого сервер был однопользовательским: список встреч,
+    библиотека голосов и профиль «Вы» — общие, и двое подключившихся видели одну
+    кучу. Токен хранится хешем: восстанавливать его некому — при утере выдаётся
+    новый, а украденная копия базы входа не даёт.
+    """
+
+    __tablename__ = "users"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Speaker(Base):
     """Человек. Живёт между встречами; у него 1..N отпечатков голоса."""
 
@@ -22,6 +40,15 @@ class Speaker(Base):
     __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Чей это голос в библиотеке. NULL — сервер личный (людей не заводили).
+    # Библиотеки не пересекаются: один и тот же человек у двух пользователей —
+    # два независимых профиля. Иначе «Вы» (владелец микрофона) был бы общим на
+    # двоих, а на нём висит скидка к порогу — голоса разных людей слились бы в
+    # один профиль. Отпечатки своей колонки не имеют: владелец у них через
+    # спикера, второй источник правды тут разъехался бы.
+    owner_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     name: Mapped[str] = mapped_column(String(120))
     is_self: Mapped[bool] = mapped_column(default=False)  # владелец микрофона ("Вы")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -62,6 +89,16 @@ class Meeting(Base):
     __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Чья встреча. NULL — сервер личный, людей на нём не заводили; как только
+    # заводят первого, ничейные встречи достаются ему (см. auth.create_user).
+    # SET NULL, а не CASCADE: отзыв доступа — это отзыв ключа, а не удаление
+    # архива. Правило декоративное: внешние ключи в SQLite выключены, и на деле
+    # встречи удалённого остаются с owner_id на несуществующего — то есть
+    # невидимы всем и не достаются следующему заведённому. Так безопаснее, но
+    # знать об этом надо: команда remove не стирает данные, а прячет их.
+    owner_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     title: Mapped[str] = mapped_column(String(300), default="Встреча")
     status: Mapped[str] = mapped_column(String(20), default="live")  # live | summarizing | done
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

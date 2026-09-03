@@ -27,6 +27,7 @@ const MODEL_HINTS: Record<string, string> = {
 
 export default function SettingsPage({ onServerChange }: { onServerChange: () => void }) {
   const [url, setUrl] = useState(getSetting("serverUrl", DEFAULT_SERVER_URL));
+  const [token, setToken] = useState(getSetting("serverToken"));
   const [debug, setDebug] = useState(isDebugMode());
   const [health, setHealth] = useState<HealthDto | null>(null);
   const [testError, setTestError] = useState("");
@@ -102,6 +103,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
 
   function save() {
     setSetting("serverUrl", url.trim().replace(/\/+$/, "") || DEFAULT_SERVER_URL);
+    setSetting("serverToken", token.trim());
     onServerChange();
     void test();
   }
@@ -287,6 +289,20 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
             placeholder={DEFAULT_SERVER_URL}
           />
         </label>
+        <label className="field">
+          <span>
+            Токен доступа — если сервер его требует. Личный сервер обходится без
+            токена, общий выдаёт его командой <code>python -m app.users add</code>
+          </span>
+          <input
+            className="input"
+            type="password"
+            value={token}
+            onChange={(event) => setToken(event.target.value)}
+            placeholder="не требуется"
+            autoComplete="off"
+          />
+        </label>
         <div style={{ display: "flex", gap: 8 }}>
           <button className="btn primary" onClick={save}>
             Сохранить и проверить
@@ -301,7 +317,14 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
             <code>server</code>.
           </div>
         )}
-        {health && (
+        {health && health.authorized === false && (
+          <div className="hint" style={{ marginTop: 14 }}>
+            Сервер отвечает, но не признаёт нас: он закрыт токеном. Версия{" "}
+            {health.version}. Введите токен доступа, который выдал администратор
+            сервера.
+          </div>
+        )}
+        {health && health.asr && (
           <div style={{ marginTop: 14 }}>
             <div className="kv">
               <span className="k">Версия сервера</span>
@@ -318,15 +341,15 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
             <div className="kv">
               <span className="k">Идентификация голосов</span>
               <span>
-                {health.diarization.loaded
-                  ? `ECAPA · ${DEVICE_LABELS[health.diarization.device ?? ""] ?? health.diarization.device ?? ""} · загружена`
+                {health.diarization?.loaded
+                  ? `ECAPA · ${DEVICE_LABELS[health.diarization?.device ?? ""] ?? health.diarization?.device ?? ""} · загружена`
                   : "грузится…"}
               </span>
             </div>
             <div className="kv">
               <span className="k">Локальная LLM (Ollama)</span>
               <span>
-                {health.ollama.reachable
+                {health.ollama?.reachable
                   ? `доступна · ${health.ollama.models.length ? health.ollama.models.join(", ") : "нет моделей"}`
                   : "недоступна — резюме работать не будет"}
               </span>

@@ -142,7 +142,7 @@ def test_self_print_updates_only_from_mic(registry, db_session, rng):
     звонка (даже похожий) не должен размывать профиль владельца."""
     voice = unit(rng.standard_normal(DIM))
     registry.match_all(db_session, voice, mic_dominant=True)   # энролл
-    self_print = registry._prints[registry.self_id][0]
+    self_print = registry.prints_of(registry.self_id(db_session))[0]
     registry.match_all(db_session, voice, mic_dominant=False)  # матч без обучения
     assert self_print.count == 1
     registry.match_all(db_session, voice, mic_dominant=True)   # матч с обучением
@@ -158,7 +158,7 @@ def test_self_bonus_keeps_owner_below_threshold(registry, db_session, cfg, rng):
     drifted = vec_with_similarity(voice, cfg.speaker_match_threshold - 0.05, rng)
     match = registry.match_all(db_session, drifted, mic_dominant=True, audio=long_audio())
     assert match.is_self, "голос владельца ниже порога, но из микрофона — должен остаться «Вы»"
-    assert len(registry._prints[registry.self_id]) == 2  # новое «звучание» — новый отпечаток
+    assert len(registry.prints_of(registry.self_id(db_session))) == 2  # новое «звучание» — новый отпечаток
     # без микрофонного приора тот же вектор владельцу бы не достался
     far = vec_with_similarity(voice, cfg.speaker_match_threshold - 0.05, rng)
     stranger = registry.match_all(db_session, far, mic_dominant=False)
@@ -190,7 +190,7 @@ def test_prints_capped_per_speaker(registry, db_session, cfg, rng):
     for _ in range(cfg.speaker_max_prints + 3):
         wobble = vec_with_similarity(voice, cfg.speaker_match_threshold - 0.05, rng)
         registry.match_all(db_session, wobble, mic_dominant=True, audio=long_audio())
-    assert len(registry._prints[registry.self_id]) <= cfg.speaker_max_prints
+    assert len(registry.prints_of(registry.self_id(db_session))) <= cfg.speaker_max_prints
 
 
 def test_borderline_short_segment_leaves_no_print(registry, db_session, cfg, rng):
@@ -202,7 +202,7 @@ def test_borderline_short_segment_leaves_no_print(registry, db_session, cfg, rng
     short = np.zeros(int(0.5 * 16_000), dtype=np.float32)
     match = registry.match_all(db_session, wobble, mic_dominant=True, audio=short)
     assert match.is_self  # узнан со скидкой
-    prints = registry._prints[registry.self_id]
+    prints = registry.prints_of(registry.self_id(db_session))
     assert len(prints) == 1, "коротыш породил отпечаток"
     assert prints[0].count == 1, "коротыш сдвинул главный отпечаток"
 
@@ -230,8 +230,9 @@ def test_centroid_drifts_toward_recent_voice(registry, db_session, rng):
     base = unit(rng.standard_normal(DIM))
     drifted = vec_with_similarity(base, 0.85, rng)  # «новое звучание»
     registry.match_all(db_session, base, mic_dominant=False)
-    print_ = next(iter(p for pid, prints in registry._prints.items()
-                       for p in prints if pid != registry.self_id))
+    свой = registry.self_id(db_session)
+    print_ = next(iter(p for pid, prints in registry._prints[None].items()
+                       for p in prints if pid != свой))
     before = float(print_.vector.dot(drifted))
     for _ in range(10):
         registry.match_all(db_session, drifted, mic_dominant=False)
@@ -255,7 +256,7 @@ def test_merge_moves_prints_and_segments(registry, db_session, rng):
 
     target = result["target_id"]
     assert result["moved_segments"] == 1
-    assert len(registry._prints[target]) == 2
+    assert len(registry.prints_of(target)) == 2
     # оба голоса теперь узнаются как один человек
     for voice in (voice_a, voice_b):
         match = registry.match_all(db_session, voice, mic_dominant=False)
@@ -267,7 +268,7 @@ def test_remove_print_forgets_voice(registry, db_session, rng):
     несуществующий отпечаток — честный отказ."""
     voice = unit(rng.standard_normal(DIM))
     first = registry.match_all(db_session, voice, mic_dominant=False)
-    print_id = registry._prints[first.speaker_id][0].id
+    print_id = registry.prints_of(first.speaker_id)[0].id
 
     assert registry.remove_print(db_session, first.speaker_id, print_id)
     again = registry.match_all(db_session, voice, mic_dominant=False)
@@ -283,3 +284,68 @@ def test_forget_removes_profile(registry, db_session, rng):
     second = registry.match_all(db_session, voice, mic_dominant=False)
     assert second.is_new
     assert second.speaker_id != first.speaker_id
+
+
+# --- разделение библиотек по владельцам ---
+#
+# У каждого человека своя библиотека голосов, пересечений нет. Иначе профиль
+# «Вы» (владелец микрофона) был бы общим на двоих — а на нём висит скидка к
+# порогу, и голоса разных людей слились бы в один профиль.
+
+def test_один_голос_даёт_разные_профили_у_разных_владельцев(registry, db_session, rng):
+    голос = unit(rng.standard_normal(DIM))
+    у_первого = registry.match_all(db_session, голос, mic_dominant=False, owner_id=1)
+    у_второго = registry.match_all(db_session, голос, mic_dominant=False, owner_id=2)
+
+    assert у_первого.is_new and у_второго.is_new
+    assert у_первого.speaker_id != у_второго.speaker_id
+    # У второго это первый услышанный голос — то есть похожего он не нашёл
+    assert у_второго.similarity is None or у_второго.similarity < 1.0
+
+
+def test_чужой_отпечаток_не_участвует_в_сравнении(registry, db_session, rng):
+    """Главное следствие разделения: чужие голоса не конкурируют за порог.
+
+    Один и тот же голос у первого владельца узнаётся как знакомый, у второго —
+    заводит новый профиль, хотя вектор тот же самый.
+    """
+    голос = unit(rng.standard_normal(DIM))
+    первый = registry.match_all(db_session, голос, mic_dominant=False, owner_id=1)
+    повтор = registry.match_all(db_session, голос, mic_dominant=False, owner_id=1)
+    чужой = registry.match_all(db_session, голос, mic_dominant=False, owner_id=2)
+
+    assert повтор.speaker_id == первый.speaker_id and not повтор.is_new
+    assert чужой.is_new
+
+
+def test_профиль_вы_у_каждого_свой(registry, db_session, rng):
+    свой_первого = registry.self_id(db_session, owner_id=1)
+    свой_второго = registry.self_id(db_session, owner_id=2)
+    assert свой_первого != свой_второго
+
+    # И обучается каждый своим голосом из микрофона
+    registry.match_all(db_session, unit(rng.standard_normal(DIM)),
+                       mic_dominant=True, owner_id=1)
+    registry.match_all(db_session, unit(rng.standard_normal(DIM)),
+                       mic_dominant=True, owner_id=2)
+    assert len(registry.prints_of(свой_первого, owner_id=1)) == 1
+    assert len(registry.prints_of(свой_второго, owner_id=2)) == 1
+
+
+def test_слияние_чужих_профилей_отбивается(registry, db_session, rng):
+    """Иначе чужой профиль можно было бы «слить» в свой и забрать вместе с ним
+    отпечатки голоса и реплики чужих встреч."""
+    мой = registry.match_all(db_session, unit(rng.standard_normal(DIM)),
+                             mic_dominant=False, owner_id=1)
+    чужой = registry.match_all(db_session, unit(rng.standard_normal(DIM)),
+                               mic_dominant=False, owner_id=2)
+    with pytest.raises(ValueError, match="не найден"):
+        registry.merge(db_session, мой.speaker_id, чужой.speaker_id, owner_id=1)
+
+
+def test_чужой_отпечаток_не_удаляется(registry, db_session, rng):
+    чужой = registry.match_all(db_session, unit(rng.standard_normal(DIM)),
+                               mic_dominant=False, owner_id=2)
+    отпечаток = registry.prints_of(чужой.speaker_id, owner_id=2)[0]
+    assert registry.remove_print(db_session, чужой.speaker_id, отпечаток.id, owner_id=1) is False
+    assert registry.remove_print(db_session, чужой.speaker_id, отпечаток.id, owner_id=2) is True

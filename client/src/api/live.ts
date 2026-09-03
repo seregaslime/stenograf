@@ -1,4 +1,4 @@
-import { getServerUrl } from "../store";
+import { getServerUrl, getToken } from "../store";
 import type { LiveEvent, MeetingMode } from "../types";
 
 export type Channel = 0 | 1; // 0 = микрофон, 1 = системный звук
@@ -19,6 +19,13 @@ export class LiveClient {
       ws.binaryType = "arraybuffer";
       ws.onopen = () => {
         this.ws = ws;
+        // Токен уходит первым кадром, а не заголовком: заголовки браузерному
+        // WebSocket задать нельзя, а в адресе токен попал бы в журналы сервера.
+        // Шлём кадр всегда, даже с пустым токеном: закрытый сервер ответит
+        // отказом сразу, а не через десять секунд ожидания — иначе интерфейс
+        // показывает начавшуюся встречу, и человек всё это время говорит впустую.
+        // Личный сервер этот кадр просто пропустит.
+        this.sendJson({ type: "auth", token: getToken() });
         resolve();
       };
       ws.onerror = () => reject(new Error(`Не удалось подключиться к ${url}`));
