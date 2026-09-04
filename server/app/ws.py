@@ -209,7 +209,7 @@ class LiveSession:
         """Сначала событие, потом закрытие: код 1008 клиент видит числом, а
         человеку нужно сказать словами, что делать."""
         try:
-            await self._send({"type": "error", "message": f"{причина}. Настройки → Токен сервера."})
+            await self._send({"type": "error", "message": f"{причина}. Настройки → Токен доступа."})
             await self._ws.close(code=1008, reason=причина)
         except Exception:  # соединение уже могло отвалиться — это не ошибка
             pass
