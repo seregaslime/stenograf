@@ -138,6 +138,12 @@ class LiveSession:
         self._explicit_in_flight = False
         # Фоновая подсказка живёт своей задачей — чтобы явный запрос мог её снять.
         self._auto_hint_task: Optional[asyncio.Task] = None
+        # То, что человек запросил сам (вопрос, «подсказать сейчас»), — тоже
+        # задачей: иначе ожидание модели останавливает чтение сокета. Держим
+        # множеством, а не одной ссылкой: второй вопрос поверх считающегося
+        # первого затёр бы ссылку на живую задачу, и снять её при конце встречи
+        # стало бы нечем — она дописала бы ответ в закрытый сокет.
+        self._explicit_tasks: set[asyncio.Task] = set()
         self._hint_fail_streak = 0        # ошибок LLM подряд
         self._hint_backoff_until = 0.0    # до этого времени не пробовать (бэкофф)
         self._skip_streak = 0             # сколько раз подряд модель промолчала
@@ -241,12 +247,12 @@ class LiveSession:
         elif kind == "auth":
             pass  # уже проверен до начала сессии; повтор игнорируем
         elif kind == "hint_now":
-            await self._emit_hint(force=True)  # «подсказать сейчас» — в обход триггера
+            self._start_explicit(self._emit_hint(force=True))  # в обход триггера
         elif kind == "ask":
-            await self._answer(
+            self._start_explicit(self._answer(
                 question=str(command.get("question", "")).strip(),
                 segment_ids=command.get("segment_ids") or [],
-            )
+            ))
         else:
             await self._send({"type": "error", "message": f"Неизвестная команда: {kind}"})
 
@@ -459,6 +465,28 @@ class LiveSession:
                 # ради вопроса человека можно было бы только вместе со всем циклом.
                 self._auto_hint_task = asyncio.create_task(self._emit_hint())
                 self._auto_hint_task.add_done_callback(_log_hint_failure)
+
+    def _start_explicit(self, корутина) -> None:
+        """Запускает запрошенное человеком (вопрос, «подсказать сейчас») задачей.
+
+        Ждать ответ прямо в цикле чтения нельзя: пока модель думает, сервер не
+        читает сокет, а клиент продолжает слать аудио встречи. Буфер отправки
+        переполняется, и браузерный движок рвёт соединение сам — человек видит
+        «соединение с сервером прервано» посреди встречи.
+
+        Раньше не всплывало, потому что внешний API отвечает потоком и сокет не
+        простаивает. Локальная модель отвечает одним кадром через десятки секунд
+        (замер 04.09.2026: 45.6 с на qwen3:4b), и такая тишина при непрерывном
+        потоке аудио рвёт связь гарантированно.
+
+        Прошлый запрос не снимаем: у _answer и _emit_hint есть собственная
+        защита («модель ещё отвечает»), и терять начатый ответ ради второго
+        нажатия неправильно — второй просто получит отказ.
+        """
+        задача = asyncio.create_task(корутина)
+        self._explicit_tasks.add(задача)
+        задача.add_done_callback(self._explicit_tasks.discard)
+        задача.add_done_callback(_log_hint_failure)
 
     async def _cancel_auto_hint(self) -> None:
         """Снимает фоновую подсказку ради того, что человек запросил сам.
@@ -728,30 +756,10 @@ class LiveSession:
                 "type": "answer_error", "message": "Модель ещё отвечает на прошлый вопрос…",
             })
             return
-        await self._cancel_auto_hint()
-
-        # Приводим id к целым: клиент может прислать что угодно, а дальше они
-        # уходят в запрос к БД
-        ids = [
-            int(i) for i in segment_ids
-            if isinstance(i, (int, float, str)) and str(i).lstrip("-").isdigit()
-        ]
-        with session_scope() as db:
-            quoted_rows = crud.segments_by_ids(db, self._meeting_id, ids)
-            quoted = "\n".join(
-                f"[{self._mmss(row.start_s)}] "
-                f"{row.speaker.name if row.speaker else 'Неизвестный'}: {row.text}"
-                for row in quoted_rows
-            )
-
-        budget = self._llm.budget
-        earlier = "\n".join(self._recent)[-self._window_chars(budget):]
-        system, prompt = prompts.build_answer_prompt(
-            mode=self._mode, question=question or prompts.ASK_ABOUT_SELECTED,
-            quoted=quoted, earlier=earlier,
-            title=self._meeting_title, participants=self._participants_line(),
-        )
-
+        # Флаги ставим ДО первого await, а подготовку прячем под try/finally:
+        # вопрос обрабатывается отдельной задачей, и два быстрых нажатия иначе
+        # оба прошли бы проверку, а сбой между проверкой и запросом к модели
+        # навсегда оставил бы встречу с «модель ещё отвечает».
         self._hint_in_flight = True
         self._explicit_in_flight = True
 
@@ -765,6 +773,28 @@ class LiveSession:
             })
 
         try:
+            await self._cancel_auto_hint()
+            # Приводим id к целым: клиент может прислать что угодно, а дальше они
+            # уходят в запрос к БД
+            ids = [
+                int(i) for i in segment_ids
+                if isinstance(i, (int, float, str)) and str(i).lstrip("-").isdigit()
+            ]
+            with session_scope() as db:
+                quoted_rows = crud.segments_by_ids(db, self._meeting_id, ids)
+                quoted = "\n".join(
+                    f"[{self._mmss(row.start_s)}] "
+                    f"{row.speaker.name if row.speaker else 'Неизвестный'}: {row.text}"
+                    for row in quoted_rows
+                )
+
+            budget = self._llm.budget
+            earlier = "\n".join(self._recent)[-self._window_chars(budget):]
+            system, prompt = prompts.build_answer_prompt(
+                mode=self._mode, question=question or prompts.ASK_ABOUT_SELECTED,
+                quoted=quoted, earlier=earlier,
+                title=self._meeting_title, participants=self._participants_line(),
+            )
             raw = await self._llm.hint(
                 prompt, system=system, temperature=self._cfg.hints_temperature,
                 on_delta=on_delta,
@@ -837,6 +867,10 @@ class LiveSession:
                 self._hints_task.cancel()
             if self._auto_hint_task:
                 self._auto_hint_task.cancel()  # цикл её уже не снимет: она сама по себе
+            for задача in list(self._explicit_tasks):
+                # Ответ на вопрос переживает конец встречи, если его не снять:
+                # он допишется в закрытый сокет и уронит задачу исключением
+                задача.cancel()
             # Дожимаем недоговорённые фразы и ждём, пока ASR обработает очередь
             if self._segmenter is not None:
                 for mixed in self._mixer.flush():
