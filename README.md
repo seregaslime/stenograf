@@ -292,6 +292,7 @@ ollama pull bge-m3
 | `STENOGRAF_SPEAKER_MATCH_THRESHOLD` | `0.35` | Порог «тот же голос» (косинусная близость, см. `scripts/eval_voices.py`) |
 | `STENOGRAF_SPEAKER_CHANNEL_DOMINANCE` | `2.0` | Во сколько раз канал должен быть громче, чтобы считаться источником голоса |
 | `STENOGRAF_DENOISE` | `off` | Этап чистки шума в конвейере (заготовка) |
+| `STENOGRAF_VERSION` | `dev` | Версия кода в `/api/health`; ставится при сборке образа из git-sha |
 | `STENOGRAF_CORS_ORIGINS` | `null` | Кому браузер разрешит читать ответы, вдобавок к локальным адресам. `null` — собранное приложение (грузится с `file://`) |
 | `STENOGRAF_SEARCH_EMBED_MODEL` | `bge-m3` | Модель эмбеддингов для поиска по встречам (`ollama pull bge-m3`) |
 | `STENOGRAF_SEARCH_CHUNK_CHARS` | `600` | Сколько символов набирать в кусок разговора перед подсчётом вектора |

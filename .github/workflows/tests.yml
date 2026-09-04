@@ -80,19 +80,44 @@ jobs:
 
   # Dockerfile ломается тише всего: тесты зелёные, приложение у Сергея
   # работает, а на сервере организации образ не собирается — и выясняется это
-  # в худший момент. Собираем на каждый PR, но не публикуем: нам нужна
-  # проверка, а не артефакт.
+  # в худший момент. Поэтому собираем на каждый пул-реквест.
+  #
+  # По мержу в main образ ещё и публикуется. Раньше он собирался и
+  # выбрасывался, а на сервере собирался заново — при 1.8 ГБ доступной памяти,
+  # где pip ставит torch. Это была ставка на удачу вместо процедуры
+  # обновления; теперь машина тянет готовое.
   image:
     name: Docker-образ сервера
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+
+      # Логинимся только когда собираемся публиковать: на форках и в
+      # пул-реквестах прав на пакеты нет, и шаг упал бы на ровном месте.
+      - name: Вход в реестр
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Сборка
         uses: docker/build-push-action@v6
         with:
           context: server
-          push: false
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          # Два тега намеренно: latest — то, что тянет update.sh, sha —
+          # то, на что откатываются, когда latest оказался плохим.
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/stenograf-server:latest
+            ghcr.io/${{ github.repository_owner }}/stenograf-server:${{ github.sha }}
+          build-args: |
+            STENOGRAF_VERSION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

@@ -138,7 +138,18 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Стенограф API", version="0.1.0", lifespan=lifespan)
+def _версия() -> str:
+    """Версия для API: полный git-sha режем до семи знаков.
+
+    Сорок шестнадцатеричных символов в строке состояния читать невозможно, а
+    семи хватает, чтобы найти коммит. Всё, что не похоже на sha (например
+    «dev» при локальном запуске), отдаём как есть.
+    """
+    v = settings.version.strip()
+    return v[:7] if len(v) == 40 and all(c in "0123456789abcdef" for c in v.lower()) else v
+
+
+app = FastAPI(title="Стенограф API", version=_версия(), lifespan=lifespan)
 
 # Что отвечает без токена. Только состояние сервера — по нему видно, жив ли он,
 # ещё до того как человек ввёл токен, и это единственная причина исключения.
