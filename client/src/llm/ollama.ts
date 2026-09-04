@@ -122,12 +122,12 @@ export class OllamaClient {
       input: texts,
       keep_alive: this.opts.keepAlive ?? "30m",
     }, model);
-    const векторы = data.embeddings ?? [];
-    if (векторы.length !== texts.length) {
+    const vectors = data.embeddings ?? [];
+    if (vectors.length !== texts.length) {
       throw new LlmError(
-        `Модель вернула ${векторы.length} векторов на ${texts.length} текстов — она не для эмбеддингов?`,
+        `Модель вернула ${vectors.length} векторов на ${texts.length} текстов — она не для эмбеддингов?`,
       );
     }
-    return векторы;
+    return vectors;
   }
 }
