@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import { buildAnswerPrompt, ASK_ABOUT_SELECTED } from "./answer";
 import { buildHintPrompt, parseHint } from "./hint";
 import { buildProtocolPrompt } from "./protocol";
+import { buildSearchAnswerPrompt } from "./searchAnswer";
 import { buildTranscript, splitByLines } from "../transcript";
 import type { SegmentDto } from "../../types";
 import golden from "./server-golden.json";
@@ -136,4 +137,12 @@ describe("разбор ответа модели совпадает с серв�
       expect(parseHint(сырое)).toBe(ожидание);
     },
   );
+});
+
+describe("промпт ответа по прошлым встречам совпадает с серверным", () => {
+  it.each(golden.search_answer.map((с, i) => [i, с] as const))("случай %i", (_i, случай) => {
+    const результат = buildSearchAnswerPrompt(случай.question, случай.found);
+    expect(результат.system).toBe(случай.system);
+    expect(результат.prompt).toBe(случай.prompt);
+  });
 });
