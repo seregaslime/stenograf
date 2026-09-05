@@ -34,6 +34,12 @@ export const MEETING_MODE_LABELS: Record<MeetingMode, string> = {
   negotiation: "Переговоры",
 };
 
+/** Ответ на сохранение протокола, составленного клиентом. */
+export interface SummarySaved {
+  status: "live" | "summarizing" | "done";
+  has_summary: boolean;
+}
+
 export interface MeetingDetail {
   id: number;
   title: string;

@@ -522,6 +522,47 @@ async def summarize_meeting(meeting_id: int, request: Request):
     return {"status": "summarizing"}
 
 
+class SummaryBody(BaseModel):
+    """Готовый протокол от клиента: он теперь считает его сам.
+
+    Ошибку принимаем тем же эндпоинтом, а не молчанием: если у человека не
+    ответила модель, встреча должна показывать причину, а не вечное
+    «составляется» — раньше это писал сервер, потому что считал он же.
+    """
+    text: str | None = None
+    error: str | None = None
+    model: str | None = None
+
+
+@app.post("/api/meetings/{meeting_id}/summary")
+def save_summary(meeting_id: int, body: SummaryBody, request: Request):
+    """Принимает протокол, составленный клиентом.
+
+    Проверка владельца здесь не формальность: без неё любой, у кого есть токен,
+    подписал бы чужой встрече любой текст — а протокол читают те, кого на
+    встрече не было, и проверить его они не смогут.
+    """
+    with session_scope() as db:
+        meeting = crud.meeting_for_owner(db, meeting_id, владелец(request))
+        if meeting is None:
+            raise HTTPException(404, "Встреча не найдена")
+        if meeting.status == "live":
+            raise HTTPException(409, "Встреча ещё идёт")
+        текст = (body.text or "").strip()
+        if not текст and not body.error:
+            raise HTTPException(400, "Нужен текст протокола или причина неудачи")
+        # Успех затирает прошлую ошибку, неудача не затирает прошлый протокол:
+        # неудачная попытка пересоздать не должна стирать то, что уже есть.
+        if текст:
+            meeting.summary = текст
+            meeting.summary_model = (body.model or "").strip() or None
+            meeting.summary_error = None
+        else:
+            meeting.summary_error = body.error
+        meeting.status = "done"
+        return {"status": meeting.status, "has_summary": bool(meeting.summary)}
+
+
 @app.get("/api/meetings/{meeting_id}/export")
 def export_meeting(meeting_id: int, request: Request, fmt: str = "md"):
     with session_scope() as db:

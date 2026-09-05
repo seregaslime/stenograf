@@ -11,6 +11,7 @@ import type {
   SearchAnswer,
   SearchHit,
   SpeakerDto,
+  SummarySaved,
 } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -85,6 +86,14 @@ export const api = {
   meeting: (id: number) => request<MeetingDetail>(`/api/meetings/${id}`),
   deleteMeeting: (id: number) =>
     request<{ deleted: number }>(`/api/meetings/${id}`, { method: "DELETE" }),
+  /** Отдать серверу готовый протокол (его теперь составляет клиент) или
+   *  причину неудачи — чтобы встреча не висела в «составляется» молча. */
+  saveSummary: (id: number, body: { text?: string; error?: string; model?: string }) =>
+    request<SummarySaved>(`/api/meetings/${id}/summary`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   summarize: (id: number) =>
     request<{ status: string }>(`/api/meetings/${id}/summarize`, { method: "POST" }),
   exportUrl: (id: number, fmt: "md" | "txt") =>
