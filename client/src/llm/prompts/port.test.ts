@@ -12,6 +12,8 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { buildAnswerPrompt, ASK_ABOUT_SELECTED } from "./answer";
+import { buildHintPrompt, parseHint } from "./hint";
 import { buildProtocolPrompt } from "./protocol";
 import { buildTranscript, splitByLines } from "../transcript";
 import type { SegmentDto } from "../../types";
@@ -87,4 +89,51 @@ describe("нарезка не рвёт реплики", () => {
   it("предел 0 — не режем вовсе (выгрузка полного транскрипта)", () => {
     expect(splitByLines("а\nб\nв", 0)).toEqual(["а\nб\nв"]);
   });
+});
+
+describe("промпт подсказки совпадает с серверным", () => {
+  it.each(golden.hint.map((с, i) => [i, с] as const))("случай %i", (_i, случай) => {
+    const вход = случай.input as Record<string, unknown>;
+    const результат = buildHintPrompt({
+      mode: вход.mode as string,
+      transcript: вход.transcript as string,
+      previous: вход.previous as string,
+      earlier: вход.earlier as string | undefined,
+      title: вход.title as string | undefined,
+      participants: вход.participants as string | undefined,
+      detailed: вход.detailed as boolean | undefined,
+      allowSkip: вход.allow_skip as boolean | undefined,
+    });
+    expect(результат.system).toBe(случай.system);
+    expect(результат.prompt).toBe(случай.prompt);
+  });
+});
+
+describe("промпт ответа участнику совпадает с серверным", () => {
+  it.each(golden.answer.map((с, i) => [i, с] as const))("случай %i", (_i, случай) => {
+    const вход = случай.input as Record<string, unknown>;
+    const результат = buildAnswerPrompt({
+      mode: вход.mode as string,
+      question: вход.question as string,
+      quoted: вход.quoted as string | undefined,
+      earlier: вход.earlier as string | undefined,
+      title: вход.title as string | undefined,
+      participants: вход.participants as string | undefined,
+    });
+    expect(результат.system).toBe(случай.system);
+    expect(результат.prompt).toBe(случай.prompt);
+  });
+
+  it("вопрос по выделенным репликам сформулирован так же", () => {
+    expect(ASK_ABOUT_SELECTED).toBe(golden.ask_about_selected);
+  });
+});
+
+describe("разбор ответа модели совпадает с серверным", () => {
+  it.each(golden.parse_hint.map((с) => [с.raw, с.result] as const))(
+    "«%s» → %s",
+    (сырое, ожидание) => {
+      expect(parseHint(сырое)).toBe(ожидание);
+    },
+  );
 });
