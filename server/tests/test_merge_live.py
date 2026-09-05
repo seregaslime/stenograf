@@ -1,5 +1,10 @@
 """Объединение спикеров ПОСРЕДИ идущей встречи.
 
+Окно разговора уехало в приложение вместе с подсказками, поэтому проверки про
+переименование строк «Имя: текст» отсюда удалены — их место теперь в клиенте.
+Осталось то, что относится к диаризации: донор коротких реплик, недавний
+говоривший и счётчик участников.
+
 Слияние приходит по REST (страница «Спикеры» открыта окном поверх встречи), а
 живая сессия держит id спикеров в памяти. Профиль-источник при этом удаляется из
 базы, и без уведомления сессия продолжала бы им пользоваться.
@@ -16,10 +21,7 @@ from app.ws import LiveSession, notify_speakers_merged
 
 
 def _session(cfg):
-    s = LiveSession(
-        ws=None, cfg=cfg, transcriber=None, embedder=None,
-        registry=None, llm=None, on_meeting_ended=lambda mid: None,
-    )
+    s = LiveSession(ws=None, cfg=cfg, transcriber=None, embedder=None, registry=None)
     s._meeting_id = 1
     return s
 
@@ -34,7 +36,6 @@ def session(cfg):
     s._participants.update({3: 12, 5: 4})
     s._recent_speakers.update({3: 10.0, 5: 20.0})
     s._last_by_channel["mic"] = (_match(3, "Спикер 3"), 20.0)
-    s._recent.extend(["Спикер 3: раз", "Спикер 5: два", "Вы: три"])
     return s
 
 
@@ -56,13 +57,6 @@ def test_participants_do_not_split_in_two(session):
 
     assert 3 not in session._participants
     assert session._participants[5] == 16
-
-
-def test_window_speaks_with_one_name(session):
-    """Окно разговора переписывается: два имени одного человека сбивают модель."""
-    session.on_speakers_merged(3, 5, "Иван", ["Спикер 3", "Спикер 5"])
-
-    assert list(session._recent) == ["Иван: раз", "Иван: два", "Вы: три"]
 
 
 def test_recent_prior_forgets_the_deleted_speaker(session):
@@ -96,27 +90,3 @@ def test_notify_reaches_only_running_meetings(cfg):
     assert finished._participants[3] == 2  # её никто не трогал
 
 
-def test_чужая_сессия_уведомление_не_получает(cfg):
-    """Окно разговора правится по ИМЕНИ спикера, поэтому объединение своего
-    «Ивана» переименовало бы строки в чужой идущей встрече, где есть однофамилец
-    — а эти строки уходят в промпт подсказок."""
-    моя = _session(cfg)
-    моя._user_id = 1
-    моя._participants.update({3: 5})
-    моя._recent.append("Иван: моя реплика")
-
-    чужая = _session(cfg)
-    чужая._user_id = 2
-    чужая._participants.update({3: 7})
-    чужая._recent.append("Иван: чужая реплика")
-
-    from app import ws as ws_mod
-    ws_mod._LIVE_SESSIONS.update({моя, чужая})
-    try:
-        notify_speakers_merged(3, 9, "Иван Петров", ["Иван"], owner_id=1)
-    finally:
-        ws_mod._LIVE_SESSIONS.difference_update({моя, чужая})
-
-    assert list(моя._recent) == ["Иван Петров: моя реплика"]
-    assert list(чужая._recent) == ["Иван: чужая реплика"]  # чужого не тронули
-    assert чужая._participants[3] == 7

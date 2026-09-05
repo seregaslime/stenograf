@@ -128,15 +128,14 @@ def test_чужой_голос_не_найден(client, двое):
                          headers=заголовки).status_code == 404
 
 
-def test_поиск_не_видит_чужих_встреч(client, двое, monkeypatch):
-    """Поиск идёт по векторам, но фильтр владельца стоит до похода к модели:
-    чужие куски не попадают ни в выдачу, ни в индексацию."""
-    async def без_модели(db, cfg, texts=None, *args, **kwargs):
-        raise AssertionError("до модели дойти не должно: своих встреч нет")
+def test_поиск_не_видит_чужих_встреч(client, двое):
+    """Фильтр владельца стоит и в выдаче, и в списке на индексацию: чужую
+    встречу нельзя ни найти, ни увидеть в очереди на подсчёт векторов."""
+    заголовки = {"Authorization": f"Bearer {двое['сергей']}"}
+    найдено = client.post("/api/search/query", json={
+        "model": "bge-m3", "vector": [1.0, 0.0, 0.0],
+    }, headers=заголовки).json()["results"]
+    assert найдено == []
 
-    from app import search as search_mod
-    monkeypatch.setattr(search_mod, "index_meeting", без_модели)
-    ответ = client.get("/api/search?q=сроки",
-                       headers={"Authorization": f"Bearer {двое['сергей']}"})
-    assert ответ.status_code == 200
-    assert ответ.json()["results"] == []
+    ждут = client.get("/api/search/pending?model=bge-m3", headers=заголовки).json()["meetings"]
+    assert all(m["meeting_id"] != двое["встреча_куратора"] for m in ждут)

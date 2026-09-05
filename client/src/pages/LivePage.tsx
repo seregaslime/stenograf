@@ -3,6 +3,10 @@ import { useEffect, useRef, useState } from "react";
 import type { Page } from "../App";
 import { LiveClient } from "../api/live";
 import { api } from "../api/rest";
+import { HintEngine } from "../llm/hints";
+import { LlmRouter } from "../llm/router";
+import { llmReady, loadLlmSettings } from "../llm/settings";
+import { mmss } from "../llm/transcript";
 import {
   AudioEngine,
   type CaptureHandle,
@@ -104,6 +108,12 @@ export default function LivePage({
   // сообщение, когда придёт итог. Мысли отдельно — их место под спойлером.
   const [draft, setDraft] = useState<{ text: string; reasoning: string } | null>(null);
   const [hintDraft, setHintDraft] = useState("");
+  // Подсказки ведёт приложение: у него адрес модели, ключ и лимиты. Сервер
+  // остался конвейером звука и про модели больше ничего не знает.
+  const hintsRef = useRef<HintEngine | null>(null);
+  // Та же лента, но в ref: колбэки движка переживают перерисовку и из state
+  // видели бы устаревшее значение.
+  const segmentsRef = useRef<SegmentDto[]>([]);
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   const [pickedIds, setPickedIds] = useState<Set<number>>(new Set());
@@ -191,6 +201,48 @@ export default function LivePage({
     // Выделенные реплики не трогаем: у них свои id, слияние спикеров их не меняет.
   }
 
+  /** Участники и число их реплик — уходит в шапку промпта. */
+  function participantsLine(): string {
+    const счёт = new Map<string, number>();
+    for (const s of segmentsRef.current) {
+      const имя = s.speaker?.name ?? "Неизвестный";
+      счёт.set(имя, (счёт.get(имя) ?? 0) + 1);
+    }
+    return [...счёт.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([имя, n]) => `${имя} (${n} реплик)`)
+      .join(", ");
+  }
+
+  function createHintEngine(title: string): HintEngine | null {
+    const settings = loadLlmSettings();
+    if (!llmReady(settings)) {
+      setHintError("Модель не настроена: укажите её в настройках приложения.");
+      return null;
+    }
+    const engine = new HintEngine({
+      llm: new LlmRouter(settings),
+      mode: meetingMode,
+      title,
+      participants: participantsLine,
+      onHint: (text) => {
+        setHintError("");
+        setHintDraft("");
+        setHintList((previous) => [
+          ...previous,
+          { text, at: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) },
+        ]);
+      },
+      onError: (message) => setHintError(message),
+      onDelta: (chunk) => {
+        setHintError("");
+        setHintDraft((previous) => previous + chunk);
+      },
+    });
+    engine.enabled = hintsWanted;
+    return engine;
+  }
+
   function ask() {
     const text = question.trim();
     if ((!text && pickedIds.size === 0) || asking) return;
@@ -198,10 +250,44 @@ export default function LivePage({
     // в истории встреч (HistoryPage)
     const shown = text || `Объясни выделенное — реплик: ${pickedIds.size}`;
     setChatLog((previous) => [...previous, { role: "you", text: shown }]);
-    clientRef.current?.ask(text, [...pickedIds]);
+    // Реплики разрешаем в текст здесь: раньше это делал сервер по их номерам,
+    // но лента уже перед глазами — ходить за ней некуда.
+    const quoted = segmentsRef.current
+      .filter((s) => pickedIds.has(s.id))
+      .map((s) => `[${mmss(s.start_s)}] ${s.speaker?.name ?? "Неизвестный"}: ${s.text}`)
+      .join("\n");
     setQuestion("");
     setPickedIds(new Set()); // выделение одноразовое: вопрос задан, лента снова живая
     setAsking(true);
+    void askModel(text, quoted);
+  }
+
+  /** Спрашивает модель и кладёт ответ в переписку. */
+  async function askModel(text: string, quoted: string): Promise<void> {
+    const engine = hintsRef.current;
+    if (!engine) {
+      setChatLog((previous) => [...previous, { role: "model", text: "⚠ Модель не настроена" }]);
+      setAsking(false);
+      return;
+    }
+    setDraft({ text: "", reasoning: "" });
+    try {
+      const ответ = await engine.answer(text, quoted, (chunk) =>
+        setDraft((previous) => ({
+          text: (previous?.text ?? "") + chunk,
+          reasoning: previous?.reasoning ?? "",
+        })),
+      );
+      setChatLog((previous) => [
+        ...previous,
+        { role: "model", text: ответ, reasoning: draftRef.current?.reasoning },
+      ]);
+    } catch (exc) {
+      setChatLog((previous) => [...previous, { role: "model", text: `⚠ ${(exc as Error).message}` }]);
+    } finally {
+      setDraft(null);
+      setAsking(false);
+    }
   }
 
   function onChatScroll() {
@@ -231,69 +317,45 @@ export default function LivePage({
     setSysActive(false);
   }
 
-  function finish(meetingId: number | null) {
+  function finish(meetingId: number | null, summarize = false) {
     if (finishedRef.current) return;
     finishedRef.current = true;
     cleanup();
     setPhase("setup");
-    if (meetingId != null) navigate({ name: "meeting", id: meetingId });
+    // Протокол считает приложение, поэтому «составить по завершении» — это
+    // просьба к странице встречи, а не к серверу.
+    if (meetingId != null) navigate({ name: "meeting", id: meetingId, autosummarize: summarize });
   }
+
+  // Цикл подсказок раньше крутился на сервере; теперь тикаем сами. Три секунды —
+  // как и было: движок сам решает, дёргать модель или ещё рано.
+  useEffect(() => {
+    if (phase !== "live") return;
+    const timer = setInterval(() => void hintsRef.current?.tick(), 3000);
+    return () => clearInterval(timer);
+  }, [phase]);
 
   function onEvent(event: LiveEvent) {
     switch (event.type) {
       case "ready":
         meetingIdRef.current = event.meeting_id;
         setLiveTitle(event.title);
+        hintsRef.current = createHintEngine(event.title);
         void startCaptures();
         break;
       case "segment":
+        segmentsRef.current = [...segmentsRef.current, event.segment];
         setSegments((previous) => [...previous, event.segment]);
+        // Движку нужна та же лента, что видит человек: он по ней и решает,
+        // есть ли что сказать.
+        hintsRef.current?.push(
+          event.segment.speaker?.name ?? "Неизвестный",
+          event.segment.text,
+        );
         break;
-      case "hint_delta":
-        setHintError("");
-        setHintDraft((previous) => previous + event.text);
-        break;
-      case "hint":
-        setHintError(""); // подсказка пришла — снимаем баннер прошлой ошибки
-        setHintDraft("");
-        setHintList((previous) => [
-          ...previous,
-          { text: event.text, at: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) },
-        ]);
-        break;
-      case "hint_error":
-        setHintError(event.message);
-        break;
-      case "answer_delta":
-        setDraft((previous) => ({
-          text: (previous?.text ?? "") + event.text,
-          reasoning: previous?.reasoning ?? "",
-        }));
-        break;
-      case "answer_reasoning":
-        setDraft((previous) => ({
-          text: previous?.text ?? "",
-          reasoning: (previous?.reasoning ?? "") + event.text,
-        }));
-        break;
-      case "answer":
-        setAsking(false);
-        setChatLog((previous) => [
-          ...previous,
-          { role: "model", text: event.text, reasoning: draftRef.current?.reasoning },
-        ]);
-        setDraft(null);
-        break;
-      case "answer_error":
-        setAsking(false);
-        setDraft(null);
-        setChatLog((previous) => [
-          ...previous,
-          { role: "model", text: `⚠ ${event.message}` },
-        ]);
-        break;
+
       case "stopped":
-        finish(event.meeting_id);
+        finish(event.meeting_id, event.summarize);
         break;
       case "error":
         setError(event.message);
@@ -341,6 +403,7 @@ export default function LivePage({
     setWarning("");
     setHintError("");
     setSegments([]);
+    segmentsRef.current = [];
     setHintList([]);
     setHintsOn(hintsWanted); // стартовое состояние тумблера = выбор на экране настройки
     setElapsed(0);
@@ -380,7 +443,6 @@ export default function LivePage({
     client.start({
       title: title.trim() || "Встреча",
       record_audio: recordAudio,
-      hints: hintsWanted,
       summarize: summarizeWanted,
       meeting_mode: meetingMode,
     });
@@ -641,13 +703,13 @@ export default function LivePage({
                 checked={hintsOn}
                 onChange={(event) => {
                   setHintsOn(event.target.checked);
-                  clientRef.current?.setHints(event.target.checked);
+                  if (hintsRef.current) hintsRef.current.enabled = event.target.checked;
                 }}
               />
               <span className="box">✓</span>
               Включены
             </label>
-            <button className="btn small" onClick={() => clientRef.current?.requestHint()}>
+            <button className="btn small" onClick={() => void hintsRef.current?.emit(true)}>
               Подсказать сейчас
             </button>
           </div>

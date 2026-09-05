@@ -50,7 +50,6 @@ export class LiveClient {
   start(options: {
     title: string;
     record_audio: boolean;
-    hints: boolean;
     summarize: boolean;
     meeting_mode: MeetingMode;
   }): void {
@@ -59,21 +58,6 @@ export class LiveClient {
 
   stop(): void {
     this.sendJson({ type: "stop" });
-  }
-
-  setHints(enabled: boolean): void {
-    this.sendJson({ type: "hints", enabled });
-  }
-
-  /** «Подсказать сейчас» — мгновенная подсказка по запросу, в обход таймера. */
-  requestHint(): void {
-    this.sendJson({ type: "hint_now" });
-  }
-
-  /** Вопрос модели. segmentIds — реплики, на которые показал участник:
-   *  они уйдут в промпт как «вопрос про них», остальной разговор — контекстом. */
-  ask(question: string, segmentIds: number[] = []): void {
-    this.sendJson({ type: "ask", question, segment_ids: segmentIds });
   }
 
   sendAudio(channel: Channel, pcm: ArrayBuffer): void {

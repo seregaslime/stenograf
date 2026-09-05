@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { Page } from "../App";
 import { api } from "../api/rest";
 import { formatTime } from "../components/Transcript";
+import { LlmRouter } from "../llm/router";
+import { answerByFragments, indexPending, searchMeetings, type SearchApi } from "../llm/search";
+import { loadLlmSettings, llmReady } from "../llm/settings";
 import type { SearchHit, MeetingListItem } from "../types";
 
 const STATUS_LABEL: Record<MeetingListItem["status"], string> = {
@@ -60,20 +63,36 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
     void load();
   }, []);
 
+  /** Сервер умеет отдать неиндексированное, принять векторы и сравнить их. */
+  const searchApi: SearchApi = {
+    pending: (model) => api.searchPending(model),
+    index: (body) => api.searchIndex(body),
+    query: (body) => api.searchQuery(body),
+  };
+
   async function find() {
     const текст = query.trim();
     if (!текст) {
       setHits(null);
       return;
     }
+    const settings = loadLlmSettings();
+    if (!llmReady(settings)) {
+      setSearchError("Модель не настроена: укажите её в настройках приложения.");
+      return;
+    }
     setSearching(true);
     setSearchError("");
     setAnswer("");
     try {
-      // Первый запрос после новой встречи заодно её индексирует — он дольше
-      const { results } = await api.search(текст);
+      // Первый запрос после новой встречи заодно её индексирует — он дольше.
+      // Векторы считает приложение: у каждого своя модель эмбеддингов.
+      await indexPending(searchApi, settings, settings.embedModel);
+      const results = await searchMeetings(
+        searchApi, settings, settings.embedModel, текст,
+      );
       setHits(results);
-      if (results.length) void ask(текст);
+      if (results.length) void ask(текст, results);
     } catch (exc) {
       setSearchError((exc as Error).message);
       setHits(null);
@@ -83,14 +102,13 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
   }
 
   /** Ответ модели вторым шагом: цитаты уже на экране, их читают, пока она думает. */
-  async function ask(текст: string) {
+  async function ask(текст: string, results: SearchHit[]) {
     ждём.current = текст;
     setAnswering(true);
     try {
-      const итог = await api.searchAnswer(текст);
+      const ответ = await answerByFragments(new LlmRouter(loadLlmSettings()), текст, results);
       if (ждём.current !== текст) return;  // пока думали, спросили другое
-      setAnswer(итог.answer);
-      setHits(итог.results);
+      setAnswer(ответ);
     } catch (exc) {
       if (ждём.current !== текст) return;
       // Цитаты уже показаны и сами по себе полезны — ошибку ответа показываем

@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/rest";
+import { OllamaClient } from "../llm/ollama";
+import { OpenAiClient } from "../llm/openai";
+import { loadLlmSettings, saveLlmSettings } from "../llm/settings";
 import { DEFAULT_SERVER_URL, getSetting, isDebugMode, platform, setSetting } from "../store";
-import type { AsrStateDto, HealthDto, LlmModelInfo, LlmStateDto } from "../types";
+import type { AsrStateDto, HealthDto, LlmModelInfo } from "../types";
 
 const ENGINE_LABELS: Record<string, string> = {
   faster_whisper: "CPU (faster-whisper)",
@@ -25,6 +28,10 @@ const MODEL_HINTS: Record<string, string> = {
   v3_e2e_ctc: "быстрее, с пунктуацией (только русский)",
 };
 
+/** Единственный поддерживаемый провайдер API: только он сообщает размер
+ *  контекста модели, без которого нельзя отсеять непригодные. */
+const API_BASE_URL_DEFAULT = "https://api.groq.com/openai/v1";
+
 export default function SettingsPage({ onServerChange }: { onServerChange: () => void }) {
   const [url, setUrl] = useState(getSetting("serverUrl", DEFAULT_SERVER_URL));
   const [token, setToken] = useState(getSetting("serverToken"));
@@ -40,7 +47,8 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
   const [applying, setApplying] = useState(false);
   const unmounted = useRef(false);
 
-  const [llm, setLlm] = useState<LlmStateDto | null>(null);
+  const [tpmLimits, setTpmLimits] = useState<Record<string, number>>({});
+  const [embedModel, setEmbedModel] = useState("bge-m3");
   const [provider, setProvider] = useState<"local" | "api">("local");
   const [llmError, setLlmError] = useState("");
   const [applyingLlm, setApplyingLlm] = useState(false);
@@ -61,7 +69,6 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
   const [localSummaryModel, setLocalSummaryModel] = useState("");
   const [localHintsModel, setLocalHintsModel] = useState("");
   // Роль модели для ответов по прошлым встречам — общая для обоих провайдеров
-  const [searchAnswerModel, setSearchAnswerModel] = useState("summary");
 
   async function test() {
     setTesting(true);
@@ -130,29 +137,6 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     }
   }
 
-  function fillLlmForm(state: LlmStateDto) {
-    setProvider(state.provider);
-    // Ничего не сохранено — подставляем адрес поддерживаемого провайдера,
-    // чтобы не заставлять человека печатать его руками
-    setBaseUrl(state.api_base_url || state.api_base_url_default || "");
-    // именно API-модели: при активном local здесь не должны оказаться имена Ollama
-    setSummaryModel(state.api_summary_model ?? "");
-    setHintsModel(state.api_hints_model ?? "");
-    setApiKey(""); // ключ с сервера не приходит — пустое поле = «оставить прежний»
-    setOllamaUrl(state.ollama_url ?? "");
-    setLocalSummaryModel(state.local_summary_model ?? "");
-    setLocalHintsModel(state.local_hints_model ?? "");
-    setSearchAnswerModel(state.search_answer_model || "summary");
-    // models из status() — это модели АКТИВНОГО провайдера, и класть их надо
-    // в свой список: у api они уже отфильтрованы по пригодности, у local это
-    // просто скачанные Ollama. Свалив их в одну переменную, мы бы показывали
-    // имена qwen3 в списке моделей API сразу после переключения провайдера.
-    const модели = state.models ?? [];
-    setApiModels(state.provider === "api" ? модели : []);
-    setLocalModels(state.provider === "local" ? модели : []);
-    setModelsInfo(state.models_info ?? []);
-    setModelsRejected(state.models_rejected ?? 0);
-  }
 
   /** «llama-3.3-70b — 131k контекст · 8k токенов/мин».
    *
@@ -163,7 +147,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
    *  сохранении настроек. */
   function modelLabel(id: string): string {
     const context = modelsInfo.find((m) => m.id === id)?.context_window;
-    const tpm = llm?.api_tpm_limits?.[id];
+    const tpm = tpmLimits[id];
     const parts = [
       context ? `${Math.round(context / 1024)}k контекст` : "",
       tpm ? `${Math.round(tpm / 1000)}k токенов/мин` : "",
@@ -171,23 +155,37 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     return parts.length ? `${id} — ${parts.join(" · ")}` : id;
   }
 
-  async function refreshLlm(resetSelect: boolean) {
-    try {
-      const state = await api.llm();
-      setLlm(state);
-      if (resetSelect) fillLlmForm(state);
-      return state;
-    } catch {
-      setLlm(null); // старый сервер без /api/llm — карточку просто не показываем
-      return null;
+  /**
+   * Настройки моделей читаются из приложения, а не с сервера: он про модели
+   * больше ничего не знает — ни адреса, ни ключа, ни выбора.
+   */
+  function refreshLlm(resetSelect: boolean) {
+    const s = loadLlmSettings();
+    if (resetSelect) {
+      setProvider(s.provider);
+      setBaseUrl(s.apiBaseUrl || API_BASE_URL_DEFAULT);
+      setSummaryModel(s.apiSummaryModel);
+      setHintsModel(s.apiHintsModel);
+      setApiKey(s.apiKey);
+      setOllamaUrl(s.ollamaUrl);
+      setLocalSummaryModel(s.localSummaryModel);
+      setLocalHintsModel(s.localHintsModel);
+      setEmbedModel(s.embedModel);
     }
+    setTpmLimits(s.tpmLimits ?? {});
+    return s;
   }
 
   async function probeLocal() {
     setProbing(true);
     setProbeError("");
     try {
-      const res = await api.probeOllama(ollamaUrl.trim());
+      // Спрашиваем саму Ollama: сервер посредником больше не работает
+      // Пустой список бывает и у живой Ollama (модели не скачаны), поэтому
+      // «отвечает» и «есть модели» — разные вопросы, и спрашиваем их отдельно.
+      const client = new OllamaClient({ url: ollamaUrl.trim() });
+      const models = await client.models();
+      const res = { models, reachable: models.length > 0 || (await client.reachable()) };
       setLocalModels(res.models);
       if (!res.reachable) {
         setProbeError("Ollama по этому адресу не отвечает — проверьте, что она запущена.");
@@ -214,14 +212,15 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     setProbing(true);
     setProbeError("");
     try {
-      const res = await api.probeModels(baseUrl.trim(), apiKey || undefined);
-      if (!res.reachable) {
-        setProbeError("API недоступен или отклонил ключ — проверьте адрес и ключ.");
-        return;
-      }
+      // Спрашиваем провайдера сами: ключ на сервер не уходит вовсе
+      const пригодные = await new OpenAiClient({
+        baseUrl: baseUrl.trim(),
+        apiKey: apiKey || loadLlmSettings().apiKey,
+      }).models();
+      const res = { models: пригодные.map((m) => m.id) };
       setApiModels(res.models);
-      setModelsInfo(res.models_info ?? []);
-      setModelsRejected(res.models_rejected ?? 0);
+      setModelsInfo(пригодные.map((m) => ({ id: m.id, context_window: m.context ?? 0 })));
+      setModelsRejected(0);
       if (!res.models.length) {
         setProbeError(
           "Подходящих моделей не нашлось: у всех либо слишком маленькое контекстное " +
@@ -244,22 +243,31 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     setApplyingLlm(true);
     setLlmError("");
     try {
-      const state = await api.setLlm({
+      saveLlmSettings({
         provider,
-        api_base_url: baseUrl.trim(),
-        api_key: apiKey || undefined, // пусто — сервер оставит сохранённый ключ
-        summary_model: summaryModel,
-        hints_model: hintsModel,
-        ollama_url: ollamaUrl.trim(),
-        local_summary_model: localSummaryModel,
-        local_hints_model: localHintsModel,
-        search_answer_model: searchAnswerModel,
+        ollamaUrl: ollamaUrl.trim(),
+        localSummaryModel,
+        localHintsModel,
+        apiBaseUrl: baseUrl.trim(),
+        ...(apiKey ? { apiKey } : {}), // пусто — не затираем уже сохранённый
+        apiSummaryModel: summaryModel,
+        apiHintsModel: hintsModel,
+        embedModel: embedModel.trim() || "bge-m3",
       });
-      setLlm(state);
-      fillLlmForm(state);
+      // Лимит токенов в минуту меряем сразу: иначе первая же встреча пойдёт с
+      // бюджетом наугад и выяснит его, упершись в отказ провайдера.
+      if (provider === "api" && summaryModel) {
+        const client = new OpenAiClient({ baseUrl: baseUrl.trim(), apiKey: loadLlmSettings().apiKey });
+        const лимит = await client.tokenLimit(summaryModel);
+        if (лимит) {
+          const обновлённые = { ...loadLlmSettings().tpmLimits, [summaryModel]: лимит };
+          saveLlmSettings({ tpmLimits: обновлённые });
+          setTpmLimits(обновлённые);
+        }
+      }
+      refreshLlm(false);
     } catch (exc) {
       setLlmError((exc as Error).message);
-      if (llm) setProvider(llm.provider); // сервер отклонил выбор — вернуть селект
     } finally {
       setApplyingLlm(false);
     }
@@ -273,7 +281,10 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
   return (
     <div className="content">
       <h1>Настройки</h1>
-      <p className="page-sub">Клиент лёгкий — все модели работают на сервере.</p>
+      <p className="page-sub">
+        Сервер распознаёт речь и хранит встречи. Модель языка — своя у каждого:
+        её адрес и ключ живут здесь, в приложении.
+      </p>
 
       <div className="card settings-block">
         <h2 style={{ marginBottom: 12 }}>Сервер распознавания</h2>
@@ -346,18 +357,6 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
                   : "грузится…"}
               </span>
             </div>
-            <div className="kv">
-              <span className="k">Локальная LLM (Ollama)</span>
-              <span>
-                {health.ollama?.reachable
-                  ? `доступна · ${health.ollama.models.length ? health.ollama.models.join(", ") : "нет моделей"}`
-                  : "недоступна — резюме работать не будет"}
-              </span>
-            </div>
-            <div className="kv">
-              <span className="k">Модель резюме</span>
-              <span>{health.summary_model}</span>
-            </div>
           </div>
         )}
       </div>
@@ -424,7 +423,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
         </div>
       )}
 
-      {llm && (
+      {(
         <div className="card settings-block">
           <h2 style={{ marginBottom: 12 }}>Модель для подсказок и резюме</h2>
           <label className="field">
@@ -539,7 +538,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
                   type="password"
                   value={apiKey}
                   onChange={(event) => setApiKey(event.target.value)}
-                  placeholder={llm.api_configured ? "•••• сохранён (оставьте пустым)" : "gsk_…"}
+                  placeholder={apiKey ? "•••• сохранён (оставьте пустым)" : "gsk_…"}
                 />
               </label>
               <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 6 }}>
@@ -610,19 +609,17 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
           )}
 
           <label className="field">
-            <span>Модель для ответов по прошлым встречам</span>
-            <select
+            <span>Модель эмбеддингов для поиска по встречам</span>
+            <input
               className="input"
-              value={searchAnswerModel}
-              onChange={(event) => setSearchAnswerModel(event.target.value)}
-            >
-              <option value="summary">Как для протокола — точнее</option>
-              <option value="hints">Как для подсказок — быстрее</option>
-            </select>
+              value={embedModel}
+              onChange={(event) => setEmbedModel(event.target.value)}
+              placeholder="bge-m3"
+            />
             <span className="hint">
-              Поиск по истории встреч отдаёт найденное модели, и она отвечает по
-              нему. Модель протокола обычно крупнее: на локальной машине ответ
-              занимает втрое больше времени (замер на M3: 36 секунд против 13)
+              Считается локальной Ollama даже при выбранном внешнем API: это не
+              разговорная модель, у провайдеров она тарифицируется отдельно.
+              Скачать: <code>ollama pull bge-m3</code>
             </span>
           </label>
 
@@ -639,17 +636,15 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
                   (!baseUrl.trim() ||
                     !summaryModel ||
                     !hintsModel ||
-                    !(apiKey || llm.api_configured)))
+                    !apiKey))
               }
             >
               {applyingLlm ? <span className="spinner" /> : "Применить"}
             </button>
             <span style={{ color: "var(--muted)", fontSize: 12.5 }}>
-              {llm.provider === "api"
-                ? `сейчас: внешний API${llm.reachable ? " · доступен" : " · недоступен"} · ${
-                    llm.summary_model || "модель не задана"
-                  }`
-                : `сейчас: локальная Ollama${llm.reachable ? " · доступна" : " · недоступна"}`}
+              {provider === "api"
+                ? `сейчас: внешний API · ${summaryModel || "модель не задана"}`
+                : `сейчас: локальная модель · ${localSummaryModel || "модель не задана"}`}
             </span>
           </div>
           <p style={{ color: "var(--muted)", fontSize: 12.5, marginTop: 10 }}>

@@ -94,7 +94,8 @@ def test_здоровье_без_токена_урезано(client, челов�
 def test_здоровье_с_токеном_полное(client, человек):
     тело = client.get("/api/health", headers={"Authorization": f"Bearer {человек}"}).json()
     assert тело["authorized"] is True
-    assert "asr" in тело and "llm" in тело
+    # Про модели языка здоровье не рассказывает вовсе: их держит приложение
+    assert "asr" in тело and "diarization" in тело
 
 
 def test_здоровье_со_слэшем_тоже_открыто(client, человек):

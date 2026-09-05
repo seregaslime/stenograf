@@ -1,20 +1,29 @@
 import { marked } from "marked";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Page } from "../App";
 import { api } from "../api/rest";
 import Transcript from "../components/Transcript";
+import { LlmRouter } from "../llm/router";
+import { loadLlmSettings, llmReady } from "../llm/settings";
+import { generateSummary } from "../llm/summary";
 import { isDebugMode } from "../store";
 import type { MeetingDetail } from "../types";
 
 export default function MeetingPage({
   id,
   navigate,
+  autosummarize = false,
 }: {
   id: number;
   navigate: (page: Page) => void;
+  /** Встречу только что закончили с галочкой «составить протокол». */
+  autosummarize?: boolean;
 }) {
   const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
   const [error, setError] = useState("");
+  // Протокол теперь считает приложение, а не сервер: прогресс по фрагментам
+  // приходит прямо отсюда, а не опросом состояния встречи.
+  const [progress, setProgress] = useState<[number, number] | null>(null);
 
   const load = () =>
     api
@@ -29,7 +38,18 @@ export default function MeetingPage({
     void load();
   }, [id]);
 
-  // Пока сервер составляет резюме — опрашиваем
+  // Протокол сразу после встречи. Ровно один раз: перезаход на страницу или
+  // обновление данных не должны запускать модель заново — она стоит минут.
+  const автозапуск = useRef(false);
+  useEffect(() => {
+    if (!autosummarize || автозапуск.current || !meeting) return;
+    if (meeting.summary || meeting.status !== "done") return;
+    автозапуск.current = true;
+    void resummarize();
+  }, [autosummarize, meeting]);
+
+  // Встречу мог оставить в «составляется» прошлый запуск: сервер больше ничего
+  // не считает, и сама она из этого состояния не выйдет — опрос бы висел вечно.
   useEffect(() => {
     if (meeting?.status !== "summarizing") return;
     const timer = setInterval(load, 4000);
@@ -41,12 +61,46 @@ export default function MeetingPage({
     [meeting?.summary],
   );
 
+  /**
+   * Составляет протокол здесь, в приложении, и отдаёт серверу готовый текст.
+   *
+   * Причину неудачи отправляем туда же: иначе встреча осталась бы без объяснения,
+   * а раньше его писал сервер — потому что считал он же.
+   */
   async function resummarize() {
+    const settings = loadLlmSettings();
+    if (!llmReady(settings)) {
+      setError("Модель не настроена: укажите её в настройках приложения.");
+      return;
+    }
+    if (!meeting) return;
+
+    setError("");
+    setProgress([0, 1]);
     try {
-      await api.summarize(id);
-      await load();
+      const текст = await generateSummary(
+        new LlmRouter(settings),
+        {
+          segments: meeting.segments,
+          title: meeting.title,
+          date,
+          mode: meeting.meeting_mode,
+        },
+        (шаг, всего) => setProgress([шаг, всего]),
+      );
+      await api.saveSummary(id, {
+        text: текст,
+        model: new LlmRouter(settings).modelFor("summary"),
+      });
     } catch (exc) {
-      setError((exc as Error).message);
+      const причина = (exc as Error).message;
+      setError(причина);
+      // Молча проглотить нельзя: встреча должна показывать, почему протокола
+      // нет, а не выглядеть так, будто его и не просили.
+      await api.saveSummary(id, { error: причина }).catch(() => {});
+    } finally {
+      setProgress(null);
+      await load();
     }
   }
 
@@ -82,7 +136,7 @@ export default function MeetingPage({
               ⬇ Экспорт .txt
             </a>
             {meeting.status !== "summarizing" && (
-              <button className="btn small" onClick={resummarize}>
+              <button className="btn small" onClick={resummarize} disabled={progress !== null}>
                 ↻ {meeting.summary ? "Пересоздать резюме" : "Создать резюме"}
               </button>
             )}
@@ -98,18 +152,23 @@ export default function MeetingPage({
             </div>
             <div className="card summary-panel">
               <h2 style={{ marginBottom: 10 }}>Итоги встречи</h2>
-              {meeting.status === "summarizing" && (
+              {progress && (
                 <div className="banner info">
                   <span className="spinner" />{" "}
-                  {meeting.summary_progress ? (
+                  {progress[1] > 1 ? (
                     <>
-                      Встреча длинная — модель разбирает её по фрагментам, шаг{" "}
-                      {meeting.summary_progress[0]} из {meeting.summary_progress[1]}. Между
-                      запросами выдерживается минута, чтобы уложиться в лимит API.
+                      Встреча длинная — модель разбирает её по фрагментам, шаг {progress[0]} из{" "}
+                      {progress[1]}. Не закрывайте приложение: протокол считается здесь.
                     </>
                   ) : (
                     <>Модель составляет протокол — обычно это занимает до пары минут…</>
                   )}
+                </div>
+              )}
+              {!progress && meeting.status === "summarizing" && (
+                <div className="banner warn">
+                  Встреча осталась в состоянии «составляется» с прошлого запуска. Протокол
+                  теперь считает приложение, поэтому нажмите «Создать резюме» ещё раз.
                 </div>
               )}
               {meeting.summary_error && (

@@ -8,44 +8,13 @@ TestClient вызывает приложение внутри процесса (
 Функциональную проверку — систему целиком глазами пользователя — даёт
 tests/test_e2e_live.py: настоящий uvicorn, WebSocket, встреча от аудио до REST.
 """
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main
-from app import config
 from app.db import crud
 from app.db.database import init_db, session_scope
 from app.db.models import Meeting
-from app.llm import ollama_client as ollama_mod
-from app.llm import openai_client as openai_mod
-from app.llm import router as router_mod
-from app.llm.base import LlmError
-
-# Поддерживается только Groq: остальные провайдеры не сообщают контекст модели
-GROQ = "https://api.groq.com/openai/v1"
-
-
-def _mock_openai(monkeypatch, handler):
-    """Подменяет httpx у OpenAI-клиента на MockTransport (без сети)."""
-    real = httpx.AsyncClient
-
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(openai_mod.httpx, "AsyncClient", factory)
-
-
-def _mock_ollama(monkeypatch, handler):
-    """То же для клиента Ollama: /api/tags отвечает мок, а не живой демон."""
-    real = httpx.AsyncClient
-
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(ollama_mod.httpx, "AsyncClient", factory)
 
 
 @pytest.fixture(scope="module")
@@ -105,8 +74,9 @@ def test_health(client):
     body = client.get("/api/health").json()
     assert body["status"] == "ok"
     assert set(body["asr"]) >= {"engine", "model", "loaded"}
-    assert body["llm"]["provider"] in ("local", "api")
-    assert "summary_model" in body and "hints_model" in body
+    # Про модели языка здоровье больше не рассказывает: их адрес и выбор живут
+    # в приложении, сервер о них не знает.
+    assert "llm" not in body and "ollama" not in body
 
 
 def test_asr_state(client):
@@ -114,118 +84,6 @@ def test_asr_state(client):
     body = client.get("/api/asr").json()
     assert body["engine"] and body["model"]
     assert "faster_whisper" in body["models_by_engine"]
-
-
-def test_llm_get(client):
-    """/api/llm отдаёт состояние провайдера LLM — и намеренно не содержит API-ключ."""
-    body = client.get("/api/llm").json()
-    assert body["provider"] in ("local", "api")
-    assert set(body) >= {"provider", "api_configured", "summary_model", "hints_model", "reachable"}
-
-
-def test_llm_set_local_ok(client):
-    """Переключение на локальную модель принимается всегда: ей не нужны ни адрес, ни ключ."""
-    body = client.post("/api/llm", json={"provider": "local"}).json()
-    assert body["provider"] == "local"
-
-
-def test_llm_set_unknown_provider_400(client):
-    """Неизвестный провайдер отклоняется с кодом 400, а не сохраняется молча."""
-    assert client.post("/api/llm", json={"provider": "gguf"}).status_code == 400
-
-
-def test_llm_set_api_unconfigured_400(client, monkeypatch):
-    """Включить внешний API без адреса и ключа нельзя — 400 с объяснением."""
-    monkeypatch.setattr(config.settings, "llm_api_base_url", "")
-    monkeypatch.setattr(config.settings, "llm_api_key", "")
-    assert client.post("/api/llm", json={"provider": "api"}).status_code == 400
-
-
-def test_llm_probe_models(client, monkeypatch):
-    """/api/llm/models запрашивает список моделей по введённым (ещё не сохранённым) кредам — для выпадающего списка в настройках.
-    """
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path.endswith("/models")
-        assert request.headers.get("authorization") == "Bearer probe-key"
-        return httpx.Response(200, json={"data": [{"id": "m1"}, {"id": "m2"}]})
-
-    _mock_openai(monkeypatch, handler)
-    body = client.post(
-        "/api/llm/models",
-        json={"api_base_url": GROQ, "api_key": "probe-key"},
-    ).json()
-    assert body["reachable"] is True
-    assert body["models"] == ["m1", "m2"]
-
-
-def test_llm_get_includes_local_settings(client):
-    """/api/llm отдаёт настройки Ollama — форма показывает их и когда активен api."""
-    body = client.get("/api/llm").json()
-    assert set(body) >= {"ollama_url", "local_summary_model", "local_hints_model"}
-    assert body["ollama_url"].startswith("http")
-
-
-def test_llm_probe_ollama_models(client, monkeypatch):
-    """/api/llm/ollama/models спрашивает список моделей по ещё не сохранённому адресу."""
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/tags"
-        assert request.url.host == "ollama.corp"
-        return httpx.Response(200, json={"models": [{"name": "qwen3:4b"}, {"name": "qwen3:1.7b"}]})
-
-    _mock_ollama(monkeypatch, handler)
-    body = client.post(
-        "/api/llm/ollama/models", json={"ollama_url": "http://ollama.corp:11434"},
-    ).json()
-    assert body["reachable"] is True
-    assert body["models"] == ["qwen3:4b", "qwen3:1.7b"]
-
-
-def test_llm_probe_ollama_bad_url_400(client):
-    """Адрес без схемы http(s) отклоняется до запроса, а не молча превращается в ошибку связи."""
-    response = client.post("/api/llm/ollama/models", json={"ollama_url": "file:///etc/passwd"})
-    assert response.status_code == 400
-
-
-def test_llm_set_local_with_settings(client, monkeypatch):
-    """Адрес Ollama и её модели принимаются из настроек приложения и возвращаются обратно."""
-    monkeypatch.setattr(config.settings, "ollama_url", "http://127.0.0.1:11434")
-    body = client.post("/api/llm", json={
-        "provider": "local",
-        "ollama_url": "http://ollama.corp:11434",
-        "local_summary_model": "qwen3:8b",
-        "local_hints_model": "qwen3:4b",
-    }).json()
-    assert body["ollama_url"] == "http://ollama.corp:11434"
-    assert body["local_summary_model"] == "qwen3:8b"
-
-
-def test_llm_set_local_bad_ollama_url_400(client):
-    """Мусорный адрес Ollama не сохраняется — 400 с объяснением."""
-    response = client.post(
-        "/api/llm", json={"provider": "local", "ollama_url": "просто текст"},
-    )
-    assert response.status_code == 400
-
-
-def test_llm_set_api_with_creds(client, monkeypatch):
-    # креды приходят из настроек приложения (не из .env)
-    """Адрес, ключ и модели принимаются из настроек приложения; ключ в ответе не возвращается.
-    """
-    monkeypatch.setattr(config.settings, "llm_api_base_url", "")
-    monkeypatch.setattr(config.settings, "llm_api_key", "")
-    monkeypatch.setattr(config.settings, "llm_provider", "local")
-    _mock_openai(monkeypatch, lambda r: httpx.Response(200, json={"data": []}))
-    try:
-        body = client.post("/api/llm", json={
-            "provider": "api", "api_base_url": GROQ,
-            "api_key": "secret", "summary_model": "m1", "hints_model": "m2",
-        }).json()
-        assert body["provider"] == "api"
-        assert body["api_base_url"] == GROQ
-        assert body["summary_model"] == "m1" and body["hints_model"] == "m2"
-        assert "api_key" not in body  # ключ клиенту не отдаём
-    finally:
-        config.settings.llm_provider = "local"  # не тащить api в остальные тесты
 
 
 # ------------------------------------------------------------------ meetings
@@ -254,22 +112,6 @@ def test_export_md_and_txt(client, done_meeting):
     assert txt.status_code == 200
     assert txt.headers["content-type"].startswith("text/plain")
     assert "привет коллеги" in txt.text
-
-
-def test_summarize_sets_status(client, done_meeting, monkeypatch):
-    """Запрос протокола переводит встречу в статус summarizing; для несуществующей встречи — 404.
-    """
-    monkeypatch.setattr(main, "_schedule_summary", lambda mid: None)  # не гонять LLM
-    resp = client.post(f"/api/meetings/{done_meeting}/summarize")
-    assert resp.status_code == 200 and resp.json()["status"] == "summarizing"
-    assert client.get(f"/api/meetings/{done_meeting}").json()["status"] == "summarizing"
-    assert client.post("/api/meetings/999999/summarize").status_code == 404
-
-
-def test_summarize_live_conflict(client, live_meeting, monkeypatch):
-    """Составить протокол по ещё идущей встрече нельзя — 409."""
-    monkeypatch.setattr(main, "_schedule_summary", lambda mid: None)
-    assert client.post(f"/api/meetings/{live_meeting}/summarize").status_code == 409
 
 
 def test_delete_meeting(client, done_meeting):
@@ -355,136 +197,5 @@ def test_export_unknown_meeting_404(client):
     assert client.get("/api/meetings/999999/export?fmt=md").status_code == 404
 
 
-def test_llm_probe_rejects_unsupported_host(client):
-    """Чужой провайдер не сообщает размер контекста — принять его значит
-    пустить пользователя выбирать модель вслепую."""
-    resp = client.post("/api/llm/models",
-                       json={"api_base_url": "https://api.openai.com/v1", "api_key": "k"})
-    assert resp.status_code == 400
-    assert "Groq" in resp.json()["detail"]
-
-
-def test_llm_probe_filters_models(client, monkeypatch):
-    """В списке выбора остаются только пригодные модели, негодные посчитаны."""
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"data": [
-            {"id": "good", "context_window": 131072,
-             "input_modalities": ["text"], "output_modalities": ["text"]},
-            {"id": "tiny-context", "context_window": 512,
-             "input_modalities": ["text"], "output_modalities": ["text"]},
-            {"id": "speech-out", "context_window": 131072,
-             "input_modalities": ["text"], "output_modalities": ["speech"]},
-        ]})
-
-    _mock_openai(monkeypatch, handler)
-    body = client.post("/api/llm/models",
-                       json={"api_base_url": GROQ, "api_key": "k"}).json()
-    assert body["models"] == ["good"]
-    assert body["models_rejected"] == 2
-    assert body["models_info"][0]["context_window"] == 131072
-
-
 # ------------------------------------------------------------------ поиск по встречам
 
-def test_search_indexes_and_finds(client, done_meeting, monkeypatch):
-    """/api/search сам индексирует прошедшие встречи и возвращает цитату со ссылкой.
-
-    Индексация ленивая: встречи могли пройти до появления поиска, и требовать
-    от пользователя «нажмите переиндексировать» — значит гарантировать, что
-    поиск у него не заработает.
-    """
-    # Вектор задаётся по содержимому: иначе у всех кусков в общей тестовой базе
-    # он одинаковый, близость у всех единица, и в выдачу попадают случайные пять.
-    async def embed(self, model, texts):
-        return [[1.0, 0.0] if "привет коллеги" in т else [0.0, 1.0] for т in texts]
-
-    monkeypatch.setattr(ollama_mod.OllamaClient, "embed", embed)
-    body = client.get("/api/search", params={"q": "привет коллеги, о чём говорили"}).json()
-    найдено = [r for r in body["results"] if r["meeting_id"] == done_meeting]
-    assert найдено and найдено[0]["text"] == "привет коллеги"
-    assert найдено[0]["meeting_title"] == "Тестовая встреча"
-
-
-def test_search_empty_query_returns_empty(client, monkeypatch):
-    """Пустой запрос не будит модель эмбеддингов — она грузится в память секундами."""
-    async def embed(self, model, texts):
-        raise AssertionError("к модели ходить не должны")
-
-    monkeypatch.setattr(ollama_mod.OllamaClient, "embed", embed)
-    assert client.get("/api/search", params={"q": "  "}).json()["results"] == []
-
-
-@pytest.mark.parametrize("limit", [0, -3, 999])
-def test_search_rejects_absurd_limit(client, limit):
-    """limit вне разумных границ отклоняется на входе.
-
-    Отрицательный особенно коварен: он не падает, а превращает срез в «все
-    результаты, кроме последних трёх» — на большом архиве это мегабайты ответа
-    вместо пяти цитат.
-    """
-    assert client.get("/api/search", params={"q": "бюджет", "limit": limit}).status_code == 422
-
-
-def test_search_without_model_answers_503(client, done_meeting, monkeypatch):
-    """Модель эмбеддингов не скачана — 503 с командой, которая это чинит,
-    а не пустая выдача: пустая выглядит как «ничего не нашлось»."""
-    async def embed(self, model, texts):
-        raise LlmError("Модель «bge-m3» не найдена в Ollama. Скачайте её: `ollama pull bge-m3`.")
-
-    monkeypatch.setattr(ollama_mod.OllamaClient, "embed", embed)
-    response = client.get("/api/search", params={"q": "бюджет"})
-    assert response.status_code == 503
-    assert "ollama pull" in response.json()["detail"]
-
-
-def test_search_answer_returns_answer_with_citations(client, done_meeting, monkeypatch):
-    """/api/search/answer отдаёт ответ модели и фрагменты, по которым он собран.
-
-    Проверяем содержимое цитат, а не конкретную встречу: фикстура done_meeting
-    создаёт свою встречу на каждый тест, все с одним текстом, и какая из
-    одинаково близких попадёт в тройку — не про эту проверку.
-    """
-    async def embed(self, model, texts):
-        return [[1.0, 0.0] if "привет коллеги" in т else [0.0, 1.0] for т in texts]
-
-    async def summarize(self, prompt, system=None, temperature=0.3):
-        assert "привет коллеги" in prompt   # фрагменты дошли до модели
-        return "Обсуждали приветствие."
-
-    monkeypatch.setattr(ollama_mod.OllamaClient, "embed", embed)
-    monkeypatch.setattr(router_mod.LlmRouter, "summarize", summarize)
-    body = client.post("/api/search/answer",
-                       json={"q": "привет коллеги, о чём говорили", "limit": 3}).json()
-    assert body["answer"] == "Обсуждали приветствие."
-    assert body["results"] and all("привет коллеги" in r["text"] for r in body["results"])
-
-
-@pytest.mark.parametrize("limit", [0, -3, 999])
-def test_search_answer_rejects_absurd_limit(client, limit):
-    """Нелепый limit отклоняется до похода к модели, а не после."""
-    response = client.post("/api/search/answer", json={"q": "бюджет", "limit": limit})
-    assert response.status_code == 422
-
-
-def test_both_search_endpoints_share_limit_bounds(client):
-    """Границы limit одинаковы у поиска и у ответа.
-
-    Один и тот же по смыслу параметр, ведущий себя по-разному у двух
-    эндпоинтов одного поиска, — ловушка для того, кто ходит в API скриптом.
-    """
-    предел = main.SEARCH_LIMIT_MAX
-    assert client.get("/api/search", params={"q": "б", "limit": предел + 1}).status_code == 422
-    assert client.post(
-        "/api/search/answer", json={"q": "б", "limit": предел + 1}
-    ).status_code == 422
-
-
-def test_llm_state_offers_default_base_url(client):
-    """Клиент подставляет адрес в поле из ответа сервера, а не хранит свою
-    копию — иначе она однажды разъедется со списком разрешённых хостов."""
-    from app.config import LLM_API_DEFAULT_BASE_URL, api_host_supported
-
-    body = client.get("/api/llm").json()
-    assert body["api_base_url_default"] == LLM_API_DEFAULT_BASE_URL
-    # предлагаемый адрес обязан проходить собственную же валидацию
-    assert api_host_supported(body["api_base_url_default"])

@@ -34,6 +34,12 @@ export const MEETING_MODE_LABELS: Record<MeetingMode, string> = {
   negotiation: "Переговоры",
 };
 
+/** Ответ на сохранение протокола, составленного клиентом. */
+export interface SummarySaved {
+  status: "live" | "summarizing" | "done";
+  has_summary: boolean;
+}
+
 export interface MeetingDetail {
   id: number;
   title: string;
@@ -156,23 +162,15 @@ export interface AsrStateDto {
   models_by_engine: Record<string, string[]>;
 }
 
+/**
+ * События живой встречи. Подсказок и ответов здесь нет: их ведёт приложение
+ * само, у сервера остались звук и распознавание.
+ */
 export type LiveEvent =
   | { type: "ready"; meeting_id: number; title: string; meeting_mode?: MeetingMode }
   | { type: "segment"; segment: SegmentDto }
   | { type: "speaker_new"; speaker: { id: number; name: string } }
-  | { type: "hint"; text: string }
-  /** Кусок подсказки по кнопке «подсказать сейчас» — печатается по мере
-   *  генерации. У фоновых подсказок таких событий нет: модель вправе
-   *  промолчать, и печатать было бы нечего. */
-  | { type: "hint_delta"; text: string }
-  | { type: "hint_error"; message: string }
-  /** Ответ на вопрос участника из окна чата (команда ask). */
-  | { type: "answer"; text: string }
-  /** Кусок ответа и кусок хода мыслей — провайдер шлёт их разными полями. */
-  | { type: "answer_delta"; text: string }
-  | { type: "answer_reasoning"; text: string }
-  | { type: "answer_error"; message: string }
-  | { type: "stopped"; meeting_id: number }
+  | { type: "stopped"; meeting_id: number; summarize?: boolean }
   | { type: "error"; message: string };
 
 declare global {
@@ -188,6 +186,19 @@ declare global {
 }
 
 /** Найденный кусок разговора: цитата со ссылкой на встречу и момент. */
+/** Встреча, которой не хватает векторов, с готовыми кусками разговора.
+ *  Нарезка на сервере: она про содержимое встречи, а не про модель. */
+export interface PendingMeetingDto {
+  meeting_id: number;
+  title: string;
+  chunks: {
+    first_segment_id: number;
+    last_segment_id: number;
+    start_s: number;
+    text: string;
+  }[];
+}
+
 export interface SearchHit {
   meeting_id: number;
   meeting_title: string;

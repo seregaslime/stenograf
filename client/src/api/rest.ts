@@ -2,15 +2,12 @@ import { getServerUrl, getToken } from "../store";
 import type {
   AsrStateDto,
   HealthDto,
-  LlmModelsDto,
-  LlmSettings,
-  OllamaModelsDto,
-  LlmStateDto,
   MeetingDetail,
   MeetingListItem,
-  SearchAnswer,
   SearchHit,
+  PendingMeetingDto,
   SpeakerDto,
+  SummarySaved,
 } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -48,45 +45,44 @@ export const api = {
       body: JSON.stringify({ engine, model }),
     }),
 
-  llm: () => request<LlmStateDto>("/api/llm"),
-  setLlm: (settings: LlmSettings) =>
-    request<LlmStateDto>("/api/llm", {
-      method: "POST",
-      body: JSON.stringify(settings),
-    }),
-  // Список моделей у API по введённым (ещё не сохранённым) кредам
-  probeModels: (api_base_url: string, api_key?: string) =>
-    request<LlmModelsDto>("/api/llm/models", {
-      method: "POST",
-      body: JSON.stringify({ api_base_url, api_key }),
-    }),
-  // То же для Ollama: какие модели скачаны по ещё не сохранённому адресу
-  probeOllama: (ollama_url: string) =>
-    request<OllamaModelsDto>("/api/llm/ollama/models", {
-      method: "POST",
-      body: JSON.stringify({ ollama_url }),
-    }),
 
-  // Поиск по смыслу среди прошлых встреч; сервер сам доиндексирует новые
-  search: (q: string, limit?: number) =>
-    request<{ results: SearchHit[] }>(
-      `/api/search?q=${encodeURIComponent(q)}` + (limit ? `&limit=${limit}` : ""),
+  /** Что осталось проиндексировать ЭТОЙ моделью: векторы считает приложение. */
+  searchPending: (model: string) =>
+    request<{ meetings: PendingMeetingDto[] }>(
+      `/api/search/pending?model=${encodeURIComponent(model)}`,
     ),
 
-  // Ответ модели по найденному — отдельным запросом: поиск отвечает за доли
-  // секунды, модель за секунды, и цитаты успевают появиться раньше ответа
-  searchAnswer: (q: string, limit?: number) =>
-    request<SearchAnswer>("/api/search/answer", {
+  searchIndex: (body: {
+    model: string;
+    meeting_id: number;
+    chunks: (PendingMeetingDto["chunks"][number] & { vector: number[] })[];
+  }) =>
+    request<{ meeting_id: number; chunks: number }>("/api/search/index", {
       method: "POST",
-      body: JSON.stringify({ q, limit }),
+      body: JSON.stringify(body),
     }),
+
+  /** Поиск по уже посчитанному вектору вопроса: сравнение делает сервер. */
+  searchQuery: (body: { model: string; vector: number[]; limit?: number }) =>
+    request<{ results: SearchHit[] }>("/api/search/query", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
 
   meetings: () => request<MeetingListItem[]>("/api/meetings"),
   meeting: (id: number) => request<MeetingDetail>(`/api/meetings/${id}`),
   deleteMeeting: (id: number) =>
     request<{ deleted: number }>(`/api/meetings/${id}`, { method: "DELETE" }),
-  summarize: (id: number) =>
-    request<{ status: string }>(`/api/meetings/${id}/summarize`, { method: "POST" }),
+  /** Отдать серверу готовый протокол (его теперь составляет клиент) или
+   *  причину неудачи — чтобы встреча не висела в «составляется» молча. */
+  saveSummary: (id: number, body: { text?: string; error?: string; model?: string }) =>
+    request<SummarySaved>(`/api/meetings/${id}/summary`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+
   exportUrl: (id: number, fmt: "md" | "txt") =>
     `${getServerUrl()}/api/meetings/${id}/export?fmt=${fmt}`,
 
