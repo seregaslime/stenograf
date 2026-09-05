@@ -21,10 +21,7 @@ from app.ws import LiveSession, notify_speakers_merged
 
 
 def _session(cfg):
-    s = LiveSession(
-        ws=None, cfg=cfg, transcriber=None, embedder=None,
-        registry=None, llm=None, on_meeting_ended=lambda mid: None,
-    )
+    s = LiveSession(ws=None, cfg=cfg, transcriber=None, embedder=None, registry=None)
     s._meeting_id = 1
     return s
 

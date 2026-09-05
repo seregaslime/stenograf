@@ -89,6 +89,19 @@ export class OllamaClient {
     }
   }
 
+  /** Отвечает ли адрес вообще. Пустой список моделей — не признак: у живой
+   *  Ollama их может быть ноль, если ничего не скачано. */
+  async reachable(): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.base}/api/tags`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Генерация. У qwen3 НЕ отключаем размышления и НЕ задаём num_predict:
    * мысли считаются в тот же лимит, и с потолком ответ приходит пустым —

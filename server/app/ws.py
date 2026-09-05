@@ -44,8 +44,7 @@ from .db import crud
 from .db.database import session_scope
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import MatchResult, SpeakerRegistry
-from .llm import prompts
-from .llm.router import LlmRouter
+from .modes import DEFAULT_MODE, normalize_mode
 
 log = logging.getLogger(__name__)
 
@@ -84,16 +83,12 @@ class LiveSession:
         transcriber: Transcriber,
         embedder: VoiceEmbedder,
         registry: SpeakerRegistry,
-        llm: LlmRouter,
-        on_meeting_ended,  # callback(meeting_id) — запускает суммаризацию
     ):
         self._ws = ws
         self._cfg = cfg
         self._transcriber = transcriber
         self._embedder = embedder
         self._registry = registry
-        self._llm = llm
-        self._on_meeting_ended = on_meeting_ended
 
         self._meeting_id: Optional[int] = None
         # Этапы конвейера (создаются на старте встречи)
@@ -105,7 +100,7 @@ class LiveSession:
         self._consumer: Optional[asyncio.Task] = None
         self._summarize = True  # составлять ли резюме по завершении (выбор при старте)
         self._meeting_title = ""          # уходит в промпт: модель должна видеть тему
-        self._mode = prompts.DEFAULT_MODE  # тип встречи (планёрка/собеседование/…)
+        self._mode = DEFAULT_MODE  # тип встречи (планёрка/собеседование/…)
         # speaker_id → число реплик, для промпта. Именно id, а не имя: имя меняют
         # прямо во время встречи, и счётчик по строке разъезжался бы на двух
         # участников — «Спикер 3 (12 реплик)» и «Иван (4 реплики)» вместо одного.
@@ -208,7 +203,7 @@ class LiveSession:
             await self._send({"type": "error", "message": "Встреча уже идёт"})
             return
         # Старый клиент поля не шлёт — normalize_mode вернёт режим по умолчанию
-        self._mode = prompts.normalize_mode(command.get("meeting_mode"))
+        self._mode = normalize_mode(command.get("meeting_mode"))
         _LIVE_SESSIONS.add(self)  # чтобы узнать о слиянии спикеров по ходу встречи
         with session_scope() as db:
             meeting = crud.create_meeting(

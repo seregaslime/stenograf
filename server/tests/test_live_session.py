@@ -29,8 +29,7 @@ class _FakeEmbedder:
 
 def _make_session(cfg, registry, embedder) -> LiveSession:
     return LiveSession(
-        ws=None, cfg=cfg, transcriber=None, embedder=embedder,
-        registry=registry, llm=None, on_meeting_ended=lambda mid: None,
+        ws=None, cfg=cfg, transcriber=None, embedder=embedder, registry=registry,
     )
 
 
