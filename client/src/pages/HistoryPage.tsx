@@ -3,8 +3,7 @@ import type { Page } from "../App";
 import { api } from "../api/rest";
 import { formatTime } from "../components/Transcript";
 import { LlmRouter } from "../llm/router";
-import { buildSearchAnswerPrompt } from "../llm/prompts/searchAnswer";
-import { indexPending, searchMeetings, type SearchApi } from "../llm/search";
+import { answerByFragments, indexPending, searchMeetings, type SearchApi } from "../llm/search";
 import { loadLlmSettings, llmReady } from "../llm/settings";
 import type { SearchHit, MeetingListItem } from "../types";
 
@@ -107,15 +106,9 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
     ждём.current = текст;
     setAnswering(true);
     try {
-      const { system, prompt } = buildSearchAnswerPrompt(текст, results);
-      // Ролью протокола: ответ по нескольким фрагментам ближе к резюме, чем к
-      // реплике на лету.
-      const ответ = await new LlmRouter(loadLlmSettings()).generate("summary", prompt, {
-        system,
-        temperature: 0.3,
-      });
+      const ответ = await answerByFragments(new LlmRouter(loadLlmSettings()), текст, results);
       if (ждём.current !== текст) return;  // пока думали, спросили другое
-      setAnswer(ответ.trim());
+      setAnswer(ответ);
     } catch (exc) {
       if (ждём.current !== текст) return;
       // Цитаты уже показаны и сами по себе полезны — ошибку ответа показываем

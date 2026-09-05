@@ -43,6 +43,12 @@ export interface Budget {
   detailed: boolean;
   /** Потолок одного запроса протокола в токенах. 0 — тарифного лимита нет. */
   summaryTokens: number;
+  /**
+   * Потолок ОДНОЙ подсказки. Не весь минутный лимит: подсказок за минуту
+   * может быть несколько, и если каждой отдать лимит целиком, сумма превысит
+   * тариф — первая пройдёт, остальные получат отказ.
+   */
+  hintsTokens: number;
 }
 
 /** У локальной модели окно маленькое, у API — большое. */
@@ -54,6 +60,10 @@ const API_HINTS_CHARS = 40_000;
 /** Запасной лимит, если измерить не вышло, и доля, оставляемая модели на ответ. */
 const TPM_FALLBACK = 6_000;
 const OUTPUT_SHARE = 0.25;
+
+/** Минимальный интервал между подсказками: он же задаёт, сколько их влезает в
+ *  минуту, а значит и какую долю тарифа можно отдать одной. */
+const HINTS_MIN_GAP_S = 15;
 
 /** Символов на токен для русского текста — грубая, но проверенная оценка. */
 export const CHARS_PER_TOKEN = 2.5;
@@ -85,6 +95,7 @@ export class LlmRouter {
         hintsChars: LOCAL_HINTS_CHARS,
         detailed: false,
         summaryTokens: 0, // тарифного лимита нет, режем по символам
+        hintsTokens: 0,
       };
     }
     return {
@@ -92,7 +103,24 @@ export class LlmRouter {
       hintsChars: API_HINTS_CHARS,
       detailed: true,
       summaryTokens: this.tpmLimit(this.settings.apiSummaryModel),
+      hintsTokens: this.hintsTokens(),
     };
+  }
+
+  /**
+   * Сколько токенов можно отдать одной подсказке, чтобы сумма за минуту не
+   * превысила тариф.
+   *
+   * Считать расход в реальном времени не нужно: частота подсказок ограничена
+   * сверху минимальным интервалом между ними, поэтому достаточно поделить
+   * минутный лимит на максимальное число запросов в минуту — сумма тогда не
+   * превысит лимит по построению.
+   */
+  hintsTokens(): number {
+    const limit = this.tpmLimit(this.settings.apiHintsModel);
+    if (limit <= 0) return 0; // лимита нет (внутренний сервер) — не ограничиваем
+    const перМинуту = 60 / Math.max(HINTS_MIN_GAP_S, 1);
+    return Math.trunc(limit / перМинуту);
   }
 
   /**
@@ -119,6 +147,9 @@ export class LlmRouter {
       const client = new OpenAiClient({
         baseUrl: this.settings.apiBaseUrl,
         apiKey: this.settings.apiKey,
+        // Лимит нужен самому клиенту: перед запросом он ждёт, пока провайдер
+        // восстановит окно, вместо того чтобы получать отказ.
+        tpmLimit: this.tpmLimit(model),
       });
       return client.generate(model, prompt, { system, temperature, onDelta });
     }

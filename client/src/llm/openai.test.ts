@@ -176,3 +176,40 @@ describe("OpenAiClient.waitForBudget", () => {
     expect(паузы).toEqual([]);
   });
 });
+
+describe("ожидание лимита перед запросом", () => {
+  it("запрос дожидается восстановления окна, а не получает отказ", async () => {
+    // Сервер ждал столько, сколько провайдер обещал в заголовках. При переносе
+    // это едва не потерялось: функция ожидания была написана и никем не вызвана.
+    const mock = перехват(() => ответ(
+      { choices: [{ message: { content: "ответ" } }] },
+      { headers: { "x-ratelimit-remaining-tokens": "10", "x-ratelimit-reset-tokens": "3s" } },
+    ));
+    const c = new OpenAiClient({ baseUrl: GROQ, apiKey: "ключ", tpmLimit: 8000 });
+
+    await c.generate("m", "первый запрос");   // из ответа узнали: осталось 10 токенов
+    const паузы: number[] = [];
+    vi.spyOn(c, "waitForBudget").mockImplementation(async (need, _sleep) => {
+      паузы.push(need);
+    });
+    await c.generate("m", "второй запрос подлиннее, чтобы точно не влез в остаток");
+
+    expect(паузы).toHaveLength(1);
+    // Цена запроса — вход плюс резерв под ответ (провайдер списывает и его)
+    expect(паузы[0]).toBeGreaterThan(8000 * 0.25);
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it("ждём ровно то, что обещал провайдер", async () => {
+    перехват(() => ответ({}, {
+      headers: { "x-ratelimit-remaining-tokens": "5", "x-ratelimit-reset-tokens": "4s" },
+    }));
+    const c = new OpenAiClient({ baseUrl: GROQ, apiKey: "ключ" });
+    await c.tokenLimit("m");
+
+    const паузы: number[] = [];
+    await c.waitForBudget(9999, async (ms) => { паузы.push(ms); });
+    expect(паузы[0]).toBeGreaterThan(4000);
+    expect(паузы[0]).toBeLessThan(5500);
+  });
+});

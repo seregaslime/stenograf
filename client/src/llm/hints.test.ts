@@ -22,12 +22,18 @@ const НАСТРОЙКИ: LlmSettings = {
 };
 
 /** Движок с подменённой моделью и управляемыми часами. */
-function стенд(ответ: (prompt: string, номер: number) => string, settings = НАСТРОЙКИ) {
+function стенд(
+  ответ: (prompt: string, номер: number) => string,
+  settings = НАСТРОЙКИ,
+  задержать?: (номер: number) => Promise<void>,
+) {
   const llm = new LlmRouter(settings);
   const промпты: string[] = [];
   vi.spyOn(llm, "generate").mockImplementation(async (_role, prompt) => {
     промпты.push(prompt);
-    return ответ(prompt, промпты.length);
+    const номер = промпты.length;
+    if (задержать) await задержать(номер);
+    return ответ(prompt, номер);
   });
 
   const подсказки: string[] = [];
@@ -197,5 +203,59 @@ describe("вопрос участника", () => {
     const { движок, наговорить } = стенд(() => "   ");
     наговорить(5);
     await expect(движок.answer("вопрос", "")).rejects.toThrow(/пустой ответ/);
+  });
+});
+
+describe("швы, которые не ловились по отдельности", () => {
+  const тариф: LlmSettings = {
+    ...НАСТРОЙКИ,
+    provider: "api",
+    apiBaseUrl: "https://api.groq.com/openai/v1",
+    apiKey: "ключ",
+    apiSummaryModel: "gpt-oss-120b",
+    apiHintsModel: "gpt-oss-20b",
+    tpmLimits: { "gpt-oss-20b": 8000 },
+  };
+
+  it("одной подсказке достаётся доля тарифа, а не весь минутный лимит", () => {
+    // Подсказок за минуту до четырёх (минимальный интервал 15 с). Отдав каждой
+    // весь лимит, мы вчетверо превысили бы тариф: первая прошла бы, остальные
+    // получили бы отказ, и подсказки погасли бы после пяти ошибок.
+    const llm = new LlmRouter(тариф);
+    const весьЛимит = llm.tpmLimit("gpt-oss-20b");
+    expect(llm.budget.hintsTokens).toBe(Math.trunc(весьЛимит / 4));
+    expect(llm.budget.hintsTokens).toBeLessThan(весьЛимит);
+  });
+
+  it("окно разговора считается от доли, а не от всего лимита", async () => {
+    const { движок, промпты, наговорить } = стенд(() => "Уточните срок задачи", тариф);
+    наговорить(400); // разговора заведомо больше любого бюджета
+    await движок.tick();
+
+    // Промпт целиком должен укладываться в долю тарифа с запасом на ответ
+    const токенов = промпты[0].length / 2.5;
+    expect(токенов).toBeLessThan(new LlmRouter(тариф).budget.hintsTokens);
+  });
+
+  it("кнопка отменяет фоновую подсказку, а не показывает обе", async () => {
+    // Фоновый запрос держим до тех пор, пока человек не нажмёт кнопку: так
+    // воспроизводится гонка, ради которой сервер снимал фоновую задачу.
+    let отпустить = () => {};
+    const держим = new Promise<void>((готово) => { отпустить = готово; });
+    const { движок, подсказки } = стенд((prompt, номер) => {
+      void prompt;
+      return номер === 1 ? "фоновая подсказка про сроки" : "ответ по кнопке про сроки";
+    }, НАСТРОЙКИ, async (номер) => { if (номер === 1) await держим; });
+
+    for (let i = 0; i < 5; i += 1) {
+      движок.push("Сергей", `реплика номер ${i}, в ней достаточно текста для порога`);
+    }
+    const фоновая = движок.tick();
+    await Promise.resolve();
+    const покнопке = движок.emit(true);
+    отпустить();
+    await Promise.all([фоновая, покнопке]);
+
+    expect(подсказки).toEqual(["ответ по кнопке про сроки"]);
   });
 });

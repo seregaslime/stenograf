@@ -91,26 +91,23 @@ export async function searchMeetings(
 }
 
 /**
- * Ответ модели по найденным фрагментам плюс сами фрагменты.
+ * Ответ модели по уже найденным фрагментам.
  *
- * Цитаты возвращаются вместе с ответом и всегда показываются рядом: модель не
- * помнит встреч, она пересказывает показанное, и проверить её можно только по
- * тому, что видно на экране.
+ * Отдельно от поиска намеренно: цитаты показываются сразу, а ответ догоняет —
+ * человек читает, пока модель думает. Поэтому вызывающий сначала ищет, потом
+ * зовёт это.
+ *
+ * Отвечает модель протокола: ответ по нескольким фрагментам ближе к резюме,
+ * чем к реплике на лету. Решение живёт здесь одно на всех — иначе выбор роли
+ * разъедется между страницей и модулем.
  */
-export async function answerFromMeetings(
-  api: SearchApi,
+export async function answerByFragments(
   llm: LlmRouter,
-  settings: LlmSettings,
-  model: string,
   question: string,
-  limit?: number,
-): Promise<{ answer: string; results: SearchHit[] }> {
-  const results = await searchMeetings(api, settings, model, question, limit);
-  if (results.length === 0) return { answer: "", results: [] };
-
+  results: SearchHit[],
+): Promise<string> {
+  if (results.length === 0) return "";
   const { system, prompt } = buildSearchAnswerPrompt(question, results);
-  // Ролью отвечает модель протокола: ответ по нескольким фрагментам ближе к
-  // резюме, чем к реплике на лету.
   const answer = await llm.generate("summary", prompt, { system, temperature: 0.3 });
-  return { answer: answer.trim(), results };
+  return answer.trim();
 }

@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { OllamaClient } from "./ollama";
 import { LlmRouter, type LlmSettings } from "./router";
 import {
-  answerFromMeetings,
+  answerByFragments,
   indexPending,
   searchMeetings,
   type PendingMeeting,
@@ -120,42 +120,29 @@ describe("поиск", () => {
   });
 });
 
-describe("ответ по архиву", () => {
-  it("отвечает по найденному и возвращает цитаты рядом с ответом", async () => {
-    const embed = модельЭмбеддингов();
-    const { api } = сервер();
+describe("ответ по найденному", () => {
+  it("отвечает моделью протокола по показанным фрагментам", async () => {
     const llm = new LlmRouter(НАСТРОЙКИ);
+    const роли: string[] = [];
     const промпты: string[] = [];
-    vi.spyOn(llm, "generate").mockImplementation(async (_role, prompt) => {
+    vi.spyOn(llm, "generate").mockImplementation(async (role, prompt) => {
+      роли.push(role);
       промпты.push(prompt);
       return "  На встрече 14 августа перенесли демо на вторник.  ";
     });
 
-    const { answer, results } = await answerFromMeetings(
-      api, llm, НАСТРОЙКИ, "bge-m3", "что решили по срокам",
-    );
+    const ответ = await answerByFragments(llm, "что решили по срокам", НАЙДЕНО);
 
-    expect(answer).toBe("На встрече 14 августа перенесли демо на вторник.");
-    expect(results).toEqual(НАЙДЕНО); // цитаты обязаны прийти вместе с ответом
+    expect(ответ).toBe("На встрече 14 августа перенесли демо на вторник.");
+    expect(роли).toEqual(["summary"]); // выбор роли живёт в одном месте
     expect(промпты[0]).toContain("Найденные фрагменты записей:");
-    embed.mockRestore();
   });
 
   it("ничего не нашлось — к модели не ходим и не выдумываем ответ", async () => {
-    const embed = модельЭмбеддингов();
-    const api: SearchApi = {
-      pending: async () => ({ meetings: [] }),
-      index: async () => ({ chunks: 0 }),
-      query: async () => ({ results: [] }),
-    };
     const llm = new LlmRouter(НАСТРОЙКИ);
     const generate = vi.spyOn(llm, "generate");
 
-    const { answer, results } = await answerFromMeetings(api, llm, НАСТРОЙКИ, "bge-m3", "вопрос");
-
-    expect(answer).toBe("");
-    expect(results).toEqual([]);
+    await expect(answerByFragments(llm, "вопрос", [])).resolves.toBe("");
     expect(generate).not.toHaveBeenCalled();
-    embed.mockRestore();
   });
 });

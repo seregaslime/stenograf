@@ -66,6 +66,13 @@ export class HintEngine {
   private backoffUntil = 0;
   private inFlight = false;
   private explicitInFlight = false;
+  /**
+   * Номер текущей фоновой попытки. Отменить запрос к модели нечем (у fetch
+   * здесь нет прерывания), поэтому явный запрос человека помечает фоновую
+   * устаревшей, и её ответ не показывается: сервер в этом месте просто снимал
+   * задачу, а результат гонки был тот же — побеждает то, что попросили.
+   */
+  private autoRun = 0;
   /** Выключаются сами после серии ошибок; человек может включить заново. */
   enabled = false;
 
@@ -160,8 +167,11 @@ export class HintEngine {
    */
   private windowChars(): number {
     const budget = this.opts.llm.budget;
-    const hintsTokens = this.opts.llm.tpmLimit(this.opts.llm.modelFor("hints"));
-    if (this.opts.llm.provider !== "api" || !hintsTokens) return budget.hintsChars;
+    // Именно budget.hintsTokens, а не весь минутный лимит: подсказок за минуту
+    // несколько, и если каждой отдать лимит целиком, сумма превысит тариф —
+    // первая пройдёт, остальные получат отказ.
+    if (!budget.hintsTokens) return budget.hintsChars;
+    const hintsTokens = budget.hintsTokens;
 
     const { system, prompt } = buildHintPrompt({
       mode: this.opts.mode,
@@ -190,9 +200,12 @@ export class HintEngine {
         this.opts.onError("Подсказка уже готовится…");
         return;
       }
+      // Фоновая подсказка уступает: человек попросил явно
+      this.autoRun += 1;
     } else if (this.inFlight) {
       return;
     }
+    const run = this.autoRun;
 
     const [earlier, window] = this.splitWindow(this.windowChars(), force);
     if (window.length + earlier.length < MIN_CONTEXT_CHARS) {
@@ -226,6 +239,9 @@ export class HintEngine {
             ? (kind, chunk) => kind === "content" && this.opts.onDelta!(chunk)
             : undefined,
       });
+      // Пока модель думала, человек мог нажать кнопку: его ответ важнее, а
+      // наш пришёл бы поверх него вторым и без спроса.
+      if (!force && run !== this.autoRun) return;
       this.failStreak = 0;
       const hint = parseHint(raw, MIN_LEN_CHARS);
       // Модель этот текст посмотрела — двигаем границу, что бы она ни ответила.
