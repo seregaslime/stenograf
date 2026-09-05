@@ -604,6 +604,66 @@ class MergeBody(BaseModel):
     speaker_ids: list[int]  # ровно два id; сервер сам выбирает целевой профиль
 
 
+class IndexChunk(BaseModel):
+    """Кусок разговора с уже посчитанным вектором."""
+    first_segment_id: int
+    last_segment_id: int
+    start_s: float
+    text: str
+    vector: list[float]
+
+
+class IndexBody(BaseModel):
+    model: str
+    meeting_id: int
+    chunks: list[IndexChunk]
+
+
+class QueryBody(BaseModel):
+    model: str
+    vector: list[float]
+    limit: int | None = Field(None, ge=1, le=SEARCH_LIMIT_MAX)
+
+
+@app.get("/api/search/pending")
+def search_pending(request: Request, model: str):
+    """Что осталось проиндексировать ЭТОЙ моделью: встречи и куски разговора.
+
+    Имя модели обязательно и приходит от приложения: векторы считает оно, у
+    каждого своя модель, и сервер про этот выбор больше ничего не знает.
+    Нарезка осталась здесь — она про содержимое встречи, а не про модель.
+    """
+    with session_scope() as db:
+        return {"meetings": search.pending_chunks(db, settings, model, владелец(request))}
+
+
+@app.post("/api/search/index")
+def search_index(body: IndexBody, request: Request):
+    """Принимает посчитанные векторы. Чужую встречу проиндексировать нельзя."""
+    with session_scope() as db:
+        meeting = crud.meeting_for_owner(db, body.meeting_id, владелец(request))
+        if meeting is None:
+            raise HTTPException(404, "Встреча не найдена")
+        сохранено = search.store_vectors(
+            db, body.model, meeting, [к.model_dump() for к in body.chunks]
+        )
+    return {"meeting_id": body.meeting_id, "chunks": сохранено}
+
+
+@app.post("/api/search/query")
+def search_query(body: QueryBody, request: Request):
+    """Поиск по уже посчитанному вектору вопроса.
+
+    Сравнение векторов модели не требует, поэтому сервер ищет сам: по сети едет
+    вопрос в килобайтах, а не вся матрица в мегабайтах.
+    """
+    with session_scope() as db:
+        return {"results": search.search_by_vector(
+            db, body.model, body.vector,
+            body.limit or settings.search_top_k, владелец(request),
+        )}
+
+
 @app.get("/api/search")
 async def search_meetings(request: Request, q: str,
                           limit: int | None = Query(None, ge=1, le=SEARCH_LIMIT_MAX)):
