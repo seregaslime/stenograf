@@ -11,7 +11,9 @@ import type { HealthDto } from "./types";
 export type Page =
   | { name: "live" }
   | { name: "history" }
-  | { name: "meeting"; id: number }
+  // autosummarize — встречу только что закончили с галочкой «составить
+  // протокол по завершении»: считает его приложение, и повод — этот переход
+  | { name: "meeting"; id: number; autosummarize?: boolean }
   | { name: "speakers" }
   | { name: "settings" };
 
@@ -85,7 +87,9 @@ export default function App() {
       <div className="page-host">
         {page.name === "live" && <LivePage navigate={setPage} health={health} onPhaseChange={setLivePhase} />}
         {page.name === "history" && <HistoryPage navigate={setPage} />}
-        {page.name === "meeting" && <MeetingPage id={page.id} navigate={setPage} />}
+        {page.name === "meeting" && (
+          <MeetingPage id={page.id} autosummarize={page.autosummarize} navigate={setPage} />
+        )}
         {page.name === "speakers" && <SpeakersPage />}
         {page.name === "settings" && <SettingsPage onServerChange={() => setHealth(null)} />}
       </div>

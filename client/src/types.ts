@@ -170,7 +170,7 @@ export type LiveEvent =
   | { type: "ready"; meeting_id: number; title: string; meeting_mode?: MeetingMode }
   | { type: "segment"; segment: SegmentDto }
   | { type: "speaker_new"; speaker: { id: number; name: string } }
-  | { type: "stopped"; meeting_id: number }
+  | { type: "stopped"; meeting_id: number; summarize?: boolean }
   | { type: "error"; message: string };
 
 declare global {

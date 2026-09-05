@@ -317,12 +317,14 @@ export default function LivePage({
     setSysActive(false);
   }
 
-  function finish(meetingId: number | null) {
+  function finish(meetingId: number | null, summarize = false) {
     if (finishedRef.current) return;
     finishedRef.current = true;
     cleanup();
     setPhase("setup");
-    if (meetingId != null) navigate({ name: "meeting", id: meetingId });
+    // Протокол считает приложение, поэтому «составить по завершении» — это
+    // просьба к странице встречи, а не к серверу.
+    if (meetingId != null) navigate({ name: "meeting", id: meetingId, autosummarize: summarize });
   }
 
   // Цикл подсказок раньше крутился на сервере; теперь тикаем сами. Три секунды —
@@ -353,7 +355,7 @@ export default function LivePage({
         break;
 
       case "stopped":
-        finish(event.meeting_id);
+        finish(event.meeting_id, event.summarize);
         break;
       case "error":
         setError(event.message);

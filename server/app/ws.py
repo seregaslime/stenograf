@@ -444,14 +444,16 @@ class LiveSession:
         finally:
             # ВАЖНО: встреча завершается в БД даже если consumer упал
             with session_scope() as db:
-                crud.end_meeting(
-                    db, meeting_id,
-                    status="summarizing" if self._summarize else "done",
-                )
+                # Всегда «done»: протокол считает приложение, и сервер не имеет
+                # права оставлять встречу в «составляется» — из этого состояния
+                # её больше никто не выведет, и человек ждал бы вечно.
+                crud.end_meeting(db, meeting_id, status="done")
             log.info("Встреча #%d завершена", meeting_id)
-            await self._send({"type": "stopped", "meeting_id": meeting_id})
-            if self._summarize:
-                self._on_meeting_ended(meeting_id)
+            # summarize из команды start передаём обратно: по нему приложение
+            # решает, составлять ли протокол сразу после встречи.
+            await self._send({
+                "type": "stopped", "meeting_id": meeting_id, "summarize": self._summarize,
+            })
 
     async def _send(self, payload: dict) -> None:
         try:

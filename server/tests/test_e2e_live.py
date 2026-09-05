@@ -3,8 +3,8 @@
 Поднимает uvicorn на :8766 с временной папкой данных (модели — симлинком из
 server/data/models, чтобы не перекачивать веса; БД и голоса одноразовые —
 живая база не затрагивается). Прогоняет встречи целиком: синтезированный звук →
-микшер → VAD → ASR → диаризация → события → REST. Ollama намеренно недоступна —
-проверяется честная ошибка резюме (живое резюме — в ручном чек-листе TESTING.md).
+микшер → VAD → ASR → диаризация → события → REST. Протокол сюда не входит: его считает приложение, и сквозной прогон обеих
+половин живёт в клиенте (client/src/e2e). Здесь — конвейер звука целиком.
 
 Запуск (медленный, несколько минут):  .venv/bin/python -m pytest -m e2e
 Тесты зависят друг от друга по данным и выполняются по порядку — база
@@ -247,12 +247,16 @@ def test_04_guest_gets_new_profile(server, voices):
 
 
 def test_05_silent_meeting(server):
-    """Тишина всю встречу: ноль сегментов, встреча завершается, резюме честно
-    сообщает, что распознавать нечего."""
+    """Тишина всю встречу: ноль сегментов, встреча всё равно завершается.
+
+    Протокола нет и ошибки нет: считать его теперь некому — это делает
+    приложение, и «встреча без речи» оно объясняет само (см. сквозной прогон
+    клиента, client/src/e2e). Серверу важно другое: не оставить встречу висеть.
+    """
     meeting_id, segments = run_meeting("e2e: тишина", mic=silence(4), system=silence(4))
     assert segments == []
     meeting = wait_status(meeting_id, "done")
-    assert meeting["summary_error"], "нет объяснения, почему резюме не построено"
+    assert meeting["summary"] is None
 
 
 def test_06_long_monologue_is_split(server, voices):
@@ -278,16 +282,20 @@ def test_07_ws_abort_finalizes_meeting(server, voices):
     assert meeting["status"] == "done"
 
 
-def test_08_summary_error_is_reported(server):
-    """Ollama недоступна → у встречи с речью появляется понятная ошибка резюме
-    (полный цикл с живой Ollama — в ручном чек-листе TESTING.md)."""
+def test_08_meeting_never_hangs_in_summarizing(server):
+    """Встреча не остаётся в «составляется»: сервер протоколов не считает.
+
+    Раньше здесь проверялась честная ошибка резюме — её писал сервер, потому
+    что считал он же. Теперь считает приложение, и «модель не ответила» —
+    его забота; серверу нельзя другое: оставить встречу в состоянии, из
+    которого её никто не выведет, и человек ждал бы вечно.
+    """
     meetings = httpx.get(f"{BASE}/api/meetings", timeout=5).json()
     with_speech = [m for m in meetings if m["title"] == "e2e: энролл владельца"]
     assert with_speech
     meeting = get_meeting(with_speech[0]["id"])
     assert meeting["status"] == "done"
     assert meeting["summary"] is None
-    assert meeting["summary_error"], "ошибка резюме не показана"
 
 
 def test_09_rest_operations(server):

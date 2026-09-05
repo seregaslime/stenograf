@@ -1,5 +1,5 @@
 import { marked } from "marked";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Page } from "../App";
 import { api } from "../api/rest";
 import Transcript from "../components/Transcript";
@@ -12,9 +12,12 @@ import type { MeetingDetail } from "../types";
 export default function MeetingPage({
   id,
   navigate,
+  autosummarize = false,
 }: {
   id: number;
   navigate: (page: Page) => void;
+  /** Встречу только что закончили с галочкой «составить протокол». */
+  autosummarize?: boolean;
 }) {
   const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
   const [error, setError] = useState("");
@@ -34,6 +37,16 @@ export default function MeetingPage({
   useEffect(() => {
     void load();
   }, [id]);
+
+  // Протокол сразу после встречи. Ровно один раз: перезаход на страницу или
+  // обновление данных не должны запускать модель заново — она стоит минут.
+  const автозапуск = useRef(false);
+  useEffect(() => {
+    if (!autosummarize || автозапуск.current || !meeting) return;
+    if (meeting.summary || meeting.status !== "done") return;
+    автозапуск.current = true;
+    void resummarize();
+  }, [autosummarize, meeting]);
 
   // Встречу мог оставить в «составляется» прошлый запуск: сервер больше ничего
   // не считает, и сама она из этого состояния не выйдет — опрос бы висел вечно.

@@ -11,8 +11,9 @@
     "electron-dev": "wait-on tcp:5173 && cross-env ELECTRON_START_URL=http://localhost:5173 electron .",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --exclude 'src/e2e/**' --exclude '**/node_modules/**'",
     "test:cov": "vitest run --coverage",
+    "test:e2e": "vitest run --testTimeout=240000 src/e2e",
     "dist:mac": "npm run build && electron-builder --mac dmg zip",
     "dist:win": "npm run build && electron-builder --win nsis portable --x64",
     "lint": "eslint src"
