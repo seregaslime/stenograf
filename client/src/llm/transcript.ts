@@ -22,7 +22,9 @@ export const MIN_CHUNK_CHARS = 4_000;
  */
 export const MAX_RETRY_DEPTH = 3;
 
-function mmss(seconds: number): string {
+/** «02:05» — таймкод реплики, как его писал сервер: с ведущим нулём.
+ *  У истории встреч свой формат (без нуля), он к промптам отношения не имеет. */
+export function mmss(seconds: number): string {
   const целых = Math.trunc(seconds);
   return `${String(Math.trunc(целых / 60)).padStart(2, "0")}:${String(целых % 60).padStart(2, "0")}`;
 }
