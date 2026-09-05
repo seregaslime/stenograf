@@ -1,0 +1,52 @@
+[
+  {
+    "a": "",
+    "b": "",
+    "ratio": 1.0
+  },
+  {
+    "a": "SLA — соглашение об уровне сервиса",
+    "b": "SLA это соглашение об уровне сервиса",
+    "ratio": 0.9428571428571428
+  },
+  {
+    "a": "Релиз в пятницу — кто дежурит?",
+    "b": "Кто дежурит на выходных после релиза?",
+    "ratio": 0.3283582089552239
+  },
+  {
+    "a": "одинаково",
+    "b": "одинаково",
+    "ratio": 1.0
+  },
+  {
+    "a": "совсем другое",
+    "b": "ничего общего",
+    "ratio": 0.3076923076923077
+  },
+  {
+    "a": "Уточните срок задачи",
+    "b": "уточните срок задачи",
+    "ratio": 0.95
+  },
+  {
+    "a": "а",
+    "b": "б",
+    "ratio": 0.0
+  },
+  {
+    "a": "повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор ",
+    "b": "повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор повтор хвост",
+    "ratio": 0.9911504424778761
+  },
+  {
+    "a": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "b": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxy",
+    "ratio": 0.998003992015968
+  },
+  {
+    "a": "Задача без срока: кто и когда пришлёт макеты?",
+    "b": "У задачи «прислать макеты» нет срока",
+    "ratio": 0.4444444444444444
+  }
+]
