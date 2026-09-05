@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/rest";
+import { saveLlmSettings } from "../llm/settings";
 import { DEFAULT_SERVER_URL, getSetting, isDebugMode, platform, setSetting } from "../store";
 import type { AsrStateDto, HealthDto, LlmModelInfo, LlmStateDto } from "../types";
 
@@ -257,6 +258,20 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
       });
       setLlm(state);
       fillLlmForm(state);
+      // Те же настройки — в хранилище приложения: протокол теперь считает оно,
+      // и адрес модели с ключом нужны ему самому. Сервер узнаёт о них
+      // последний раз — на следующем шаге серии он про модели забудет совсем.
+      saveLlmSettings({
+        provider,
+        ollamaUrl: ollamaUrl.trim(),
+        localSummaryModel,
+        localHintsModel,
+        apiBaseUrl: baseUrl.trim(),
+        ...(apiKey ? { apiKey } : {}), // пусто — не затираем уже сохранённый
+        apiSummaryModel: summaryModel,
+        apiHintsModel: hintsModel,
+        tpmLimits: state.api_tpm_limits ?? {},
+      });
     } catch (exc) {
       setLlmError((exc as Error).message);
       if (llm) setProvider(llm.provider); // сервер отклонил выбор — вернуть селект
