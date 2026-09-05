@@ -8,19 +8,19 @@ scripts/regress.py — тот же приём, только меряется н�
 ДРУГИМИ словами, чем сказано в разговоре, — на таком наборе поиск по подстроке
 проваливается, а поиск по смыслу обязан справляться.
 
-Запуск из папки server:
-    .venv/bin/python scripts/eval_search.py                     # модель из настроек
-    .venv/bin/python scripts/eval_search.py --model bge-m3 --model paraphrase-multilingual
+Адрес модели задаётся здесь, а не берётся из настроек сервера: с 05.09.2026 их
+там нет вовсе — эмбеддинги считает приложение своей моделью. Замер остался
+серверным, потому что мерит он не модель, а нарезку и подбор: их код здесь.
 
-Модели живут в контейнере, поэтому на практике:
-    docker compose cp server/scripts/eval_search.py server:/tmp/eval_search.py
-    docker compose cp server/tests/fixtures/search server:/tmp/search
-    docker compose exec -e PYTHONPATH=/srv server python /tmp/eval_search.py \\
-        --fixtures /tmp/search/meetings.json
+Запуск из папки server (Ollama — там, где она у вас стоит):
+    .venv/bin/python scripts/eval_search.py
+    .venv/bin/python scripts/eval_search.py --model bge-m3 --model paraphrase-multilingual
+    .venv/bin/python scripts/eval_search.py --url http://192.168.1.50:11434
 """
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -33,11 +33,20 @@ from app.config import settings  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "search" / "meetings.json"
 
-# Значения по умолчанию читаем через getattr: в контейнере код приложения может
-# быть старше правки (образ собран раньше), и обращение к новому полю уронило бы
-# замер там, где он как раз и нужен — рядом с моделями.
+# Длину куска берём из настроек сервера — это его параметр, он там и остался.
+# Через getattr: в контейнере код приложения может быть старше правки (образ
+# собран раньше), и обращение к новому полю уронило бы замер там, где он как раз
+# и нужен — рядом с моделями.
 ЧАНК = getattr(settings, "search_chunk_chars", 600)
-МОДЕЛЬ = getattr(settings, "search_embed_model", "bge-m3")
+
+# А вот модель и её адрес — уже не дело сервера. Дефолты здесь означают «самое
+# частое место, где стоит Ollama» и «модель, которой мерили до сих пор»:
+# bge-m3 обошла вдвое более лёгкую paraphrase-multilingual не на этом эталоне
+# (там они равны), а на длинных кусках — у неё вход 128 токенов, и кусок на 1313
+# символов она молча обрезает: близость к запросу упала с 0.639 до 0.187 против
+# 0.728 → 0.579 у bge-m3.
+URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
+МОДЕЛЬ = "bge-m3"
 
 
 def нарезать(встреча: dict, max_chars: int) -> list[str]:
@@ -59,22 +68,22 @@ def нарезать(встреча: dict, max_chars: int) -> list[str]:
     return куски
 
 
-async def векторы(model: str, тексты: list[str]) -> np.ndarray:
+async def векторы(url: str, model: str, тексты: list[str]) -> np.ndarray:
     """Эмбеддинги пачкой, запросом к Ollama напрямую.
 
-    Не через app.llm.OllamaClient намеренно: замер должен работать в контейнере,
-    где код приложения старше правки, — иначе он падает ровно там, где нужен,
-    рядом с моделями. Ровно та же причина, по которой продублирована нарезка.
+    Своим запросом, а не клиентским кодом из client/src/llm: замер живёт на
+    сервере и запускается там, где стоят модели. Ровно та же причина, по которой
+    продублирована нарезка.
     """
     async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=5.0)) as client:
-        ответ = await client.post(f"{settings.ollama_url}/api/embed",
+        ответ = await client.post(f"{url.rstrip('/')}/api/embed",
                                   json={"model": model, "input": тексты})
         ответ.raise_for_status()
         v = np.array(ответ.json()["embeddings"], dtype=np.float32)
     return v / np.linalg.norm(v, axis=1, keepdims=True)
 
 
-async def замер(model: str, данные: dict, max_chars: int, top: int) -> tuple[float, list[str]]:
+async def замер(url: str, model: str, данные: dict, max_chars: int, top: int) -> tuple[float, list[str]]:
     """Доля вопросов, для которых нужная встреча попала в топ-N. И список промахов."""
     тексты, откуда = [], []
     for встреча in данные["meetings"]:
@@ -82,8 +91,8 @@ async def замер(model: str, данные: dict, max_chars: int, top: int) -
             тексты.append(кусок)
             откуда.append(встреча["id"])
 
-    куски = await векторы(model, тексты)
-    запросы = await векторы(model, [в["q"] for в in данные["questions"]])
+    куски = await векторы(url, model, тексты)
+    запросы = await векторы(url, model, [в["q"] for в in данные["questions"]])
 
     попаданий, промахи = 0, []
     for вопрос, запрос in zip(данные["questions"], запросы):
@@ -102,6 +111,7 @@ async def main() -> None:
     parser.add_argument("--model", action="append", default=[],
                         help="можно указать несколько раз — сравнить модели")
     parser.add_argument("--chunk-chars", type=int, default=ЧАНК)
+    parser.add_argument("--url", default=URL, help=f"адрес Ollama (по умолчанию {URL})")
     parser.add_argument("--top", type=int, default=3)
     args = parser.parse_args()
 
@@ -111,7 +121,7 @@ async def main() -> None:
           f"кусок ≤ {args.chunk_chars} символов, попадание в топ-{args.top}\n")
 
     for model in модели:
-        доля, промахи = await замер(model, данные, args.chunk_chars, args.top)
+        доля, промахи = await замер(args.url, model, данные, args.chunk_chars, args.top)
         print(f"  {model:26} попаданий: {доля:.0%}")
         for промах in промахи:
             print(f"      мимо: {промах}")

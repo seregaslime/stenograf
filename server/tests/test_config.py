@@ -8,14 +8,32 @@ from app.config import Settings, load_asr_choice, save_asr_choice
 
 
 def test_defaults():
-    """Дефолты конфига соответствуют заявленным в README (движок ASR, провайдер LLM, пути к данным).
+    """Дефолты конфига соответствуют заявленным в README (движок ASR, пути к данным).
     """
     s = Settings(_env_file=None)
     assert s.asr_engine == "gigaam"
-    assert s.llm_provider == "local"
-    assert s.hints_min_gap_s == 15.0
     assert s.db_path.name == "stenograf.db"
     assert s.samples_dir == s.data_dir / "samples"
+
+
+def test_старые_переменные_llm_не_роняют_запуск(monkeypatch):
+    """Настройки моделей уехали на клиент, а строки в .env у людей остались.
+
+    Без extra="ignore" сервер вообще не поднимается: pydantic падает при импорте
+    на незнакомой переменной с нашим префиксом. У Сергея это .env, на машине
+    деплоя — STENOGRAF_OLLAMA_URL в docker-compose; и то и другое пережило бы
+    обновление образа, а сообщение «Extra inputs are not permitted» не
+    подсказывает, что делать.
+    """
+    monkeypatch.setenv("STENOGRAF_LLM_PROVIDER", "api")
+    monkeypatch.setenv("STENOGRAF_LLM_API_KEY", "gsk_старый_ключ")
+    monkeypatch.setenv("STENOGRAF_OLLAMA_URL", "http://ollama:11434")
+    monkeypatch.setenv("STENOGRAF_SEARCH_EMBED_MODEL", "bge-m3")
+
+    s = Settings(_env_file=None)
+
+    assert s.asr_engine == "gigaam"
+    assert not hasattr(s, "llm_api_key")
 
 
 def test_save_and_load_asr_choice(tmp_path, monkeypatch):
