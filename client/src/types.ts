@@ -162,22 +162,14 @@ export interface AsrStateDto {
   models_by_engine: Record<string, string[]>;
 }
 
+/**
+ * События живой встречи. Подсказок и ответов здесь нет: их ведёт приложение
+ * само, у сервера остались звук и распознавание.
+ */
 export type LiveEvent =
   | { type: "ready"; meeting_id: number; title: string; meeting_mode?: MeetingMode }
   | { type: "segment"; segment: SegmentDto }
   | { type: "speaker_new"; speaker: { id: number; name: string } }
-  | { type: "hint"; text: string }
-  /** Кусок подсказки по кнопке «подсказать сейчас» — печатается по мере
-   *  генерации. У фоновых подсказок таких событий нет: модель вправе
-   *  промолчать, и печатать было бы нечего. */
-  | { type: "hint_delta"; text: string }
-  | { type: "hint_error"; message: string }
-  /** Ответ на вопрос участника из окна чата (команда ask). */
-  | { type: "answer"; text: string }
-  /** Кусок ответа и кусок хода мыслей — провайдер шлёт их разными полями. */
-  | { type: "answer_delta"; text: string }
-  | { type: "answer_reasoning"; text: string }
-  | { type: "answer_error"; message: string }
   | { type: "stopped"; meeting_id: number }
   | { type: "error"; message: string };
 

@@ -48,7 +48,6 @@ describe("LiveClient.start", () => {
     client.start({
       title: "Собес",
       record_audio: false,
-      hints: true,
       summarize: true,
       meeting_mode: "interview",
     });
@@ -57,24 +56,6 @@ describe("LiveClient.start", () => {
       title: "Собес",
       meeting_mode: "interview",
     });
-  });
-});
-
-describe("LiveClient.ask", () => {
-  it("шлёт вопрос вместе с выделенными репликами", () => {
-    const { client, sent } = withFakeSocket(WebSocket.OPEN);
-    client.ask("что такое SLA", [12, 7]);
-    expect(JSON.parse(sent[0] as unknown as string)).toEqual({
-      type: "ask",
-      question: "что такое SLA",
-      segment_ids: [12, 7],
-    });
-  });
-
-  it("выделение необязательно — вопрос может быть общим", () => {
-    const { client, sent } = withFakeSocket(WebSocket.OPEN);
-    client.ask("что такое кубернетес");
-    expect(JSON.parse(sent[0] as unknown as string).segment_ids).toEqual([]);
   });
 });
 

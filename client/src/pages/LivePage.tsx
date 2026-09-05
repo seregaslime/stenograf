@@ -441,7 +441,6 @@ export default function LivePage({
     client.start({
       title: title.trim() || "Встреча",
       record_audio: recordAudio,
-      hints: hintsWanted,
       summarize: summarizeWanted,
       meeting_mode: meetingMode,
     });
@@ -708,7 +707,7 @@ export default function LivePage({
               <span className="box">✓</span>
               Включены
             </label>
-            <button className="btn small" onClick={() => clientRef.current?.requestHint()}>
+            <button className="btn small" onClick={() => void hintsRef.current?.emit(true)}>
               Подсказать сейчас
             </button>
           </div>
