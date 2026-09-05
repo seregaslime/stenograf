@@ -20,6 +20,7 @@ const НАСТРОЙКИ: LlmSettings = {
   apiKey: "ключ",
   apiSummaryModel: "gpt-oss-120b",
   apiHintsModel: "gpt-oss-20b",
+  embedModel: "bge-m3",
 };
 
 function реплики(сколько: number, длина = 40): SegmentDto[] {

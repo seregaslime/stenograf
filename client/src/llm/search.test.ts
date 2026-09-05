@@ -24,6 +24,7 @@ const НАСТРОЙКИ: LlmSettings = {
   apiKey: "",
   apiSummaryModel: "",
   apiHintsModel: "",
+  embedModel: "bge-m3",
 };
 
 const НАЙДЕНО: SearchHit[] = [

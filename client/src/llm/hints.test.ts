@@ -18,6 +18,7 @@ const НАСТРОЙКИ: LlmSettings = {
   apiKey: "",
   apiSummaryModel: "",
   apiHintsModel: "",
+  embedModel: "bge-m3",
 };
 
 /** Движок с подменённой моделью и управляемыми часами. */

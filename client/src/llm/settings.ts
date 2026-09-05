@@ -23,6 +23,7 @@ const ПО_УМОЛЧАНИЮ: LlmSettings = {
   apiKey: "",
   apiSummaryModel: "",
   apiHintsModel: "",
+  embedModel: "bge-m3",
   tpmLimits: {},
 };
 
@@ -37,6 +38,7 @@ export function loadLlmSettings(): LlmSettings {
     apiKey: строка("apiKey", ""),
     apiSummaryModel: строка("apiSummaryModel", ""),
     apiHintsModel: строка("apiHintsModel", ""),
+    embedModel: строка("embedModel", ПО_УМОЛЧАНИЮ.embedModel),
     tpmLimits: разобратьЛимиты(getSetting(ПРЕФИКС + "tpmLimits", "")),
   };
 }

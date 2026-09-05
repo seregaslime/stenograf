@@ -22,6 +22,13 @@ export interface LlmSettings {
   apiKey: string;
   apiSummaryModel: string;
   apiHintsModel: string;
+  /**
+   * Модель эмбеддингов для поиска по встречам. Считается Ollama даже при
+   * выбранном внешнем API: это не разговорная модель, у провайдеров она
+   * тарифицируется отдельно, и складывать их в одну настройку значило бы врать
+   * в интерфейсе.
+   */
+  embedModel: string;
   /** Измеренные лимиты токенов в минуту по моделям. */
   tpmLimits?: Record<string, number>;
   keepAlive?: string;

@@ -186,6 +186,19 @@ declare global {
 }
 
 /** Найденный кусок разговора: цитата со ссылкой на встречу и момент. */
+/** Встреча, которой не хватает векторов, с готовыми кусками разговора.
+ *  Нарезка на сервере: она про содержимое встречи, а не про модель. */
+export interface PendingMeetingDto {
+  meeting_id: number;
+  title: string;
+  chunks: {
+    first_segment_id: number;
+    last_segment_id: number;
+    start_s: number;
+    text: string;
+  }[];
+}
+
 export interface SearchHit {
   meeting_id: number;
   meeting_title: string;

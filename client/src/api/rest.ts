@@ -10,6 +10,7 @@ import type {
   MeetingListItem,
   SearchAnswer,
   SearchHit,
+  PendingMeetingDto,
   SpeakerDto,
   SummarySaved,
 } from "../types";
@@ -69,6 +70,29 @@ export const api = {
     }),
 
   // Поиск по смыслу среди прошлых встреч; сервер сам доиндексирует новые
+  /** Что осталось проиндексировать ЭТОЙ моделью: векторы считает приложение. */
+  searchPending: (model: string) =>
+    request<{ meetings: PendingMeetingDto[] }>(
+      `/api/search/pending?model=${encodeURIComponent(model)}`,
+    ),
+
+  searchIndex: (body: {
+    model: string;
+    meeting_id: number;
+    chunks: (PendingMeetingDto["chunks"][number] & { vector: number[] })[];
+  }) =>
+    request<{ meeting_id: number; chunks: number }>("/api/search/index", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /** Поиск по уже посчитанному вектору вопроса: сравнение делает сервер. */
+  searchQuery: (body: { model: string; vector: number[]; limit?: number }) =>
+    request<{ results: SearchHit[] }>("/api/search/query", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   search: (q: string, limit?: number) =>
     request<{ results: SearchHit[] }>(
       `/api/search?q=${encodeURIComponent(q)}` + (limit ? `&limit=${limit}` : ""),
