@@ -34,7 +34,10 @@ echo "→ Тяну образ"
 docker compose pull server
 
 echo "→ Перезапускаю"
-docker compose up -d server
+# --remove-orphans убирает контейнеры, которых в описании больше нет. Иначе
+# исчезнувший из compose сервис (так ушла ollama) продолжает работать и держать
+# память: docker обновляет только то, что перечислено, а про остальное молчит.
+docker compose up -d --remove-orphans server
 
 echo "→ Жду, пока поднимется"
 health=""

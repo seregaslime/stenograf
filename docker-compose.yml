@@ -1,12 +1,15 @@
 # Серверная часть Стенографа в контейнерах — сценарий «сервер организации»:
-# тяжёлые модели крутятся здесь, сотрудники подключаются лёгким клиентом.
+# распознавание речи и хранилище встреч здесь, сотрудники подключаются лёгким
+# клиентом.
 #
 #   docker compose up -d --build
-#   docker compose exec ollama ollama pull qwen3:4b     # протоколы   (один раз)
-#   docker compose exec ollama ollama pull qwen3:1.7b   # подсказки   (один раз)
 #
 # В клиенте: Настройки → Адрес сервера → http://<хост>:8765
 # По умолчанию ASR — GigaAM v3 (скачается при первом запуске в том stenograf-data).
+#
+# Языковой модели здесь нет с 05.09.2026: протокол, подсказки и эмбеддинги
+# считает приложение, обращаясь к модели по адресу из своих настроек. У каждого
+# он свой — своя машина, свой ключ, свой VPN и свой лимит запросов.
 services:
   server:
     build: ./server
@@ -19,23 +22,11 @@ services:
       - "8765:8765"
     environment:
       STENOGRAF_DATA_DIR: /data
-      # Значение по умолчанию. Как только адрес Ollama сохранят в настройках
-      # приложения, он ляжет в /data/llm.json и будет важнее этой переменной —
-      # правка здесь перестанет что-либо менять (том переживает пересборку).
-      STENOGRAF_OLLAMA_URL: http://ollama:11434
       # Слабый сервер — модель полегче:
       # STENOGRAF_ASR_ENGINE: faster_whisper
       # STENOGRAF_ASR_MODEL: small
-      # Внешний/внутренний LLM по API вместо Ollama (ключ задаётся здесь, не в образе):
-      # STENOGRAF_LLM_PROVIDER: api
-      # STENOGRAF_LLM_API_BASE_URL: https://api.groq.com/openai/v1
-      # STENOGRAF_LLM_API_KEY: sk-...
-      # STENOGRAF_LLM_API_SUMMARY_MODEL: openai/gpt-oss-120b
-      # STENOGRAF_LLM_API_HINTS_MODEL: openai/gpt-oss-20b
     volumes:
       - stenograf-data:/data
-    depends_on:
-      - ollama
     restart: unless-stopped
     # Контейнер играет роль «сервера организации» с известными ресурсами.
     # Лимит нужен и для нагрузочных прогонов: без него контейнер съест всю
@@ -43,12 +34,5 @@ services:
     # GigaAM + ECAPA занимают ~1.9 ГБ, поэтому 3 ГБ — рабочий минимум.
     mem_limit: 3g
 
-  ollama:
-    image: ollama/ollama:latest
-    volumes:
-      - ollama-models:/root/.ollama
-    restart: unless-stopped
-
 volumes:
   stenograf-data:
-  ollama-models:

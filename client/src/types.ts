@@ -88,68 +88,6 @@ export interface HealthDto {
   // шлёт, поэтому необязательное.
   asr?: { engine: string; model: string; loaded: boolean; device?: string };
   diarization?: { loaded: boolean; device?: string };
-  ollama?: { reachable: boolean; models: string[] };
-  llm?: { provider: "local" | "api"; api_configured: boolean };
-  summary_model?: string;
-  hints_model?: string;
-}
-
-export interface LlmStateDto {
-  provider: "local" | "api";
-  api_configured: boolean;
-  api_base_url: string;
-  /** Чем заполнить поле адреса, если ничего не сохранено (задаётся сервером). */
-  api_base_url_default: string;
-  /** Токенов в минуту по моделям — измеряется при сохранении настроек.
-   *  Именно этот лимит ограничивает подсказки, а не размер контекста. */
-  api_tpm_limits: Record<string, number>;
-  reachable: boolean;
-  models: string[];
-  models_info: LlmModelInfo[];
-  models_rejected: number;
-  /** Настройки Ollama — приходят всегда, даже когда активен api: форма
-   *  показывает оба набора, и локальный не должен подменяться API-шным. */
-  ollama_url: string;
-  local_summary_model: string;
-  local_hints_model: string;
-  /** Роль модели для ответов по прошлым встречам: summary | hints. */
-  search_answer_model: string;
-  summary_model: string; // модели активного провайдера (строка статуса)
-  hints_model: string;
-  api_summary_model: string; // модели API — отдельно, для формы настроек
-  api_hints_model: string;
-}
-
-/** Модель API с размером контекстного окна (его сообщает сам провайдер). */
-export interface LlmModelInfo {
-  id: string;
-  context_window: number | null;
-}
-
-export interface LlmModelsDto {
-  reachable: boolean;
-  models: string[];
-  models_info: LlmModelInfo[];
-  /** Сколько моделей провайдера не подошло — их в списке нет. */
-  models_rejected: number;
-}
-
-export interface LlmSettings {
-  provider: string;
-  api_base_url?: string;
-  api_key?: string;
-  summary_model?: string;
-  hints_model?: string;
-  ollama_url?: string;
-  local_summary_model?: string;
-  local_hints_model?: string;
-  search_answer_model?: string;
-}
-
-/** Ответ пробы Ollama: у неё нет ни размера контекста, ни отсева моделей. */
-export interface OllamaModelsDto {
-  reachable: boolean;
-  models: string[];
 }
 
 export interface AsrStateDto {

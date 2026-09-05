@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/rest";
 import { OllamaClient } from "../llm/ollama";
-import { OpenAiClient } from "../llm/openai";
+import { OpenAiClient, type ModelInfo } from "../llm/openai";
 import { loadLlmSettings, saveLlmSettings } from "../llm/settings";
 import { DEFAULT_SERVER_URL, getSetting, isDebugMode, platform, setSetting } from "../store";
-import type { AsrStateDto, HealthDto, LlmModelInfo } from "../types";
+import type { AsrStateDto, HealthDto } from "../types";
 
 const ENGINE_LABELS: Record<string, string> = {
   faster_whisper: "CPU (faster-whisper)",
@@ -56,7 +56,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [apiModels, setApiModels] = useState<string[]>([]);
-  const [modelsInfo, setModelsInfo] = useState<LlmModelInfo[]>([]);
+  const [modelsInfo, setModelsInfo] = useState<ModelInfo[]>([]);
   const [modelsRejected, setModelsRejected] = useState(0);
   const [summaryModel, setSummaryModel] = useState("");
   const [hintsModel, setHintsModel] = useState("");
@@ -146,7 +146,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
    *  Лимит известен только для сохранённых моделей: он измеряется при
    *  сохранении настроек. */
   function modelLabel(id: string): string {
-    const context = modelsInfo.find((m) => m.id === id)?.context_window;
+    const context = modelsInfo.find((m) => m.id === id)?.context;
     const tpm = tpmLimits[id];
     const parts = [
       context ? `${Math.round(context / 1024)}k контекст` : "",
@@ -219,7 +219,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
       }).models();
       const res = { models: пригодные.map((m) => m.id) };
       setApiModels(res.models);
-      setModelsInfo(пригодные.map((m) => ({ id: m.id, context_window: m.context ?? 0 })));
+      setModelsInfo(пригодные);
       setModelsRejected(0);
       if (!res.models.length) {
         setProbeError(
@@ -449,9 +449,9 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
                   placeholder="http://127.0.0.1:11434"
                 />
                 <span className="hint">
-                  Ollama может работать не на этой машине: в контуре с
-                  докером — соседним контейнером (<code>http://ollama:11434</code>),
-                  в организации — на отдельном сервере
+                  Ollama может работать не на этой машине: на домашнем компьютере
+                  с видеокартой или на отдельном сервере моделей — приложение
+                  ходит к ней напрямую, минуя сервер распознавания
                 </span>
               </label>
               <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 6 }}>
@@ -617,7 +617,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
               placeholder="bge-m3"
             />
             <span className="hint">
-              Считается локальной Ollama даже при выбранном внешнем API: это не
+              Считается через Ollama даже при выбранном внешнем API: это не
               разговорная модель, у провайдеров она тарифицируется отдельно.
               Скачать: <code>ollama pull bge-m3</code>
             </span>
@@ -648,9 +648,9 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
             </span>
           </div>
           <p style={{ color: "var(--muted)", fontSize: 12.5, marginTop: 10 }}>
-            Ключ хранится на сервере (<code>server/data/llm.json</code>) и обратно на клиент не
-            отдаётся. При включённом API на указанный endpoint отправляется текст транскрипта
-            (аудио — никогда).
+            Ключ хранится здесь, в приложении, и на сервер не отправляется — к модели
+            приложение ходит само. При включённом API на указанный адрес уходит текст
+            транскрипта (аудио — никогда).
           </p>
           {llmError && (
             <div className="banner error" style={{ marginTop: 12 }}>
@@ -683,9 +683,10 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
         <p style={{ color: "var(--muted)", fontSize: 13.5 }}>
           Распознавание речи и определение голосов всегда выполняются локальными моделями
           (whisper/GigaAM, ECAPA-TDNN) — аудио не покидает вашу машину или сервер организации.
-          Составление протоколов и подсказки по умолчанию тоже локальны (Ollama). Внешний
-          LLM-API — отдельная опция, выключенная по умолчанию; при её включении на указанный в
-          настройках сервера endpoint отправляется текст транскрипта (аудио — никогда).
+          Протокол, подсказки и поиск считает модель, адрес которой задан выше: по умолчанию
+          Ollama, то есть тоже локально. Внешний API — отдельная опция; при её включении на
+          указанный адрес уходит текст транскрипта (аудио — никогда), и уходит он прямо из
+          приложения: ни ключ, ни текст через сервер распознавания не проходят.
         </p>
       </div>
     </div>
