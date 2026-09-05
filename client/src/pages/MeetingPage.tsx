@@ -182,7 +182,7 @@ export default function MeetingPage({
                   />
                   {meeting.summary_model && (
                     <p style={{ color: "var(--muted)", fontSize: 11.5, marginTop: 12 }}>
-                      Модель: {meeting.summary_model} (локально)
+                      Модель: {meeting.summary_model}
                     </p>
                   )}
                 </>
