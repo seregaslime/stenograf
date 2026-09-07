@@ -49,10 +49,21 @@ def test_no_chunks_from_silence():
 # ------------------------------------------------- чужие размерности в базе
 
 def _положить(db, вектор: list[float], meeting_id: int = 1) -> None:
-    db.add(Meeting(id=meeting_id, title="Планёрка", status="done"))
+    """Кусок со всей роднёй: встреча и сегмент, на который он ссылается.
+
+    Сегмент здесь не для красоты — на него смотрит внешний ключ. Пока база была
+    SQLite, она ключи по умолчанию не проверяла, и кусок спокойно ссылался в
+    пустоту; PostgreSQL такую вставку отбивает.
+    """
+    встреча = Meeting(id=meeting_id, title="Планёрка", status="done")
+    db.add(встреча)
+    сегмент = _segment(meeting_id, "про деньги и сроки")
+    сегмент.meeting_id = meeting_id
+    db.add(сегмент)
+    db.flush()
     db.add(Chunk(
         meeting_id=meeting_id, model="bge-m3", text="про деньги и сроки",
-        first_segment_id=1, last_segment_id=1, start_s=0.0,
+        first_segment_id=сегмент.id, last_segment_id=сегмент.id, start_s=0.0,
         vector=np.asarray(вектор, dtype=np.float32).tobytes(),
     ))
     db.flush()

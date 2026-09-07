@@ -54,7 +54,7 @@
 │ микрофон  ─┐            │  WebSocket  │ микшер каналов → денойз* → VAD →   │
 │ система   ─┴→ PCM16 16k │ ──────────► │ → ASR (GigaAM / whisper) →         │
 │ (loopback / BlackHole)  │ ◄────────── │ → ECAPA-эмбеддинг → база голосов → │
-│ чат, спикеры, история   │   события   │ → SQLite → события клиенту         │
+│ чат, спикеры, история   │   события   │ → PostgreSQL → события клиенту     │
 └───────────┬─────────────┘             └────────────────────────────────────┘
             │ HTTP: протокол, подсказки, эмбеддинги
             ▼
@@ -109,7 +109,18 @@
 
 ## Быстрый старт (локально, macOS/Linux)
 
-Требования: Python 3.11+ (или [uv](https://docs.astral.sh/uv/)), Node.js 20+.
+Требования: Python 3.11+ (или [uv](https://docs.astral.sh/uv/)), Node.js 20+ и
+**PostgreSQL** — встречи, спикеры и векторы поиска хранятся в нём.
+
+```bash
+# Проще всего поднять базу тем же compose, что и на сервере:
+docker compose up -d db
+
+# Или своей, если PostgreSQL уже стоит на машине:
+createuser -s stenograf && createdb -O stenograf stenograf
+psql -d postgres -c "ALTER ROLE stenograf PASSWORD 'stenograf'"
+```
+
 Для протокола и подсказок нужна языковая модель — проще всего
 [Ollama](https://ollama.com) на этой же машине:
 
@@ -367,7 +378,8 @@ ollama pull bge-m3
 | `STENOGRAF_CORS_ORIGINS` | `null` | Кому браузер разрешит читать ответы, вдобавок к локальным адресам. `null` — собранное приложение (грузится с `file://`) |
 | `STENOGRAF_SEARCH_CHUNK_CHARS` | `600` | Сколько символов набирать в кусок разговора перед подсчётом вектора |
 | `STENOGRAF_SEARCH_TOP_K` | `5` | Сколько кусков отдавать на один запрос |
-| `STENOGRAF_DATA_DIR` | `server/data` | БД, модели, аудио «звучаний» голоса, записи |
+| `STENOGRAF_DATABASE_URL` | `postgresql+psycopg://stenograf:stenograf@127.0.0.1:5432/stenograf` | Адрес базы; по умолчанию совпадает с сервисом `db` из `docker-compose.yml` |
+| `STENOGRAF_DATA_DIR` | `server/data` | Модели, аудио «звучаний» голоса, записи |
 
 Движок ASR, выбранный в настройках приложения, сохраняется в `data/asr.json` и
 имеет приоритет над переменными окружения.
@@ -415,9 +427,15 @@ ollama pull bge-m3
   покрытие строк и ветвей, вклад каждого уровня.
 - **[TESTS.md](TESTS.md)** — каталог: каждый тест, где лежит и что проверяет.
 
+Тесты идут на настоящем PostgreSQL, база `stenograf_test` (адрес переопределяется
+переменной `STENOGRAF_DATABASE_URL`). Подменять базу на «почти такую же» нельзя —
+именно так и всплыли расхождения при переезде: SQLite не проверял внешние ключи и
+терял часовой пояс, а часть тестов на это опиралась.
+
 ```bash
 cd server
 uv pip install --python .venv/bin/python -r requirements-dev.txt   # один раз (pytest, pytest-cov)
+createdb -O stenograf stenograf_test                               # один раз
 
 # Отчёт целиком: гоняет уровни, считает покрытие, перезаписывает TEST_REPORT.md
 .venv/bin/python scripts/test_report.py          # быстрые уровни (секунды)

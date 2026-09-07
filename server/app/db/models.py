@@ -23,7 +23,6 @@ class User(Base):
     """
 
     __tablename__ = "users"
-    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
@@ -35,9 +34,11 @@ class Speaker(Base):
     """Человек. Живёт между встречами; у него 1..N отпечатков голоса."""
 
     __tablename__ = "speakers"
-    # AUTOINCREMENT: id удалённых профилей не переиспользуются — иначе фоновые
-    # задачи и файлы образцов «наследуются» новым профилем с тем же id
-    __table_args__ = {"sqlite_autoincrement": True}
+    # id удалённых профилей не переиспользуются: иначе фоновые задачи и файлы
+    # образцов «наследуются» новым профилем с тем же id. В SQLite это надо было
+    # просить отдельно (sqlite_autoincrement), PostgreSQL так делает сам —
+    # последовательность назад не отматывается. Проверено тестом, потому что
+    # держится это на поведении СУБД, а не на нашем коде.
 
     id: Mapped[int] = mapped_column(primary_key=True)
     # Чей это голос в библиотеке. NULL — сервер личный (людей не заводили).
@@ -69,7 +70,6 @@ class VoicePrint(Base):
     """
 
     __tablename__ = "voiceprints"
-    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
     speaker_id: Mapped[int] = mapped_column(ForeignKey("speakers.id", ondelete="CASCADE"))
@@ -84,18 +84,20 @@ class VoicePrint(Base):
 
 class Meeting(Base):
     __tablename__ = "meetings"
-    # AUTOINCREMENT: см. Speaker — новая встреча не должна получить id удалённой,
-    # пока по удалённой ещё может дописывать резюме фоновая задача
-    __table_args__ = {"sqlite_autoincrement": True}
+    # См. Speaker: новая встреча не должна получить id удалённой, пока по
+    # удалённой ещё может дописывать резюме фоновая задача.
 
     id: Mapped[int] = mapped_column(primary_key=True)
     # Чья встреча. NULL — сервер личный, людей на нём не заводили; как только
     # заводят первого, ничейные встречи достаются ему (см. auth.create_user).
     # SET NULL, а не CASCADE: отзыв доступа — это отзыв ключа, а не удаление
-    # архива. Правило декоративное: внешние ключи в SQLite выключены, и на деле
-    # встречи удалённого остаются с owner_id на несуществующего — то есть
-    # невидимы всем и не достаются следующему заведённому. Так безопаснее, но
-    # знать об этом надо: команда remove не стирает данные, а прячет их.
+    # архива. На PostgreSQL правило наконец работает: встречи удалённого
+    # становятся ничейными. Пока база была SQLite, ключи не проверялись, и они
+    # оставались с owner_id на несуществующего — невидимые всем навсегда.
+    #
+    # Следствие, о котором надо знать: ничейные встречи достаются первому
+    # заведённому человеку (см. auth.create_user). То есть «удалить всех и
+    # завести одного» теперь отдаёт ему чужой архив, а не прячет его навсегда.
     owner_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )

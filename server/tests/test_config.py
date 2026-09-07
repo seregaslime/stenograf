@@ -12,7 +12,7 @@ def test_defaults():
     """
     s = Settings(_env_file=None)
     assert s.asr_engine == "gigaam"
-    assert s.db_path.name == "stenograf.db"
+    assert s.database_url.startswith("postgresql+psycopg://")
     assert s.samples_dir == s.data_dir / "samples"
 
 

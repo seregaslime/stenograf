@@ -42,7 +42,9 @@ COPY tests ./tests
 COPY scripts ./scripts
 
 # Модели не качаем: медленные уровни (integration/e2e/load) требуют весов и
-# живого сервера, здесь гоняется быстрый набор с покрытием.
+# живого сервера, здесь гоняется быстрый набор с покрытием. Базу, наоборот,
+# надо дать настоящую: STENOGRAF_DATABASE_URL должен указывать на PostgreSQL с
+# именем, содержащим «test» — иначе прогон откажется стартовать.
 ENV STENOGRAF_PRELOAD_ASR=false
 CMD ["python", "scripts/test_report.py", "--out", "/srv/reports/TEST_REPORT.md"]
 

@@ -9,6 +9,7 @@ import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,6 +33,9 @@ from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import SpeakerRegistry
 from .transcript import build_transcript
 from .ws import LiveSession, notify_speakers_merged
+
+# Время в шапке экспортируемого протокола. См. export_meeting.
+МОСКВА = ZoneInfo("Europe/Moscow")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 log = logging.getLogger("stenograf")
@@ -352,7 +356,14 @@ def export_meeting(meeting_id: int, request: Request, fmt: str = "md"):
             raise HTTPException(404, "Встреча не найдена")
         segments = crud.meeting_segments(db, meeting_id)
         transcript, participants = build_transcript(segments)
-        date = meeting.started_at.strftime("%d.%m.%Y %H:%M") if meeting.started_at else ""
+        # Приводим к московскому времени явно. Момент времени в базе хранится
+        # со смещением, и PostgreSQL отдаёт его в поясе своей сессии: у Сергея
+        # на машине это Europe/Moscow, в контейнере postgres — UTC. Без этой
+        # строки один и тот же протокол выгружался бы с разным временем в
+        # зависимости от того, откуда его скачали, и заметил бы это только
+        # человек, открывший файл. Пояс зашит: протоколы читают люди в Москве.
+        date = (meeting.started_at.astimezone(МОСКВА).strftime("%d.%m.%Y %H:%M")
+                if meeting.started_at else "")
         if fmt == "md":
             parts = [f"# {meeting.title}", f"*{date}*", f"**Участники:** {participants}", ""]
             if meeting.summary:

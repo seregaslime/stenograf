@@ -1,4 +1,4 @@
-"""Юнит-тесты операций с БД (db/crud.py) на in-memory SQLite (фикстура db_session)."""
+"""Юнит-тесты операций с БД (db/crud.py) на настоящем PostgreSQL (фикстура db_session)."""
 from app.db import crud
 from app.db.models import Meeting, Speaker
 
@@ -98,3 +98,25 @@ def test_list_speakers_counts_and_order(db_session):
     assert by_id[self_sp.id]["segments_count"] == 1
     assert by_id[self_sp.id]["meetings_count"] == 1
     assert by_id[guest.id]["voiceprints_count"] == 0
+
+
+def test_id_удалённого_профиля_не_достаётся_новому(db_session):
+    """Последовательность id назад не отматывается.
+
+    На этом держится разделение фоновых задач и файлов: пока по удалённому
+    профилю ещё может дописывать что-то фоновая задача, новый профиль не должен
+    получить его id и «унаследовать» чужие образцы голоса. В SQLite это
+    приходилось просить отдельно (sqlite_autoincrement), PostgreSQL так делает
+    сам — но проверяем, потому что держится оно на поведении СУБД, а не на
+    нашем коде, и молча поменяться может только здесь.
+    """
+    первый = crud.create_speaker(db_session)
+    db_session.flush()
+    был = первый.id
+
+    db_session.delete(первый)
+    db_session.flush()
+
+    второй = crud.create_speaker(db_session)
+    db_session.flush()
+    assert второй.id != был

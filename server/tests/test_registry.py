@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 from sqlalchemy import select
 
+from app import auth
 from app.db import crud
 from app.db.models import VoicePrint
 from app.diarization.registry import SpeakerRegistry
@@ -291,6 +292,20 @@ def test_forget_removes_profile(registry, db_session, rng):
 # У каждого человека своя библиотека голосов, пересечений нет. Иначе профиль
 # «Вы» (владелец микрофона) был бы общим на двоих — а на нём висит скидка к
 # порогу, и голоса разных людей слились бы в один профиль.
+
+
+@pytest.fixture(autouse=True)
+def двое_заведены(db_session):
+    """Владельцы 1 и 2 существуют на самом деле.
+
+    Раньше тесты передавали owner_id=1 и 2, не заводя людей: SQLite внешние
+    ключи по умолчанию не проверяет, и ссылка в пустоту проходила. PostgreSQL
+    её отбивает — и правильно делает, у спикера без владельца нет смысла.
+    """
+    auth.create_user(db_session, "Первый")
+    auth.create_user(db_session, "Второй")
+    db_session.flush()
+
 
 def test_один_голос_даёт_разные_профили_у_разных_владельцев(registry, db_session, rng):
     голос = unit(rng.standard_normal(DIM))

@@ -80,6 +80,11 @@ beforeAll(async () => {
       ...process.env,
       STENOGRAF_DATA_DIR: данные,
       STENOGRAF_PRELOAD_ASR: "true",
+      // Тестовая база, а не рабочая: прогон пишет настоящие встречи, и класть
+      // их в базу, которой человек пользуется, нельзя.
+      STENOGRAF_DATABASE_URL:
+        process.env.STENOGRAF_DATABASE_URL ??
+        "postgresql+psycopg://stenograf:stenograf@127.0.0.1:5432/stenograf_test",
       // Синтетические голоса macOS ближе живых — порог поднят, как и в
       // серверном e2e: проверяем правила, а не подбор числа.
       STENOGRAF_SPEAKER_MATCH_THRESHOLD: "0.45",
