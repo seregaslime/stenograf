@@ -3,6 +3,8 @@ uvicorn[standard]>=0.30
 sqlalchemy>=2.0
 # psycopg 3, бинарная сборка — не требует libpq на машине
 psycopg[binary]>=3.2
+# миграции схемы: одна ревизия на изменение, отметка версии в самой базе
+alembic>=1.13
 pydantic-settings>=2.2
 numpy>=1.26
 httpx>=0.27

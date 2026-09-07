@@ -39,7 +39,7 @@ from sqlalchemy import text
 
 from app.config import Settings
 from app.db import models
-from app.db.database import SessionLocal, engine
+from app.db.database import SessionLocal, engine, init_db
 
 
 @pytest.fixture()
@@ -51,11 +51,23 @@ def cfg(tmp_path) -> Settings:
 @pytest.fixture(scope="session", autouse=True)
 def схема():
     """Схема создаётся один раз на прогон, а не на каждый тест: на настоящей
-    базе это сеть и десятки DDL-запросов, а не миллисекунды в памяти."""
-    models.Base.metadata.drop_all(engine)
-    models.Base.metadata.create_all(engine)
+    базе это сеть и десятки DDL-запросов, а не миллисекунды в памяти.
+
+    Через init_db, то есть ревизиями Alembic, — тем же путём, каким схема
+    появляется у людей. Через create_all было бы быстрее, но тогда тесты
+    проверяли бы схему, которой ни у кого нет: разойдись ревизии с models.py, и
+    прогон остался бы зелёным.
+    """
+    очистить_схему()
+    init_db()
     yield
+    очистить_схему()
+
+
+def очистить_схему() -> None:
     models.Base.metadata.drop_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
 
 
 def очистить() -> None:

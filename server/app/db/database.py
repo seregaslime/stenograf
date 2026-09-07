@@ -1,9 +1,14 @@
 from contextlib import contextmanager
+from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from ..config import settings
+
+_SERVER_DIR = Path(__file__).resolve().parent.parent.parent
 
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -24,16 +29,32 @@ engine = create_engine(
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
-def init_db() -> None:
-    """Создаёт недостающие таблицы.
+def alembic_config() -> Config:
+    """Настройки Alembic с адресом базы из приложения.
 
-    Самописные миграции отсюда убраны: они были написаны на PRAGMA и
-    перестройке таблиц — командах, которых в PostgreSQL нет вовсе. Схему на
-    существующих базах будет доводить Alembic.
+    Отдельной функцией, потому что то же самое нужно тесту, который сверяет
+    ревизии с models.py.
     """
-    from . import models  # noqa: F401 — регистрирует таблицы
+    # Путь к ревизиям берётся из самого alembic.ini (%(here)s), поэтому
+    # переопределять его здесь не нужно — он посчитан от файла, а не от текущей
+    # папки, и работает, откуда бы сервер ни запустили.
+    return Config(_SERVER_DIR / "alembic.ini")
 
-    models.Base.metadata.create_all(engine)
+
+def init_db() -> None:
+    """Доводит схему до последней ревизии.
+
+    Не create_all: он создаёт только отсутствующие таблицы и НЕ добавляет
+    колонки в существующие. Раньше эту дыру закрывали шесть самописных функций
+    в этом же файле; теперь её закрывает Alembic, и у базы появляется отметка,
+    до какой ревизии она доведена, — вместо опроса «а есть ли уже такая
+    колонка» на каждом старте.
+
+    Миграции идут при старте сервера намеренно: на машине деплоя обновление —
+    это `docker compose up -d`, и отдельный шаг «не забыть прогнать миграции»
+    там некому выполнить.
+    """
+    command.upgrade(alembic_config(), "head")
 
 
 @contextmanager
