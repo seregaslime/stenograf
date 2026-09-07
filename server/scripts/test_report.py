@@ -53,7 +53,6 @@ LEVELS: list[Level] = [
         "unit", "Юнит",
         "одна функция или класс в изоляции, зависимости замоканы",
         ["tests", "--ignore=tests/test_api.py",
-         "--ignore=tests/test_migrations.py",
          "--ignore=tests/test_diarization_integration.py",
          "-m", "not integration and not e2e and not load"],
     ),
@@ -61,11 +60,6 @@ LEVELS: list[Level] = [
         "api", "Компонентные (API-слой)",
         "REST-эндпоинты через FastAPI TestClient в одном процессе: коды ответов и форма данных",
         ["tests/test_api.py", "-m", "not integration and not e2e and not load"],
-    ),
-    Level(
-        "migrations", "Интеграционные (БД)",
-        "миграции схемы на реальном файле SQLite: старая база → апгрейд без потери данных",
-        ["tests/test_migrations.py", "-m", "not integration and not e2e and not load"],
     ),
     Level(
         "integration", "Интеграционные (модели)",

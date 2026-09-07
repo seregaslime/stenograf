@@ -29,8 +29,6 @@ LEVELS: dict[str, tuple[str, str]] = {
     "test_load_smoke.py": ("Нагрузочные", "параллельные встречи, задержка и память"),
     "test_diarization_integration.py": ("Интеграционные (модели)",
                                         "реальная ECAPA на синтезированных голосах"),
-    "test_migrations.py": ("Интеграционные (БД)",
-                           "миграции схемы на реальном файле SQLite"),
     "test_api.py": ("Компонентные (API-слой)",
                     "REST через FastAPI TestClient в одном процессе"),
 }
@@ -55,7 +53,6 @@ FILE_ABOUT: dict[str, str] = {
     "test_loadtest_metrics.py": "разбор метрик нагрузочного прогона",
     "test_live_session.py": "живая сессия: разрез сегментов по смене говорящего",
     "test_api.py": "REST-эндпоинты: коды ответов, форма данных, отказы",
-    "test_migrations.py": "апгрейд старых баз без потери данных",
     "test_diarization_integration.py": "реальная модель ECAPA на синтезе голосов macOS",
     "test_e2e_live.py": "сквозные сценарии встречи через WebSocket",
     "test_load_smoke.py": "дымовой нагрузочный прогон",
