@@ -153,7 +153,10 @@ jobs:
         working-directory: server
     steps:
       - uses: actions/checkout@v4
+      # id нужен ниже: сквозной прогон клиента запускает сервер этим же
+      # интерпретатором, а server/.venv здесь не создаётся.
       - uses: actions/setup-python@v5
+        id: python
         with:
           python-version: "3.12"
           cache: pip
@@ -244,9 +247,14 @@ jobs:
       # составляет протокол. Живёт в клиенте, потому что вторая половина —
       # его код; сюда попадает, потому что здесь есть и веса моделей, и
       # голоса синтеза, которых на ubuntu нет.
+      # STENOGRAF_E2E_PYTHON: здесь зависимости сервера стоят системным pip, и
+      # server/.venv не существует — без этой переменной прогон пропускал сам
+      # себя, а шаг оставался зелёным. Теперь пропуск в CI — ошибка.
       - name: Сквозной прогон клиента (сервер + генерация)
         if: success() || steps.regress.conclusion == 'failure'
         working-directory: client
+        env:
+          STENOGRAF_E2E_PYTHON: ${{ steps.python.outputs.python-path }}
         run: |
           npm ci
           npm run test:e2e

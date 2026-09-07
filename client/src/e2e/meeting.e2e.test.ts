@@ -27,7 +27,10 @@ import type { SegmentDto } from "../types";
 const PORT = 8767;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SERVER_DIR = resolve(__dirname, "../../../server");
-const PYTHON = join(SERVER_DIR, ".venv/bin/python");
+// Интерпретатор сервера. Локально это его venv, в CI зависимости стоят
+// системным pip и venv не создаётся вовсе — поэтому адрес приходит переменной.
+// Без неё прогон в CI молча пропускался: шаг был зелёным и пустым.
+const PYTHON = process.env.STENOGRAF_E2E_PYTHON ?? join(SERVER_DIR, ".venv/bin/python");
 const МОДЕЛИ = join(SERVER_DIR, "data/models");
 
 const НАСТРОЙКИ: LlmSettings = {
@@ -97,6 +100,19 @@ beforeAll(async () => {
 afterAll(() => сервер?.kill());
 
 const доступно = existsSync(PYTHON) && existsSync(МОДЕЛИ) && process.platform === "darwin";
+
+// В CI пропуск запрещён. Локально прогон честно пропускается — у человека может
+// не быть ни весов моделей, ни макбука; но зелёный прогон, в котором не
+// выполнилось ничего, хуже красного, и на раннере это должно быть ошибкой, а не
+// строчкой «1 skipped», которую никто не читает.
+if (!доступно && process.env.CI) {
+  throw new Error(
+    "Сквозной прогон пропустил бы себя в CI. " +
+      `python: ${PYTHON} (${existsSync(PYTHON) ? "есть" : "НЕТ"}), ` +
+      `веса: ${МОДЕЛИ} (${existsSync(МОДЕЛИ) ? "есть" : "НЕТ"}), ` +
+      `платформа: ${process.platform}`,
+  );
+}
 
 describe.skipIf(!доступно)("встреча целиком: сервер распознаёт, приложение пишет протокол", () => {
   it("транскрипт приходит с сервера, протокол уходит на сервер", async () => {
