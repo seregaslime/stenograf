@@ -40,6 +40,11 @@ graphify-out/
 !.claude/skills/ponytail/
 !.claude/skills/sozvon/
 
+# Дампы базы, которые deploy/update.sh снимает перед каждым обновлением. Лежат
+# рядом с проектом на машине деплоя — в репозитории им делать нечего, а
+# `git pull --ff-only` из того же скрипта не должен об них спотыкаться.
+backups/
+
 # OS
 .DS_Store
 server.log

@@ -18,6 +18,11 @@ RUN pip install --no-cache-dir \
     -r requirements.txt
 
 COPY app ./app
+# Ревизии схемы едут в образ вместе с кодом: сервер при старте доводит базу до
+# последней (init_db). Без этих двух строк контейнер поднимался бы до первого
+# запроса и падал на «table does not exist» — причём только на чистой базе.
+COPY alembic.ini .
+COPY migrations ./migrations
 
 # Данные (БД, модели распознавания, образцы голосов, записи) — в томе /data.
 # Языковой модели в образе нет: её зовёт приложение по адресу из своих настроек.
@@ -42,7 +47,9 @@ COPY tests ./tests
 COPY scripts ./scripts
 
 # Модели не качаем: медленные уровни (integration/e2e/load) требуют весов и
-# живого сервера, здесь гоняется быстрый набор с покрытием.
+# живого сервера, здесь гоняется быстрый набор с покрытием. Базу, наоборот,
+# надо дать настоящую: STENOGRAF_DATABASE_URL должен указывать на PostgreSQL с
+# именем, содержащим «test» — иначе прогон откажется стартовать.
 ENV STENOGRAF_PRELOAD_ASR=false
 CMD ["python", "scripts/test_report.py", "--out", "/srv/reports/TEST_REPORT.md"]
 

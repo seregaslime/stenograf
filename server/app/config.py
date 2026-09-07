@@ -31,6 +31,12 @@ class Settings(BaseSettings):
 
     data_dir: Path = _SERVER_DIR / "data"
 
+    # Адрес базы. Значение по умолчанию совпадает с сервисом db из
+    # docker-compose.yml — чтобы «на моей машине» и «в контейнере» означали одно
+    # и то же. SQLite здесь больше нет: самописные миграции на PRAGMA под два
+    # диалекта не живут, а держать два — это вдвое больше того, что ломается.
+    database_url: str = "postgresql+psycopg://stenograf:stenograf@127.0.0.1:5432/stenograf"
+
     # Версия кода. Задаётся при сборке образа (STENOGRAF_VERSION=<git sha>),
     # локально остаётся "dev". Нужна ровно для одного: понять, отстала машина
     # или нет. Прежняя захардкоженная «0.1.0» на этот вопрос не отвечала — она
@@ -104,10 +110,6 @@ class Settings(BaseSettings):
     # идущие реплики, пока не наберётся столько символов.
     search_chunk_chars: int = 600
     search_top_k: int = 5           # сколько кусков отдавать на один запрос
-
-    @property
-    def db_path(self) -> Path:
-        return self.data_dir / "stenograf.db"
 
     @property
     def samples_dir(self) -> Path:

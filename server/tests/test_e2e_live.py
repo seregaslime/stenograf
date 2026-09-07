@@ -23,6 +23,7 @@ import httpx
 import numpy as np
 import pytest
 import websockets
+from conftest import очистить
 
 pytestmark = pytest.mark.e2e
 
@@ -44,6 +45,11 @@ def server(tmp_path_factory):
         pytest.skip("нет кэша моделей server/data/models — сначала запустите сервер")
     data_dir = tmp_path_factory.mktemp("e2e_data")
     (data_dir / "models").symlink_to(SERVER_DIR / "data" / "models")
+    # База общая с юнит-тестами (адрес приходит из conftest), но чистить её
+    # между e2e нельзя — они ведут одну историю. Поэтому чистим один раз здесь,
+    # до старта сервера: прошлый прогон мог оставить встречи, и «спикер узнан на
+    # второй встрече» проверялось бы на чужих данных.
+    очистить()
     env = os.environ | {
         "STENOGRAF_DATA_DIR": str(data_dir),
         # ОБЯЗАТЕЛЬНО переопределить: conftest.py глушит прогрев моделей ради

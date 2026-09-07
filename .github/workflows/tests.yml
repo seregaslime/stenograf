@@ -17,6 +17,21 @@ jobs:
     defaults:
       run:
         working-directory: server
+    # База настоящая: SQLite из проекта убран, и подменять её в тестах на
+    # «почти такую же» значило бы проверять не то, что работает у людей.
+    # Именно так и всплыли расхождения — SQLite не проверял внешние ключи и
+    # терял часовой пояс, а тесты на это опирались.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: stenograf
+          POSTGRES_PASSWORD: stenograf
+          POSTGRES_DB: stenograf_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U stenograf"
+          --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -138,10 +153,29 @@ jobs:
         working-directory: server
     steps:
       - uses: actions/checkout@v4
+      # id нужен ниже: сквозной прогон клиента запускает сервер этим же
+      # интерпретатором, а server/.venv здесь не создаётся.
       - uses: actions/setup-python@v5
+        id: python
         with:
           python-version: "3.12"
           cache: pip
+
+      # Сервисные контейнеры на macOS-раннере не работают — там нет docker,
+      # поэтому Postgres ставится и запускается прямо на машине. Без базы
+      # медленные уровни не поднимут сервер вовсе: SQLite из проекта убран.
+      - name: PostgreSQL на раннере
+        run: |
+          brew install postgresql@17
+          brew services start postgresql@17
+          for i in $(seq 30); do
+            /opt/homebrew/opt/postgresql@17/bin/pg_isready -h 127.0.0.1 && break
+            sleep 2
+          done
+          /opt/homebrew/opt/postgresql@17/bin/createuser -h 127.0.0.1 -s stenograf
+          /opt/homebrew/opt/postgresql@17/bin/createdb -h 127.0.0.1 -O stenograf stenograf_test
+          /opt/homebrew/opt/postgresql@17/bin/psql -h 127.0.0.1 -d postgres \
+            -c "ALTER ROLE stenograf PASSWORD 'stenograf'"
 
       # Голоса синтеза — расходный материал этих тестов, и их отсутствие
       # ничего не ломает: integration просто скипнется, а прогон останется
@@ -213,9 +247,14 @@ jobs:
       # составляет протокол. Живёт в клиенте, потому что вторая половина —
       # его код; сюда попадает, потому что здесь есть и веса моделей, и
       # голоса синтеза, которых на ubuntu нет.
+      # STENOGRAF_E2E_PYTHON: здесь зависимости сервера стоят системным pip, и
+      # server/.venv не существует — без этой переменной прогон пропускал сам
+      # себя, а шаг оставался зелёным. Теперь пропуск в CI — ошибка.
       - name: Сквозной прогон клиента (сервер + генерация)
         if: success() || steps.regress.conclusion == 'failure'
         working-directory: client
+        env:
+          STENOGRAF_E2E_PYTHON: ${{ steps.python.outputs.python-path }}
         run: |
           npm ci
           npm run test:e2e

@@ -88,7 +88,7 @@ def collect_from_samples(cfg: Settings) -> dict[str, list[Path]]:
 
     from app.db.models import Speaker, VoicePrint
 
-    engine = create_engine(f"sqlite:///{cfg.db_path}")
+    engine = create_engine(cfg.database_url)
     session = sessionmaker(bind=engine)()
     people: dict[str, list[Path]] = {}
     try:

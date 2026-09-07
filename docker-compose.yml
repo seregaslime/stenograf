@@ -22,17 +22,52 @@ services:
       - "8765:8765"
     environment:
       STENOGRAF_DATA_DIR: /data
+      STENOGRAF_DATABASE_URL: postgresql+psycopg://stenograf:stenograf@db:5432/stenograf
       # Слабый сервер — модель полегче:
       # STENOGRAF_ASR_ENGINE: faster_whisper
       # STENOGRAF_ASR_MODEL: small
     volumes:
       - stenograf-data:/data
+    depends_on:
+      db:
+        # Именно service_healthy, а не просто depends_on: контейнер базы
+        # поднимается за секунды, но принимать соединения начинает позже, и
+        # сервер успел бы упасть на первом же запросе схемы.
+        condition: service_healthy
     restart: unless-stopped
     # Контейнер играет роль «сервера организации» с известными ресурсами.
     # Лимит нужен и для нагрузочных прогонов: без него контейнер съест всю
     # память хоста, вместо того чтобы честно упереться в потолок.
     # GigaAM + ECAPA занимают ~1.9 ГБ, поэтому 3 ГБ — рабочий минимум.
+    #
+    # Сумма лимитов теперь 3.5 ГБ (3 ГБ сервер + 0.5 ГБ база). На машине, где
+    # памяти меньше, лимит сервера опускают в docker-compose.override.yml — так
+    # сделано на сервере деплоя, где всего 3.9 ГБ на всё вместе с системой.
     mem_limit: 3g
+
+  db:
+    # Пароль тут в открытом виде намеренно: база доступна только внутри сети
+    # compose, наружу порт не выставлен. Понадобится подключиться с хоста —
+    # добавьте ports: ["5432:5432"] локально, а не в этом файле.
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: stenograf
+      POSTGRES_PASSWORD: stenograf
+      POSTGRES_DB: stenograf
+    volumes:
+      - stenograf-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stenograf"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    # На машине деплоя 3.9 ГБ на всё. Postgres под нашу нагрузку (десятки
+    # встреч, вставка реплики раз в несколько секунд) укладывается в четверть
+    # гигабайта; лимит вдвое выше — чтобы упереться в него можно было только
+    # по-настоящему, а не на пиковом запросе.
+    mem_limit: 512m
 
 volumes:
   stenograf-data:
+  stenograf-db:

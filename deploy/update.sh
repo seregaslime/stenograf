@@ -13,7 +13,9 @@
 # падал с «not found» на первом же присваивании.
 #
 # Откат: в docker-compose.override.yml прописать образ с нужным тегом-sha
-# (их публикует CI на каждый мерж) и поднять сервис заново.
+# (их публикует CI на каждый мерж) и поднять сервис заново. База при откате
+# восстанавливается из дампа:
+#   docker compose exec -T db psql -U stenograf stenograf < backups/stenograf-<метка>.sql
 set -eu
 
 dir=$(cd "$(dirname "$0")/.." && pwd)
@@ -22,13 +24,26 @@ cd "$dir"
 echo "→ Обновляю описание сервисов"
 git pull --ff-only
 
-# Копия ДО обновления и внутри тома: миграции побегут при старте нового
-# контейнера, и откат образа схему БД обратно не откатит. Без этой строки
-# неудачное обновление превращается в потерю встреч.
+# Копия ДО обновления: миграции побегут при старте нового контейнера, и откат
+# образа схему БД обратно не откатит. Без этой строки неудачное обновление
+# превращается в потерю встреч.
+#
+# pg_dump, а не копия файла: база переехала в PostgreSQL, и «скопировать файл»
+# у работающей базы даёт снимок, из которого она может не подняться. Дамп
+# кладём на хост, а не в том — так его видно и легко забрать себе.
+#
+# Без конвейера с gzip намеренно: в dash нет pipefail, и упавший pg_dump с
+# успешным gzip дал бы пустой файл и зелёный статус — то есть тихую потерю
+# копии ровно там, где она нужна.
 stamp=$(date +%Y%m%d-%H%M)
-echo "→ Копия базы: stenograf.backup-$stamp.db"
-docker compose exec -T server sh -c "cp -f /data/stenograf.db /data/stenograf.backup-$stamp.db" \
-  || echo "  (базы ещё нет — первая установка)"
+mkdir -p backups
+echo "→ Копия базы: backups/stenograf-$stamp.sql"
+if docker compose exec -T db pg_dump -U stenograf stenograf > "backups/stenograf-$stamp.sql"; then
+    :
+else
+    echo "  (базы ещё нет — первая установка)"
+    rm -f "backups/stenograf-$stamp.sql"
+fi
 
 echo "→ Тяну образ"
 docker compose pull server

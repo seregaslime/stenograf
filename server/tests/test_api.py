@@ -8,6 +8,8 @@ TestClient вызывает приложение внутри процесса (
 Функциональную проверку — систему целиком глазами пользователя — даёт
 tests/test_e2e_live.py: настоящий uvicorn, WebSocket, встреча от аудио до REST.
 """
+from datetime import datetime, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -61,9 +63,11 @@ def test_startup_closes_meetings_stuck_in_summarizing():
         assert meeting.status == "done"
         assert "перезапустился" in meeting.summary_error
         # Встреча кончилась раньше — время окончания не переписываем.
-        # tzinfo снимаем с обеих сторон: SQLite часовой пояс не хранит, и
-        # прочитанное из базы значение всегда naive.
-        assert meeting.ended_at.replace(tzinfo=None) == ended_at.replace(tzinfo=None)
+        # Сравниваем моменты времени как есть: PostgreSQL хранит смещение и
+        # возвращает дату с часовым поясом. Раньше tzinfo снимался, потому что
+        # SQLite пояс терял и отдавал naive; на PostgreSQL это сравнивало бы
+        # московское время с UTC и расходилось на три часа.
+        assert meeting.ended_at == ended_at
 
 
 # ------------------------------------------------------------------ health / asr / llm
@@ -112,6 +116,25 @@ def test_export_md_and_txt(client, done_meeting):
     assert txt.status_code == 200
     assert txt.headers["content-type"].startswith("text/plain")
     assert "привет коллеги" in txt.text
+
+
+def test_дата_в_экспорте_московская(client):
+    """Время в шапке протокола не зависит от того, откуда его скачали.
+
+    PostgreSQL отдаёт дату в поясе своей сессии: на машине разработчика это
+    Europe/Moscow, в контейнере postgres — UTC. Без явного приведения один и тот
+    же протокол выгружался бы с разным временем, и заметил бы это только
+    человек, открывший файл, — тестом это не ловилось никак.
+    """
+    with session_scope() as db:
+        встреча = crud.create_meeting(db, "Планёрка", False)
+        встреча.started_at = datetime(2026, 9, 7, 7, 29, tzinfo=timezone.utc)
+        встреча.status = "done"
+        db.flush()
+        meeting_id = встреча.id
+
+    текст = client.get(f"/api/meetings/{meeting_id}/export?fmt=md").text
+    assert "07.09.2026 10:29" in текст  # 07:29 UTC — это 10:29 в Москве
 
 
 def test_delete_meeting(client, done_meeting):

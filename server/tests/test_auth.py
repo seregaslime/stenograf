@@ -320,3 +320,31 @@ def test_чужие_голоса_через_http_недоступны(client):
                 db.delete(профиль)
             for человек in db.scalars(select(User)):
                 db.delete(человек)
+
+
+def test_удаление_человека_делает_его_встречи_ничейными(db_session):
+    """ON DELETE SET NULL наконец работает — и это меняет судьбу архива.
+
+    Пока база была SQLite, внешние ключи не проверялись: встречи удалённого
+    оставались с owner_id на несуществующего человека и были невидимы всем
+    навсегда. PostgreSQL правило исполняет — владелец обнуляется.
+
+    Второе следствие проверяется тут же и важнее первого: ничейные встречи
+    достаются первому заведённому (auth.create_user). То есть «удалить всех и
+    завести одного» отдаёт новому человеку чужой архив. Раньше это было
+    невозможно, теперь возможно — и должно быть видно в тесте, а не всплыть на
+    сервере, где работают несколько человек.
+    """
+    сергей, _ = auth.create_user(db_session, "Сергей")
+    db_session.flush()
+    встреча = crud.create_meeting(db_session, "Планёрка", False, owner_id=сергей.id)
+    db_session.flush()
+
+    db_session.delete(сергей)
+    db_session.flush()
+    db_session.expire_all()
+    assert db_session.get(Meeting, встреча.id).owner_id is None
+
+    новый, _ = auth.create_user(db_session, "Новый")
+    db_session.flush()
+    assert db_session.get(Meeting, встреча.id).owner_id == новый.id
