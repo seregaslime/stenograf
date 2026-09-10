@@ -104,6 +104,33 @@ export default function MeetingPage({
     }
   }
 
+  /**
+   * Выгружает протокол файлом.
+   *
+   * Не ссылка: `<a href>` грузит адрес сам, без заголовка Authorization, и на
+   * сервере с заведёнными людьми обе кнопки отдавали 401. Забираем запросом с
+   * токеном и отдаём человеку уже скачанные байты.
+   */
+  async function экспорт(fmt: "md" | "txt") {
+    try {
+      const { blob, имя } = await api.exportFile(id, fmt);
+      const адрес = URL.createObjectURL(blob);
+      const ссылка = document.createElement("a");
+      ссылка.href = адрес;
+      ссылка.download = имя;
+      // Ссылка должна быть в документе: вне его клик по ней срабатывает не во
+      // всех браузерах, а браузерная версия приложения — поддерживаемый режим.
+      document.body.append(ссылка);
+      ссылка.click();
+      ссылка.remove();
+      // Отзываем следующим тактом: браузер читает содержимое уже после клика, и
+      // немедленный отзыв обрывает скачивание на полпути.
+      setTimeout(() => URL.revokeObjectURL(адрес), 0);
+    } catch (exc) {
+      setError(`Не удалось выгрузить протокол: ${(exc as Error).message}`);
+    }
+  }
+
   const date = meeting?.started_at
     ? new Date(meeting.started_at).toLocaleString("ru-RU", {
         day: "2-digit",
@@ -129,12 +156,12 @@ export default function MeetingPage({
           <h1>{meeting.title}</h1>
           <p className="page-sub">{date}</p>
           <div className="toolbar">
-            <a className="btn small" href={api.exportUrl(id, "md")}>
+            <button className="btn small" onClick={() => void экспорт("md")}>
               ⬇ Экспорт .md
-            </a>
-            <a className="btn small" href={api.exportUrl(id, "txt")}>
+            </button>
+            <button className="btn small" onClick={() => void экспорт("txt")}>
               ⬇ Экспорт .txt
-            </a>
+            </button>
             {meeting.status !== "summarizing" && (
               <button className="btn small" onClick={resummarize} disabled={progress !== null}>
                 ↻ {meeting.summary ? "Пересоздать резюме" : "Создать резюме"}

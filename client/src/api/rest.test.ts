@@ -74,3 +74,53 @@ describe("rest.request: токен доступа", () => {
     expect(headers.Authorization).toBe("Bearer т");
   });
 });
+
+describe("rest: файлы забираются с токеном, а не адресом", () => {
+  /**
+   * Аудио «звучания» и экспорт протокола раньше отдавались адресом —
+   * `new Audio(url)` и `<a href>`. Заголовок Authorization браузерное API туда
+   * подставить не даёт, и на сервере с заведёнными людьми оба пути отвечали
+   * 401: «не удалось воспроизвести звучание» и молчаливо пустой экспорт.
+   * Проверять это на личном сервере было нельзя — там токен не требуется.
+   */
+  function stubFile(headers: Record<string, string> = {}) {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      void init;
+      return {
+        ok: true,
+        headers: { get: (имя: string) => headers[имя.toLowerCase()] ?? null },
+        blob: async () => new Blob(["данные"]),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("звучание голоса запрашивается с заголовком", async () => {
+    setSetting("serverToken", "секретный-токен");
+    const fetchMock = stubFile();
+    await api.voiceprintAudio(3, 7);
+    const [адрес, init] = fetchMock.mock.calls[0]!;
+    expect(адрес).toContain("/api/speakers/3/voiceprints/7/audio");
+    expect((init.headers as Record<string, string>).Authorization)
+      .toBe("Bearer секретный-токен");
+  });
+
+  it("имя файла берётся из ответа сервера, а не собирается заново", async () => {
+    const fetchMock = stubFile({
+      "content-disposition": 'attachment; filename="meeting_12.md"',
+    });
+    const { имя } = await api.exportFile(12, "md");
+    expect(имя).toBe("meeting_12.md");
+    expect(fetchMock.mock.calls[0]![0]).toContain("fmt=md");
+  });
+
+  it("отказ сервера объясняется словами, а не пустым файлом", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({ detail: "Нужен токен доступа" }),
+    })));
+    await expect(api.exportFile(1, "txt")).rejects.toThrow("Нужен токен доступа");
+  });
+});

@@ -13,7 +13,7 @@ function VoiceprintButtons({
 }: {
   speaker: SpeakerDto;
   playing: number | null;
-  onPlay: (speakerId: number, printId: number) => void;
+  onPlay: (speakerId: number, printId: number) => void | Promise<void>;
   onDelete: (speaker: SpeakerDto, printId: number, index: number) => void;
 }) {
   if (speaker.voiceprints.length === 0) {
@@ -27,7 +27,7 @@ function VoiceprintButtons({
             <button
               className={`icon-btn ${playing === print.id ? "playing" : ""}`}
               title={`Звучание №${index + 1}, усреднено из ${print.count} реплик — нажмите, чтобы прослушать`}
-              onClick={() => onPlay(speaker.id, print.id)}
+              onClick={() => void onPlay(speaker.id, print.id)}
             >
               {playing === print.id ? "◼" : "▶"} {print.audio_duration_s}с · {print.count}
             </button>
@@ -72,6 +72,11 @@ export default function SpeakersPage({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Скачанное звучание и номер запроса. Адрес blob живёт, пока его не отозвали,
+  // а запрос теперь идёт по сети — значит между нажатием и звуком есть пауза,
+  // и за неё можно нажать другое звучание.
+  const адресRef = useRef<string | null>(null);
+  const запросRef = useRef(0);
 
   const load = () =>
     api
@@ -84,8 +89,18 @@ export default function SpeakersPage({
 
   useEffect(() => {
     void load();
-    return () => audioRef.current?.pause();
+    return () => {
+      audioRef.current?.pause();
+      освободить();
+    };
   }, []);
+
+  function освободить() {
+    if (адресRef.current) {
+      URL.revokeObjectURL(адресRef.current);
+      адресRef.current = null;
+    }
+  }
 
   function toggleSelect(id: number) {
     setSelected((previous) =>
@@ -97,21 +112,42 @@ export default function SpeakersPage({
     );
   }
 
-  function playPrint(speakerId: number, printId: number) {
+  async function playPrint(speakerId: number, printId: number) {
     audioRef.current?.pause();
+    освободить();
+    const запрос = ++запросRef.current;
     if (playingPrint === printId) {
       setPlayingPrint(null);
       return;
     }
-    const audio = new Audio(api.voiceprintAudioUrl(speakerId, printId));
-    audioRef.current = audio;
-    audio.onended = () => setPlayingPrint(null);
-    audio.onerror = () => {
+    try {
+      // Скачиваем запросом с токеном и играем уже скачанное: адрес сам по себе
+      // на общем сервере отдаёт 401, а заголовок к <audio> не приделать.
+      const { blob } = await api.voiceprintAudio(speakerId, printId);
+      // Пока качали, нажали другое звучание — это уже не наш звук. Иначе
+      // заиграли бы оба сразу: пауза в начале обработчика застала предыдущий
+      // запрос ещё в полёте и остановить его не могла.
+      if (запрос !== запросRef.current) return;
+      const адрес = URL.createObjectURL(blob);
+      адресRef.current = адрес;
+      const audio = new Audio(адрес);
+      audioRef.current = audio;
+      audio.onended = () => {
+        setPlayingPrint(null);
+        освободить();
+      };
+      audio.onerror = () => {
+        setPlayingPrint(null);
+        освободить();
+        setError("Не удалось воспроизвести звучание");
+      };
+      await audio.play();
+      setPlayingPrint(printId);
+    } catch (exc) {
       setPlayingPrint(null);
-      setError("Не удалось воспроизвести звучание");
-    };
-    void audio.play();
-    setPlayingPrint(printId);
+      освободить();
+      setError(`Не удалось получить звучание: ${(exc as Error).message}`);
+    }
   }
 
   async function saveName(id: number) {
