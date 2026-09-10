@@ -35,6 +35,41 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+/**
+ * Файл с сервера — байтами, а не адресом.
+ *
+ * Заголовок Authorization браузерное API задать не даёт ни у `<a href>`, ни у
+ * `new Audio(url)`: оба грузят адрес сами. На сервере с заведёнными людьми это
+ * значит 401 — так сломались и «прослушать звучание», и экспорт протокола, и
+ * увидеть это можно было только на общем сервере, не на личном.
+ *
+ * Токен в адрес не выносим: он попал бы в журналы сервера — та же причина, по
+ * которой WebSocket шлёт его первым кадром, а не в строке запроса.
+ *
+ * Имя файла берём из ответа, а не собираем сами: правило именования живёт на
+ * сервере, и вторая его копия здесь разошлась бы с первой молча.
+ */
+async function файл(path: string): Promise<{ blob: Blob; имя: string }> {
+  const token = getToken();
+  const response = await fetch(getServerUrl() + path, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      const body = await response.json();
+      if (body.detail) detail = body.detail;
+    } catch {
+      /* тело не JSON — оставляем код */
+    }
+    throw new Error(detail);
+  }
+  const имя = /filename="([^"]+)"/.exec(
+    response.headers.get("content-disposition") ?? "",
+  )?.[1];
+  return { blob: await response.blob(), имя: имя || path.split("/").pop()! };
+}
+
 export const api = {
   health: () => request<HealthDto>("/api/health"),
 
@@ -83,8 +118,8 @@ export const api = {
     }),
 
 
-  exportUrl: (id: number, fmt: "md" | "txt") =>
-    `${getServerUrl()}/api/meetings/${id}/export?fmt=${fmt}`,
+  exportFile: (id: number, fmt: "md" | "txt") =>
+    файл(`/api/meetings/${id}/export?fmt=${fmt}`),
 
   speakers: () => request<SpeakerDto[]>("/api/speakers"),
   renameSpeaker: (id: number, name: string) =>
@@ -110,6 +145,6 @@ export const api = {
       "/api/speakers/merge",
       { method: "POST", body: JSON.stringify({ speaker_ids: ids }) },
     ),
-  voiceprintAudioUrl: (speakerId: number, printId: number) =>
-    `${getServerUrl()}/api/speakers/${speakerId}/voiceprints/${printId}/audio`,
+  voiceprintAudio: (speakerId: number, printId: number) =>
+    файл(`/api/speakers/${speakerId}/voiceprints/${printId}/audio`),
 };
