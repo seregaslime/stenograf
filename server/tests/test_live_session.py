@@ -8,6 +8,7 @@ import asyncio
 import numpy as np
 import pytest
 
+import app.ws as ws_module
 from app.audio.mixer import ChannelMixer
 from app.audio.vad import SpeechSegment
 from app.config import SAMPLE_RATE
@@ -189,3 +190,138 @@ def test_unattributed_replica_does_not_become_a_donor(cfg, db_session, registry)
     следующая = _segment(0.5, cfg.speaker_min_embed_s / 2)
     assert asyncio.run(session._match_speaker(db_session, следующая, "mic")) is None
     assert session._short_segment_donor("mic", 0.5) is None
+
+
+# --- разрез реплики по смене голоса ---
+#
+# Двое говорят встык в одном канале: канал не меняется, пауза короче, чем видит
+# VAD. Режется по голосу. «Голос» здесь зашит в уровень сигнала, а поддельный
+# эмбеддер узнаёт его по среднему значению окна; окно на стыке двух голосов
+# даёт третье направление — как смешанное окно в живом звуке.
+
+class _VoiceByLevelEmbedder:
+    """Отпечаток по уровню сигнала: 0.1 — один голос, 0.2 — другой, иначе смесь."""
+
+    def __init__(self):
+        rng = np.random.default_rng(11)
+        self._голоса = {0.1: rand_unit(rng.integers(1_000_000)),
+                        0.2: rand_unit(rng.integers(1_000_000))}
+        self._смесь = rand_unit(rng.integers(1_000_000))
+        self.calls = 0
+
+    def embed(self, audio: np.ndarray) -> np.ndarray:
+        self.calls += 1
+        return self._голоса.get(round(float(audio.mean()), 2), self._смесь)
+
+
+def _реплика(start_s: float, *куски: tuple[float, float]) -> SpeechSegment:
+    """Куски вида (уровень, секунды) подряд, без пауз между ними."""
+    звук = np.concatenate([np.full(int(сек * SAMPLE_RATE), уровень, dtype=np.float32)
+                           for уровень, сек in куски])
+    return SpeechSegment(звук, start_s, start_s + len(звук) / SAMPLE_RATE)
+
+
+def test_двое_встык_в_одном_канале_режутся_на_две_реплики(cfg, registry):
+    """Главный случай: второй подхватывает сразу за первым, без паузы.
+
+    Разрез по каналу тут бессилен, VAD паузы не видит — остаётся голос.
+    """
+    session = _make_session(cfg, registry, _VoiceByLevelEmbedder())
+    части = asyncio.run(session._split_by_voice(_реплика(10.0, (0.1, 3.0), (0.2, 3.0))))
+
+    assert len(части) == 2
+    assert части[0].start_s == 10.0 and части[1].end_s == 16.0
+    # Разрез около настоящей смены (13.0): точнее полсекунды по отпечаткам окон
+    # не сказать — где внутри окна сменился голос, они не знают.
+    assert abs(части[0].end_s - 13.0) <= 0.5
+    assert части[0].end_s == части[1].start_s  # ни звука не потеряно на стыке
+    assert sum(len(ч.audio) for ч in части) == 6 * SAMPLE_RATE
+
+
+def test_монолог_одним_голосом_не_режется(cfg, registry):
+    session = _make_session(cfg, registry, _VoiceByLevelEmbedder())
+    реплика = _реплика(0.0, (0.1, 6.0))
+    assert asyncio.run(session._split_by_voice(реплика)) == [реплика]
+
+
+def test_короткую_реплику_модель_даже_не_смотрит(cfg, registry):
+    """Короче двух пар окон сравнивать нечего — и отпечатки не считаются вовсе.
+
+    На живой встрече такие реплики — большинство («да», «угу», короткие
+    фразы), и гонять по ним модель впустую значило бы замедлять распознавание.
+    """
+    эмбеддер = _VoiceByLevelEmbedder()
+    session = _make_session(cfg, registry, эмбеддер)
+    реплика = _реплика(0.0, (0.1, 1.0), (0.2, 1.0))
+    assert asyncio.run(session._split_by_voice(реплика)) == [реплика]
+    assert эмбеддер.calls == 0
+
+
+def test_очередь_обработки_отдаёт_дальше_части_а_не_склейку(cfg, registry):
+    """Разрез встроен в потребителя очереди, а не просто существует рядом.
+
+    Тесты выше зовут _split_by_voice напрямую и не заметили бы, если вызов
+    уберут из _consume: функция жива, а на встрече реплики снова склеиваются.
+    """
+    session = _make_session(cfg, registry, _VoiceByLevelEmbedder())
+    обработано: list[SpeechSegment] = []
+
+    async def запомнить(meeting_id, segment):
+        обработано.append(segment)
+
+    session._process_segment = запомнить
+
+    async def прогон():
+        session._queue.put_nowait((1, _реплика(0.0, (0.1, 3.0), (0.2, 3.0))))
+        session._queue.put_nowait(ws_module._STOP)
+        await session._consume()
+
+    asyncio.run(прогон())
+    assert len(обработано) == 2
+
+
+def test_сбой_одной_части_не_уносит_остальные(cfg, registry):
+    """Ревью нашло: try стоял вокруг всего цикла по частям, и падение на первой
+    части молча теряло вторую — чужой голос, ради которого разрез и делался."""
+    session = _make_session(cfg, registry, _VoiceByLevelEmbedder())
+    обработано: list[SpeechSegment] = []
+
+    async def первая_падает(meeting_id, segment):
+        if not обработано and segment.start_s == 0.0:
+            обработано.append(None)  # отметка, что первая была
+            raise RuntimeError("сбой распознавания")
+        обработано.append(segment)
+
+    session._process_segment = первая_падает
+
+    async def прогон():
+        session._queue.put_nowait((1, _реплика(0.0, (0.1, 3.0), (0.2, 3.0))))
+        session._queue.put_nowait(ws_module._STOP)
+        await session._consume()
+
+    asyncio.run(прогон())
+    assert len([s for s in обработано if s is not None]) == 1  # вторая часть дошла
+
+
+def test_сбой_разреза_не_теряет_реплику(cfg, registry):
+    """Разрез — улучшение, а не условие: упал он — реплика идёт целиком."""
+    session = _make_session(cfg, registry, _VoiceByLevelEmbedder())
+    обработано: list[SpeechSegment] = []
+
+    async def запомнить(meeting_id, segment):
+        обработано.append(segment)
+
+    async def разрез_падает(segment):
+        raise RuntimeError("сбой модели")
+
+    session._process_segment = запомнить
+    session._split_by_voice = разрез_падает
+    реплика = _реплика(0.0, (0.1, 3.0), (0.2, 3.0))
+
+    async def прогон():
+        session._queue.put_nowait((1, реплика))
+        session._queue.put_nowait(ws_module._STOP)
+        await session._consume()
+
+    asyncio.run(прогон())
+    assert обработано == [реплика]

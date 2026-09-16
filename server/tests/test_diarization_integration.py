@@ -108,3 +108,41 @@ def test_speaker_echo_yields_single_segment(tmp_path):
 
     assert len(segments) == 1, f"эхо раздвоило фразу: {len(segments)} сегмента"
     assert mixer.dominance(segments[0].start_s, segments[0].end_s) == "system"
+
+
+# --- разрез реплики по смене голоса на настоящей модели ---
+#
+# Юнит-тесты разреза идут на поддельном эмбеддере. Здесь — настоящая ECAPA и
+# синтезированные голоса встык, без паузы: то, что в подкасте склеивалось в
+# одну реплику. Синтез тут годится — проверяется, что путь через модель
+# работает, а не где стоит порог; порог подбирался на живой записи
+# (scripts/eval_turns.py).
+
+def test_двое_встык_режутся_на_настоящей_модели(tmp_path):
+    if shutil.which("say") is None:
+        pytest.skip("нет команды say (не macOS)")
+    import asyncio
+
+    import eval_split
+    import numpy as np
+
+    from app.audio.vad import SpeechSegment
+    from app.diarization.registry import SpeakerRegistry
+    from app.ws import LiveSession
+
+    первый = eval_split.синтез(tmp_path, "Milena", "Сроки переносим на следующую неделю, это решено окончательно")
+    второй = eval_split.синтез(tmp_path, "Daniel", "Подождите, я категорически не согласен с таким решением")
+    cfg = Settings(_env_file=None)
+    session = LiveSession(ws=None, cfg=cfg, transcriber=None,
+                          embedder=VoiceEmbedder(cfg), registry=SpeakerRegistry(cfg))
+
+    вместе = np.concatenate([первый, второй])
+    реплика = SpeechSegment(вместе, 0.0, len(вместе) / SAMPLE_RATE)
+    части = asyncio.run(session._split_by_voice(реплика))
+    assert len(части) == 2
+    стык = len(первый) / SAMPLE_RATE
+    assert abs(части[0].end_s - стык) <= 0.5
+
+    монолог = np.concatenate([первый, первый])
+    одна = SpeechSegment(монолог, 0.0, len(монолог) / SAMPLE_RATE)
+    assert asyncio.run(session._split_by_voice(одна)) == [одна]

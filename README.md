@@ -378,6 +378,7 @@ ollama pull bge-m3
 | `STENOGRAF_ASR_COMPUTE_TYPE` | `auto` | Точность faster-whisper: `auto` (`float16` на видеокарте, `int8` на процессоре) |
 | `STENOGRAF_ASR_LANGUAGE` | `ru` | Язык распознавания whisper (`auto` — автоопределение); GigaAM всегда русский |
 | `STENOGRAF_SPEAKER_MATCH_THRESHOLD` | `0.35` | Порог «тот же голос» (косинусная близость, см. `scripts/eval_voices.py`) |
+| `STENOGRAF_SPEAKER_TURN_THRESHOLD` | `0.24` | Смена говорящего внутри реплики: голос слева и справа похож меньше — реплика режется (замер `scripts/eval_turns.py`) |
 | `STENOGRAF_SPEAKER_CHANNEL_DOMINANCE` | `2.0` | Во сколько раз канал должен быть громче, чтобы считаться источником голоса |
 | `STENOGRAF_DENOISE` | `off` | Этап чистки шума в конвейере (заготовка) |
 | `STENOGRAF_VERSION` | `dev` | Версия кода в `/api/health`; ставится при сборке образа из git-sha |
