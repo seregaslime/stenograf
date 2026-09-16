@@ -174,6 +174,7 @@ def add_segment(
     end_s: float,
     text: str,
     similarity: Optional[float] = None,
+    words: Optional[list] = None,
 ) -> Segment:
     segment = Segment(
         meeting_id=meeting_id,
@@ -183,6 +184,7 @@ def add_segment(
         end_s=end_s,
         text=text,
         similarity=similarity,
+        words=words,
     )
     db.add(segment)
     db.flush()

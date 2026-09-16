@@ -12,6 +12,7 @@ import asyncio
 import gc
 import logging
 import threading
+from typing import NamedTuple, Optional
 
 import numpy as np
 from faster_whisper import WhisperModel
@@ -53,6 +54,18 @@ _JUNK = {
 }
 
 _NO_SPEECH_MAX = 0.85
+
+
+class Recognized(NamedTuple):
+    """Текст реплики и время каждого слова в секундах от начала её звука.
+
+    words — [(начало, конец, слово), ...], склейка слов через пробел равна text.
+    None — движок времени слов не даёт: whisper-движки умеют, но это отдельный
+    проход выравнивания, а живой встрече они не нужны. Такую реплику просто
+    нельзя будет поделить по словам.
+    """
+    text: str
+    words: Optional[list[tuple[float, float, str]]]
 
 
 class _FasterWhisperBackend:
@@ -143,8 +156,17 @@ class _GigaAmBackend:
         )
         self.device = device
 
-    def transcribe(self, audio: np.ndarray, language: str | None) -> list[str]:
-        # language игнорируется — модель только русская
+    def transcribe_words(self, audio: np.ndarray) -> Recognized:
+        """Текст реплики со временем слов (модель только русская, язык не нужен).
+
+        Время слов нужно, чтобы человек мог отдать часть реплики другому
+        спикеру, разрезав её ровно между словами.
+
+        Время почти бесплатно: декодер и так знает, на каком кадре какой токен,
+        остаётся сгруппировать токены в слова. Замер на записи встречи 9 (20
+        кусков по 6 с): декодирование со словами не медленнее, склейка слов
+        совпала с текстом в 20 из 20.
+        """
         import torch
 
         device = getattr(self._model, "_device", "cpu")
@@ -153,9 +175,15 @@ class _GigaAmBackend:
             wav = torch.from_numpy(audio).to(device).to(dtype).unsqueeze(0)
             length = torch.full([1], wav.shape[-1], device=device)
             encoded, encoded_len = self._model.forward(wav, length)
-            text, _words = self._model._decode(encoded, encoded_len, length)[0]
+            text, words = self._model._decode(encoded, encoded_len, length, word_timestamps=True)[0]
         text = text.strip()
-        return [text] if text else []
+        слова = [(round(w.start, 2), round(w.end, 2), w.text) for w in words or []]
+        # Склейка обязана совпадать с текстом: по номерам слов режется текст
+        # реплики. Не совпала — лучше не дать делить, чем резать не там.
+        if " ".join(t for _, _, t in слова) != text:
+            log.warning("Слова GigaAM не складываются в текст реплики — время слов не сохраняем")
+            return Recognized(text, None)
+        return Recognized(text, слова)
 
 
 class Transcriber:
@@ -242,15 +270,28 @@ class Transcriber:
         async with self._infer_lock:
             await asyncio.to_thread(self._reconfigure_sync, engine, model)
 
-    def _transcribe_sync(self, audio: np.ndarray) -> str:
+    def _recognize_sync(self, audio: np.ndarray) -> Recognized:
         self.load()
-        language = None if self._cfg.asr_language == "auto" else self._cfg.asr_language
-        parts = self._backend.transcribe(audio, language)
+        with_words = getattr(self._backend, "transcribe_words", None)
+        if with_words is not None:
+            text, words = with_words(audio)
+            parts = [text]
+        else:
+            language = None if self._cfg.asr_language == "auto" else self._cfg.asr_language
+            parts, words = self._backend.transcribe(audio, language), None
         text = " ".join(p for p in parts if p).strip()
         if text.lower().strip(" .!") in _JUNK or text.lower() in _JUNK:
-            return ""
-        return text
+            return Recognized("", None)
+        return Recognized(text, words)
+
+    def _transcribe_sync(self, audio: np.ndarray) -> str:
+        return self._recognize_sync(audio).text
+
+    async def recognize(self, audio: np.ndarray) -> Recognized:
+        """Текст и время слов — для живой встречи, где реплику потом можно делить."""
+        async with self._infer_lock:
+            return await asyncio.to_thread(self._recognize_sync, audio)
 
     async def transcribe(self, audio: np.ndarray) -> str:
-        async with self._infer_lock:
-            return await asyncio.to_thread(self._transcribe_sync, audio)
+        """Только текст — для замеров качества распознавания."""
+        return (await self.recognize(audio)).text
