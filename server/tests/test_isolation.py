@@ -26,7 +26,7 @@ from app.db.models import Meeting, Speaker, User
 ОТКРЫТО_БЕЗ_ТОКЕНА = {"/api/health"}
 
 # Пример значения для параметра пути: нам важен код ответа, а не сама сущность.
-ЗАГЛУШКИ = {"meeting_id": "1", "speaker_id": "1", "print_id": "1"}
+ЗАГЛУШКИ = {"meeting_id": "1", "speaker_id": "1", "print_id": "1", "segment_id": "1"}
 
 
 def подставить(путь: str) -> str:
@@ -126,6 +126,25 @@ def test_чужой_голос_не_найден(client, двое):
                       headers=заголовки).status_code == 404
     assert client.delete(f"/api/speakers/{чужой}/voiceprints/1",
                          headers=заголовки).status_code == 404
+
+
+def test_чужую_реплику_не_поделить_и_своё_чужому_не_отдать(client, двое):
+    """Оба конца проверяются отдельно: чужая реплика не найдена, и своя реплика не
+    уходит чужому спикеру — иначе в чужую библиотеку голосов подсыпались бы реплики."""
+    слова = [[0.0, 0.5, "Привет"]]
+    with session_scope() as db:
+        сергей = db.scalar(select(User).where(User.name == "Сергей"))
+        моя_встреча = crud.create_meeting(db, "Моя", False, owner_id=сергей.id).id
+        мой_спикер = crud.create_speaker(db, owner_id=сергей.id).id
+        моя = crud.add_segment(db, моя_встреча, мой_спикер, "mic", 0, 1, "Привет", words=слова).id
+        чужая = crud.add_segment(db, двое["встреча_куратора"], None, "mic", 0, 1, "Привет",
+                                 words=слова).id
+    заголовки = {"Authorization": f"Bearer {двое['сергей']}"}
+    тело = {"first_word": 0, "last_word": 0}
+    assert client.post(f"/api/segments/{чужая}/reassign", headers=заголовки,
+                       json=тело | {"speaker_id": мой_спикер}).status_code == 404
+    assert client.post(f"/api/segments/{моя}/reassign", headers=заголовки,
+                       json=тело | {"speaker_id": двое["спикер_куратора"]}).status_code == 404
 
 
 def test_поиск_не_видит_чужих_встреч(client, двое):

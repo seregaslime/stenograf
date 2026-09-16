@@ -28,7 +28,7 @@ from .config import (
 )
 from .db import crud
 from .db.database import init_db, session_scope
-from .db.models import Meeting, VoicePrint
+from .db.models import Meeting, Segment, VoicePrint
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import SpeakerRegistry
 from .transcript import build_transcript
@@ -394,6 +394,15 @@ class MergeBody(BaseModel):
     speaker_ids: list[int]  # ровно два id; сервер сам выбирает целевой профиль
 
 
+class ReassignBody(BaseModel):
+    first_word: int = Field(ge=0)
+    last_word: int = Field(ge=0)
+    # Только существующий спикер: новый человек из выделенных слов не заводится —
+    # отпечаток по паре слов был бы ничем, а профиль появится сам, когда человек
+    # скажет что-то подлиннее.
+    speaker_id: int
+
+
 # Потолок на число цитат в одном ответе поиска.
 SEARCH_LIMIT_MAX = 20
 
@@ -518,6 +527,29 @@ def get_voiceprint_audio(speaker_id: int, print_id: int, request: Request):
         ):
             raise HTTPException(404, "Аудио отпечатка не найдено")
         return FileResponse(row.audio_path, media_type="audio/wav")
+
+
+@app.post("/api/segments/{segment_id}/reassign")
+def reassign_segment_words(segment_id: int, body: ReassignBody, request: Request):
+    """Слова реплики с first_word по last_word — другому спикеру.
+
+    Реплика делится по словам на куски (до трёх), в ответе — куски по порядку:
+    приложение ставит их на место исходной реплики.
+    """
+    кто = владелец(request)
+    with session_scope() as db:
+        segment = db.get(Segment, segment_id)
+        if segment is None or crud.meeting_for_owner(db, segment.meeting_id, кто) is None:
+            raise HTTPException(404, "Реплика не найдена")
+        if crud.speaker_for_owner(db, body.speaker_id, кто) is None:
+            raise HTTPException(404, "Спикер не найден")
+        if segment.words is None:
+            raise HTTPException(409, "У этой реплики нет времени слов — поделить её нельзя. "
+                                     "Время слов пишется у встреч, записанных после обновления.")
+        if not body.first_word <= body.last_word < len(segment.words):
+            raise HTTPException(400, f"Номера слов вне реплики: в ней {len(segment.words)} слов")
+        куски = crud.reassign_words(db, segment, body.first_word, body.last_word, body.speaker_id)
+        return {"segments": [crud.segment_to_dict(s) for s in куски]}
 
 
 @app.post("/api/speakers/merge")
