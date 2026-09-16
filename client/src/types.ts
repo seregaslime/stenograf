@@ -11,6 +11,9 @@ export interface SegmentDto {
   start_s: number;
   end_s: number;
   text: string;
+  /** Время слов от начала встречи: [начало, конец, слово]. Склейка слов равна text.
+   *  Нет — старая реплика или живое событие встречи: делить её по словам нельзя. */
+  words?: [number, number, string][] | null;
   similarity: number | null;
   speaker: SpeakerRef | null;
 }

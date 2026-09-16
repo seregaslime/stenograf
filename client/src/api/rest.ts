@@ -6,6 +6,7 @@ import type {
   MeetingListItem,
   SearchHit,
   PendingMeetingDto,
+  SegmentDto,
   SpeakerDto,
   SummarySaved,
 } from "../types";
@@ -145,6 +146,13 @@ export const api = {
       "/api/speakers/merge",
       { method: "POST", body: JSON.stringify({ speaker_ids: ids }) },
     ),
+  // Слова first..last реплики — существующему спикеру. В ответе куски, на
+  // которые реплика поделилась, по порядку: они встают на её место в ленте.
+  reassignWords: (segmentId: number, firstWord: number, lastWord: number, speakerId: number) =>
+    request<{ segments: SegmentDto[] }>(`/api/segments/${segmentId}/reassign`, {
+      method: "POST",
+      body: JSON.stringify({ first_word: firstWord, last_word: lastWord, speaker_id: speakerId }),
+    }),
   voiceprintAudio: (speakerId: number, printId: number) =>
     файл(`/api/speakers/${speakerId}/voiceprints/${printId}/audio`),
 };

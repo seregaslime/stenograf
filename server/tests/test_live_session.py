@@ -9,11 +9,13 @@ import numpy as np
 import pytest
 
 import app.ws as ws_module
+from app.asr.transcriber import Recognized
 from app.audio.mixer import ChannelMixer
 from app.audio.vad import SpeechSegment
 from app.config import SAMPLE_RATE
+from app.db import crud
 from app.diarization.registry import SpeakerRegistry
-from app.ws import LiveSession
+from app.ws import LiveSession, words_on_meeting_clock
 
 
 class _FakeEmbedder:
@@ -232,6 +234,38 @@ def test_короткая_реплика_знакомого_голоса_узн�
     короткая = _речь(10.0, cfg.speaker_new_min_s - 0.5, cfg)
     match = asyncio.run(session._match_speaker(db_session, короткая, "system"))
     assert match.speaker_id == знакомый.speaker_id
+
+
+# --- время слов ---
+
+
+class _FakeTranscriber:
+    """Распознавание, которое считает время слов от начала звука реплики — как GigaAM."""
+
+    async def recognize(self, audio):
+        return Recognized("Привет, коллеги", [(0.1, 0.5, "Привет,"), (0.6, 1.0, "коллеги")])
+
+
+def test_время_слов_хранится_от_начала_встречи(cfg, db_session, registry):
+    """Модель видит только звук реплики, а разрез по словам потом режет реплику
+    на куски с началом и концом от начала встречи. Храним в тех же часах,
+    иначе реплика в середине встречи разрезалась бы где-то в её первой минуте."""
+    meeting_id = crud.create_meeting(db_session, "слова", False).id
+    db_session.commit()
+    session = LiveSession(ws=None, cfg=cfg, transcriber=_FakeTranscriber(),
+                          embedder=_FakeEmbedder(rand_unit(13)), registry=registry)
+    session._mixer = ChannelMixer(cfg)
+
+    реплика = _segment(100.0, cfg.speaker_min_embed_s / 2)  # короткая — узнавание не нужно
+    asyncio.run(session._process_segment(meeting_id, реплика))
+
+    db_session.expire_all()
+    [row] = crud.meeting_segments(db_session, meeting_id)
+    assert row.words == [[100.1, 100.5, "Привет,"], [100.6, 101.0, "коллеги"]]
+
+
+def test_без_времени_слов_реплика_хранится_без_него():
+    assert words_on_meeting_clock(None, 100.0) is None
 
 
 # --- разрез реплики по смене голоса ---

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, LargeBinary, String, Text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, LargeBinary, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -168,6 +168,10 @@ class Segment(Base):
     start_s: Mapped[float] = mapped_column(Float)
     end_s: Mapped[float] = mapped_column(Float)
     text: Mapped[str] = mapped_column(Text)
+    # Время слов от начала встречи: [[начало, конец, слово], ...], склейка слов
+    # равна text. По нему человек отдаёт часть реплики другому спикеру, и разрез
+    # проходит между словами. NULL — старые реплики и whisper-движки: делить нельзя.
+    words: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     # Отладочная метрика: косинусная близость к центроиду спикера (для "режима отладки" в UI)
     similarity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -77,6 +77,20 @@ def notify_speakers_merged(source_id: int, target_id: int, name: str,
         session.on_speakers_merged(source_id, target_id, name, was_named)
 
 
+def words_on_meeting_clock(
+    words: Optional[list[tuple[float, float, str]]], start_s: float,
+) -> Optional[list[list]]:
+    """Время слов от начала реплики → от начала встречи, как start_s и end_s.
+
+    Распознавание видит только звук реплики и считает от его начала. Храним от
+    начала встречи: разрез по словам тогда сразу даёт границы новых реплик.
+    """
+    if words is None:
+        return None
+    return [[round(start_s + начало, 2), round(start_s + конец, 2), слово]
+            for начало, конец, слово in words]
+
+
 class LiveSession:
     def __init__(
         self,
@@ -347,7 +361,7 @@ class LiveSession:
         return части or [segment]
 
     async def _process_segment(self, meeting_id: int, segment: SpeechSegment) -> None:
-        text = await self._transcriber.transcribe(segment.audio)
+        text, words = await self._transcriber.recognize(segment.audio)
         if not text:
             return
 
@@ -365,6 +379,7 @@ class LiveSession:
                 db, meeting_id, match.speaker_id if match else None, dominance,
                 segment.start_s, segment.end_s, text,
                 match.similarity if match else None,
+                words=words_on_meeting_clock(words, segment.start_s),
             )
             segment_id = row.id
 

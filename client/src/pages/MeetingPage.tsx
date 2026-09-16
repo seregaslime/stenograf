@@ -2,12 +2,12 @@ import { marked } from "marked";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Page } from "../App";
 import { api } from "../api/rest";
-import Transcript from "../components/Transcript";
+import Transcript, { replaceSegment } from "../components/Transcript";
 import { LlmRouter } from "../llm/router";
 import { loadLlmSettings, llmReady } from "../llm/settings";
 import { generateSummary } from "../llm/summary";
 import { isDebugMode } from "../store";
-import type { MeetingDetail } from "../types";
+import type { MeetingDetail, SpeakerRef } from "../types";
 
 export default function MeetingPage({
   id,
@@ -24,6 +24,9 @@ export default function MeetingPage({
   // Протокол теперь считает приложение, а не сервер: прогресс по фрагментам
   // приходит прямо отсюда, а не опросом состояния встречи.
   const [progress, setProgress] = useState<[number, number] | null>(null);
+  // Кому можно отдать слова реплики. Пока список не пришёл, переназначение
+  // выключено: пустой список читался бы как «отдавать некому».
+  const [speakers, setSpeakers] = useState<SpeakerRef[] | null>(null);
 
   const load = () =>
     api
@@ -37,6 +40,18 @@ export default function MeetingPage({
   useEffect(() => {
     void load();
   }, [id]);
+
+  useEffect(() => {
+    api.speakers()
+      .then((list) => setSpeakers(list.map(({ id, name, is_self }) => ({ id, name, is_self }))))
+      .catch(() => setSpeakers(null));
+  }, []);
+
+  const reassign = async (segmentId: number, first: number, last: number, speakerId: number) => {
+    const { segments: parts } = await api.reassignWords(segmentId, first, last, speakerId);
+    setMeeting((current) =>
+      current && { ...current, segments: replaceSegment(current.segments, segmentId, parts) });
+  };
 
   // Протокол сразу после встречи. Ровно один раз: перезаход на страницу или
   // обновление данных не должны запускать модель заново — она стоит минут.
@@ -174,7 +189,12 @@ export default function MeetingPage({
               {meeting.segments.length === 0 ? (
                 <div className="empty">Распознанной речи нет</div>
               ) : (
-                <Transcript segments={meeting.segments} debug={isDebugMode()} />
+                <Transcript
+                  segments={meeting.segments}
+                  debug={isDebugMode()}
+                  speakers={speakers ?? undefined}
+                  onReassign={speakers ? reassign : undefined}
+                />
               )}
             </div>
             <div className="card summary-panel">

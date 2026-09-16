@@ -174,6 +174,7 @@ def add_segment(
     end_s: float,
     text: str,
     similarity: Optional[float] = None,
+    words: Optional[list] = None,
 ) -> Segment:
     segment = Segment(
         meeting_id=meeting_id,
@@ -183,6 +184,7 @@ def add_segment(
         end_s=end_s,
         text=text,
         similarity=similarity,
+        words=words,
     )
     db.add(segment)
     db.flush()
@@ -227,6 +229,62 @@ def meeting_segments(db: Session, meeting_id: int) -> Sequence[Segment]:
     ).all()
 
 
+def word_parts(
+    words: list, start_s: float, end_s: float, first: int, last: int,
+) -> list[tuple[float, float, list, bool]]:
+    """Куски реплики, если слова first..last отдать другому: [(начало, конец, слова, выделено)].
+
+    Кусков до трёх — до выделения, выделение, после; пустые не появляются.
+    Граница проходит посередине паузы между словами: конец слова и начало
+    следующего модель ставит с точностью до кадра, и середина честнее любого
+    из краёв. Крайние куски сохраняют края реплики — запас VAD по краям речи
+    не должен теряться.
+    """
+    куски = [(words[:first], False), (words[first:last + 1], True), (words[last + 1:], False)]
+    куски = [(слова, выделено) for слова, выделено in куски if слова]
+    границы = [start_s]
+    for (левые, _), (правые, _) in zip(куски, куски[1:]):
+        середина = round((левые[-1][1] + правые[0][0]) / 2, 2)
+        границы.append(min(max(середина, границы[-1]), end_s))
+    границы.append(end_s)
+    return [(границы[i], границы[i + 1], слова, выделено)
+            for i, (слова, выделено) in enumerate(куски)]
+
+
+def reassign_words(
+    db: Session, segment: Segment, first: int, last: int, speaker_id: int,
+) -> list[Segment]:
+    """Отдаёт слова first..last реплики спикеру speaker_id, деля реплику по словам.
+
+    Исходная строка становится первым куском, а не удаляется: на неё по id
+    ссылаются куски поиска, и удаление каскадом унесло бы их из индекса.
+    Близость голоса остаётся только у кусков прежнего спикера — выделенный
+    кусок назначен рукой, мерить там нечего.
+    """
+    куски = word_parts(segment.words, segment.start_s, segment.end_s, first, last)
+    # Прежние спикер и близость — до цикла: первый кусок и есть исходная строка,
+    # и если выделение в начале реплики, она меняет спикера раньше, чем
+    # остальные куски успеют его скопировать.
+    прежний_спикер, прежняя_близость = segment.speaker_id, segment.similarity
+    строки = []
+    for номер, (начало, конец, слова, выделено) in enumerate(куски):
+        строка = segment if номер == 0 else Segment(
+            meeting_id=segment.meeting_id, channel=segment.channel,
+            similarity=прежняя_близость, speaker_id=прежний_спикер,
+        )
+        строка.start_s, строка.end_s, строка.words = начало, конец, слова
+        строка.text = " ".join(слово for _, _, слово in слова)
+        if выделено:
+            строка.speaker_id, строка.similarity = speaker_id, None
+        if номер:
+            db.add(строка)
+        строки.append(строка)
+    db.flush()
+    for строка in строки:
+        db.refresh(строка)  # speaker подтянется уже новый
+    return строки
+
+
 def segments_by_ids(db: Session, meeting_id: int, ids: Sequence[int]) -> Sequence[Segment]:
     """Реплики по идентификаторам — ТОЛЬКО из указанной встречи.
 
@@ -253,6 +311,7 @@ def segment_to_dict(segment: Segment) -> dict:
         "start_s": round(segment.start_s, 2),
         "end_s": round(segment.end_s, 2),
         "text": segment.text,
+        "words": segment.words,
         "similarity": round(segment.similarity, 3) if segment.similarity is not None else None,
         "speaker": {
             "id": speaker.id,

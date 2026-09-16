@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 
-import type { SegmentDto } from "../types";
+import type { SegmentDto, SpeakerRef } from "../types";
 import Avatar, { speakerColor } from "./Avatar";
 
 /** Пауза, после которой реплики одного спикера уже не одно высказывание.
@@ -39,20 +39,139 @@ export function groupSegments(segments: SegmentDto[]): SegmentDto[][] {
   return groups;
 }
 
+/** Кому отдать выделенные слова: номера первого и последнего слова реплики. */
+export type Reassign = (
+  segmentId: number, firstWord: number, lastWord: number, speakerId: number,
+) => Promise<void>;
+
+/** Какие слова пузыря выделены мышью: [первое, последнее] или null.
+ *
+ *  Слово считается выделенным, если в выделение попала хотя бы одна его буква.
+ *  Касания мало: протянув выделение от самого конца предыдущего слова, человек
+ *  его не выбирал, а у выделения граница стоит ровно на его последней букве.
+ *  Выделение, вылезшее за пузырь, не в счёт — это копирование текста из ленты,
+ *  а не просьба кого-то переназначить.
+ */
+export function selectedWords(bubble: Element, selection: Selection | null): [number, number] | null {
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  if (!bubble.contains(range.commonAncestorContainer)) return null;
+  const номера: number[] = [];
+  bubble.querySelectorAll<HTMLElement>("[data-word]").forEach((span) => {
+    // Границы — по тексту слова, а не по элементу: «после последней буквы» и
+    // «после элемента» для Range разные точки, и первая оказалась бы внутри слова.
+    const слово = document.createRange();
+    слово.selectNodeContents(span.firstChild ?? span);
+    const конецПозжеНачалаСлова = range.compareBoundaryPoints(Range.START_TO_END, слово) > 0;
+    const началоРаньшеКонцаСлова = range.compareBoundaryPoints(Range.END_TO_START, слово) < 0;
+    if (конецПозжеНачалаСлова && началоРаньшеКонцаСлова) номера.push(Number(span.dataset.word));
+  });
+  return номера.length ? [Math.min(...номера), Math.max(...номера)] : null;
+}
+
+/** Реплика поделилась на куски — они встают на её место, порядок ленты сохраняется. */
+export function replaceSegment(
+  segments: SegmentDto[], segmentId: number, parts: SegmentDto[],
+): SegmentDto[] {
+  return segments.flatMap((segment) => (segment.id === segmentId ? parts : [segment]));
+}
+
 function Replica({
   segment,
   debug,
   selected,
   onToggle,
+  speakers,
+  onReassign,
 }: {
   segment: SegmentDto;
   debug?: boolean;
   selected?: boolean;
   onToggle?: (id: number) => void;
+  speakers?: SpeakerRef[];
+  onReassign?: Reassign;
 }) {
+  const bubble = useRef<HTMLDivElement>(null);
+  const [range, setRange] = useState<[number, number] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState("");
+  // Без времени слов делить нечем: старые встречи и живая лента показывают текст как есть.
+  const words = onReassign ? segment.words : null;
+  const candidates = (speakers ?? []).filter((s) => s.id !== segment.speaker?.id);
+
+  // Слушаем документ, а не пузырь: выделение тянут до последнего слова и
+  // отпускают кнопку уже за краем пузыря — на самом пузыре события не будет.
+  // Отпускание внутри меню не в счёт: нажатие на кнопку спикера сбрасывает
+  // выделение, и меню пропало бы раньше, чем до кнопки дойдёт щелчок.
+  useEffect(() => {
+    if (!words) return;
+    const pick = (event: Event) => {
+      if (!bubble.current || (event.target as Element | null)?.closest?.(".reassign")) return;
+      setRange(selectedWords(bubble.current, window.getSelection()));
+      setFailure("");
+    };
+    document.addEventListener("mouseup", pick);
+    document.addEventListener("keyup", pick);
+    return () => {
+      document.removeEventListener("mouseup", pick);
+      document.removeEventListener("keyup", pick);
+    };
+  }, [words]);
+
+  const give = async (speakerId: number) => {
+    if (!range || !onReassign) return;
+    setBusy(true);
+    try {
+      await onReassign(segment.id, range[0], range[1], speakerId);
+      window.getSelection()?.removeAllRanges();
+      setRange(null);
+    } catch (exc) {
+      setFailure((exc as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className={`replica ${selected ? "picked" : ""}`}>
-      <div className="bubble">{segment.text}</div>
+      <div className="replica-main">
+        <div className="bubble" ref={bubble}>
+          {/* Слова отдельными элементами — чтобы по выделению понять, какие
+              именно; пробелы между ними обычным текстом, и копирование даёт
+              ту же строку, что и раньше. */}
+          {words
+            ? words.map(([, , слово], номер) => (
+              <Fragment key={номер}>
+                {номер > 0 && " "}
+                <span data-word={номер}>{слово}</span>
+              </Fragment>
+            ))
+            : segment.text}
+        </div>
+        {range && words && (
+          <div className="reassign" role="group" aria-label="Отдать выделенные слова">
+            <span className="reassign-words">
+              «{words.slice(range[0], range[1] + 1).map(([, , слово]) => слово).join(" ")}» →
+            </span>
+            {candidates.map((speaker) => (
+              <button
+                key={speaker.id}
+                type="button"
+                className="btn small"
+                disabled={busy}
+                onClick={() => void give(speaker.id)}
+              >
+                {speaker.name}
+              </button>
+            ))}
+            {candidates.length === 0 && <span className="reassign-words">других спикеров нет</span>}
+            <button type="button" className="btn small" disabled={busy} onClick={() => setRange(null)}>
+              Отмена
+            </button>
+            {failure && <span className="reassign-error">{failure}</span>}
+          </div>
+        )}
+      </div>
       {debug && (
         <span className="msg-debug">
           {segment.channel}
@@ -170,12 +289,16 @@ function Group({
   selectedIds,
   onToggle,
   onRename,
+  speakers,
+  onReassign,
 }: {
   segments: SegmentDto[];
   debug?: boolean;
   selectedIds?: Set<number>;
   onToggle?: (id: number) => void;
   onRename?: (id: number, name: string) => void;
+  speakers?: SpeakerRef[];
+  onReassign?: Reassign;
 }) {
   const first = segments[0];
   const speaker = first.speaker;
@@ -199,6 +322,8 @@ function Group({
             debug={debug}
             selected={selectedIds?.has(segment.id)}
             onToggle={onToggle}
+            speakers={speakers}
+            onReassign={onReassign}
           />
         ))}
       </div>
@@ -212,6 +337,8 @@ export default function Transcript({
   selectedIds,
   onToggle,
   onRename,
+  speakers,
+  onReassign,
 }: {
   segments: SegmentDto[];
   debug?: boolean;
@@ -221,6 +348,10 @@ export default function Transcript({
   onToggle?: (id: number) => void;
   /** Не передан — имена не редактируются (история встречи). */
   onRename?: (id: number, name: string) => void;
+  /** Кому можно отдать слова — только существующие спикеры, нового отсюда не завести. */
+  speakers?: SpeakerRef[];
+  /** Не передан — слова не переназначаются (живая лента: времени слов в ней нет). */
+  onReassign?: Reassign;
 }) {
   return (
     <div className="transcript">
@@ -232,6 +363,8 @@ export default function Transcript({
           selectedIds={selectedIds}
           onToggle={onToggle}
           onRename={onRename}
+          speakers={speakers}
+          onReassign={onReassign}
         />
       ))}
     </div>

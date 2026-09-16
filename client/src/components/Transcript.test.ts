@@ -6,6 +6,7 @@ import {
   formatTime,
   groupSegments,
   renameInSegments,
+  replaceSegment,
 } from "./Transcript";
 
 describe("formatTime", () => {
@@ -138,5 +139,18 @@ describe("applyMergeToSegments", () => {
     const out = applyMergeToSegments(before, 3, 5, "Иван");
     expect(out[0].speaker).toBeNull();
     expect(before[1].speaker?.id).toBe(3);
+  });
+});
+
+describe("replaceSegment", () => {
+  const seg = (id: number, text: string): SegmentDto => ({
+    id, meeting_id: 1, channel: "system", start_s: id, end_s: id + 1, text, similarity: null, speaker: null,
+  });
+
+  it("куски встают на место реплики, соседи и порядок не трогаются", () => {
+    const лента = [seg(1, "до"), seg(2, "Да, согласен. Нет, погоди."), seg(3, "после")];
+    const куски = [seg(2, "Да, согласен."), seg(9, "Нет, погоди.")];
+    expect(replaceSegment(лента, 2, куски).map((s) => s.text))
+      .toEqual(["до", "Да, согласен.", "Нет, погоди.", "после"]);
   });
 });

@@ -222,3 +222,66 @@ def test_export_unknown_meeting_404(client):
 
 # ------------------------------------------------------------------ поиск по встречам
 
+
+
+# ------------------------------------------------------------------ часть реплики другому
+
+@pytest.fixture()
+def реплика_двоих():
+    """Реплика Сатира, в конце которой на самом деле говорит бабка."""
+    with session_scope() as db:
+        m = crud.create_meeting(db, "Подкаст", False)
+        сатир, бабка = crud.create_speaker(db), crud.create_speaker(db)
+        сегмент = crud.add_segment(
+            db, m.id, сатир.id, "system", 5.0, 7.3, "Да, согласен. Нет, погоди.", 0.6,
+            words=[[5.2, 5.4, "Да,"], [5.5, 6.0, "согласен."], [6.4, 6.6, "Нет,"], [6.7, 7.1, "погоди."]],
+        )
+        return {"id": сегмент.id, "meeting": m.id, "сатир": сатир.id, "бабка": бабка.id}
+
+
+def test_слова_реплики_уходят_другому_спикеру(client, реплика_двоих):
+    р = реплика_двоих
+    ответ = client.post(f"/api/segments/{р['id']}/reassign",
+                        json={"first_word": 2, "last_word": 3, "speaker_id": р["бабка"]})
+    assert ответ.status_code == 200
+    куски = ответ.json()["segments"]
+    assert [(к["text"], к["speaker"]["id"]) for к in куски] == [
+        ("Да, согласен.", р["сатир"]), ("Нет, погоди.", р["бабка"]),
+    ]
+    # слова кусков приходят с ними: приложение даёт делить кусок дальше, не перезагружая встречу
+    assert куски[1]["words"] == [[6.4, 6.6, "Нет,"], [6.7, 7.1, "погоди."]]
+    # и это сохранено, а не только отдано в ответе
+    встреча = client.get(f"/api/meetings/{р['meeting']}").json()
+    assert [с["text"] for с in встреча["segments"]] == ["Да, согласен.", "Нет, погоди."]
+
+
+@pytest.mark.parametrize("первое, последнее", [(3, 2), (0, 4)])
+def test_номера_слов_вне_реплики_отклоняются(client, реплика_двоих, первое, последнее):
+    р = реплика_двоих
+    ответ = client.post(f"/api/segments/{р['id']}/reassign",
+                        json={"first_word": первое, "last_word": последнее, "speaker_id": р["бабка"]})
+    assert ответ.status_code == 400
+    assert client.get(f"/api/meetings/{р['meeting']}").json()["segments"][0]["text"] == \
+        "Да, согласен. Нет, погоди."  # реплика не тронута
+
+
+def test_реплику_без_времени_слов_поделить_нельзя(client, done_meeting):
+    """Старые встречи записаны до того, как время слов стали хранить."""
+    сегмент = client.get(f"/api/meetings/{done_meeting}").json()["segments"][0]
+    with session_scope() as db:
+        другой = crud.create_speaker(db).id
+    ответ = client.post(f"/api/segments/{сегмент['id']}/reassign",
+                        json={"first_word": 0, "last_word": 0, "speaker_id": другой})
+    assert ответ.status_code == 409
+
+
+def test_отдать_можно_только_существующему_спикеру(client, реплика_двоих):
+    """Нового человека из выделенных слов не заводим — только тот, кто уже есть."""
+    р = реплика_двоих
+    ответ = client.post(f"/api/segments/{р['id']}/reassign",
+                        json={"first_word": 0, "last_word": 0, "speaker_id": 999999})
+    assert ответ.status_code == 404
+    assert client.post(f"/api/segments/{р['id']}/reassign",
+                       json={"first_word": 0, "last_word": 0}).status_code == 422
+    assert client.post("/api/segments/999999/reassign",
+                       json={"first_word": 0, "last_word": 0, "speaker_id": р["бабка"]}).status_code == 404

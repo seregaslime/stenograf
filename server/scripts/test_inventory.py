@@ -31,6 +31,9 @@ LEVELS: dict[str, tuple[str, str]] = {
                                 "настоящий silero-VAD на синтезированной речи"),
     "test_diarization_integration.py": ("Интеграционные (модели)",
                                         "реальная ECAPA на синтезированных голосах"),
+    # Подпись уровня берётся у первого файла по алфавиту — поэтому общая, а не про GigaAM
+    "test_asr_words_integration.py": ("Интеграционные (модели)",
+                                      "настоящие модели на синтезированной речи и голосах"),
     "test_api.py": ("Компонентные (API-слой)",
                     "REST через FastAPI TestClient в одном процессе"),
 }
@@ -42,7 +45,7 @@ FILE_ABOUT: dict[str, str] = {
     "test_turns.py": "смена говорящего внутри реплики: разрез по голосу, острова, подавление соседей",
     "test_mixer.py": "микшер каналов: склейка mic/system и определение доминанты",
     "test_vad.py": "нарезка речи по паузам, отбрасывание коротких фрагментов",
-    "test_transcriber_junk.py": "фильтр галлюцинаций ASR на тишине",
+    "test_transcriber_junk.py": "фильтр галлюцинаций ASR на тишине, время слов движка",
     "test_crud.py": "операции с БД: встречи, спикеры, сегменты",
     "test_config.py": "конфигурация и персист выбора движка ASR",
     "test_migrations.py": "ревизии Alembic против models.py: схема не разъезжается с кодом",
@@ -57,6 +60,7 @@ FILE_ABOUT: dict[str, str] = {
     "test_loadtest_metrics.py": "разбор метрик нагрузочного прогона",
     "test_live_session.py": "живая сессия: разрез сегментов по смене говорящего",
     "test_api.py": "REST-эндпоинты: коды ответов, форма данных, отказы",
+    "test_asr_words_integration.py": "время слов на настоящем GigaAM: складываются в текст, внутри звука",
     "test_diarization_integration.py": "реальная модель ECAPA на синтезе голосов macOS",
     "test_vad_integration.py": "порог тишины VAD: двое встык режутся, монолог не рвётся",
     "test_e2e_live.py": "сквозные сценарии встречи через WebSocket",
