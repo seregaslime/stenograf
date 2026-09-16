@@ -27,6 +27,8 @@ LEVELS: dict[str, tuple[str, str]] = {
     "test_e2e_live.py": ("E2E (системные)",
                          "живой uvicorn + WebSocket: встреча целиком, как у пользователя"),
     "test_load_smoke.py": ("Нагрузочные", "параллельные встречи, задержка и память"),
+    "test_vad_integration.py": ("Интеграционные (модели)",
+                                "настоящий silero-VAD на синтезированной речи"),
     "test_diarization_integration.py": ("Интеграционные (модели)",
                                         "реальная ECAPA на синтезированных голосах"),
     "test_api.py": ("Компонентные (API-слой)",
@@ -55,6 +57,7 @@ FILE_ABOUT: dict[str, str] = {
     "test_live_session.py": "живая сессия: разрез сегментов по смене говорящего",
     "test_api.py": "REST-эндпоинты: коды ответов, форма данных, отказы",
     "test_diarization_integration.py": "реальная модель ECAPA на синтезе голосов macOS",
+    "test_vad_integration.py": "порог тишины VAD: двое встык режутся, монолог не рвётся",
     "test_e2e_live.py": "сквозные сценарии встречи через WebSocket",
     "test_load_smoke.py": "дымовой нагрузочный прогон",
 }
