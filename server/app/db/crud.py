@@ -262,11 +262,15 @@ def reassign_words(
     кусок назначен рукой, мерить там нечего.
     """
     куски = word_parts(segment.words, segment.start_s, segment.end_s, first, last)
+    # Прежние спикер и близость — до цикла: первый кусок и есть исходная строка,
+    # и если выделение в начале реплики, она меняет спикера раньше, чем
+    # остальные куски успеют его скопировать.
+    прежний_спикер, прежняя_близость = segment.speaker_id, segment.similarity
     строки = []
     for номер, (начало, конец, слова, выделено) in enumerate(куски):
         строка = segment if номер == 0 else Segment(
             meeting_id=segment.meeting_id, channel=segment.channel,
-            similarity=segment.similarity, speaker_id=segment.speaker_id,
+            similarity=прежняя_близость, speaker_id=прежний_спикер,
         )
         строка.start_s, строка.end_s, строка.words = начало, конец, слова
         строка.text = " ".join(слово for _, _, слово in слова)
@@ -307,6 +311,7 @@ def segment_to_dict(segment: Segment) -> dict:
         "start_s": round(segment.start_s, 2),
         "end_s": round(segment.end_s, 2),
         "text": segment.text,
+        "words": segment.words,
         "similarity": round(segment.similarity, 3) if segment.similarity is not None else None,
         "speaker": {
             "id": speaker.id,

@@ -241,6 +241,17 @@ label.field > span { display: block; font-size: 12.5px; color: var(--muted); mar
 /* Срезанный угол — «хвостик» к аватарке, он нужен только первой реплике
    группы: у продолжений хвостик указывал бы в пустоту. */
 .replica:not(:first-of-type) .bubble { border-radius: 14px; }
+.replica-main { display: flex; flex-direction: column; gap: 6px; min-width: 0; align-items: flex-start; }
+.msg.self .replica-main { align-items: flex-end; }
+/* Меню «отдать слова» под пузырём, а не всплывающим окном: оно не закрывает
+   соседние реплики, и видно, к какой относится. */
+.reassign { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; }
+.msg.self .reassign { justify-content: flex-end; }
+.reassign-words {
+  color: var(--muted);
+  max-width: 36ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.reassign-error { color: var(--err); }
 
 /* ============ Live-страница ============ */
 .live-layout { display: flex; flex-direction: column; height: 100%; }

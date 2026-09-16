@@ -179,3 +179,20 @@ def test_реплика_делится_и_первый_кусок_остаётс
     assert [(к.start_s, к.end_s) for к in куски] == [(10.0, 11.2), (11.2, 12.3)]
     assert куски[1].speaker.name == бабка.name
     assert [s.id for s in crud.meeting_segments(db_session, встреча.id)] == [к.id for к in куски]
+
+
+def test_выделение_в_начале_не_уносит_остаток_реплики(db_session):
+    """Первый кусок — исходная строка, и ей спикер меняется первым. Нашлось в
+    браузере: остаток реплики копировал уже нового спикера и уходил вместе с
+    выделением, а тесты с выделением в середине и в конце этого не видели."""
+    встреча = crud.create_meeting(db_session, "деление с начала", False)
+    сатир, бабка = crud.create_speaker(db_session), crud.create_speaker(db_session)
+    реплика = crud.add_segment(db_session, встреча.id, сатир.id, "system", 0.0, 2.3,
+                               "Да, согласен. Нет, погоди.", 0.61, words=СЛОВА)
+
+    куски = crud.reassign_words(db_session, реплика, 0, 1, бабка.id)
+
+    assert [(к.text, к.speaker_id, к.similarity) for к in куски] == [
+        ("Да, согласен.", бабка.id, None),
+        ("Нет, погоди.", сатир.id, 0.61),
+    ]
