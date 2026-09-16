@@ -54,6 +54,29 @@ def test_first_voice_creates_new_profile(registry, db_session, rng):
     assert not match.is_self
 
 
+def test_forbidden_creation_leaves_voice_unattributed(registry, db_session, cfg, rng):
+    """Нельзя заводить — незнакомый голос возвращается ничьим и следа не оставляет:
+    ни спикера в базе, ни отпечатка, по которому потом узнавались бы другие."""
+    base = unit(rng.standard_normal(DIM))
+    registry.match_all(db_session, base, mic_dominant=False)
+    speakers = len(crud.list_speakers(db_session))
+    prints = sum(len(p) for p in registry._prints.values())
+
+    stranger = vec_with_similarity(base, cfg.speaker_match_threshold - 0.1, rng)
+    assert registry.match_all(db_session, stranger, mic_dominant=False, may_create=False) is None
+    assert len(crud.list_speakers(db_session)) == speakers
+    assert sum(len(p) for p in registry._prints.values()) == prints
+
+
+def test_forbidden_creation_still_recognizes_known_voice(registry, db_session, cfg, rng):
+    """Запрет касается только новых спикеров: знакомый голос узнаётся как прежде."""
+    base = unit(rng.standard_normal(DIM))
+    first = registry.match_all(db_session, base, mic_dominant=False)
+    close = vec_with_similarity(base, cfg.speaker_match_threshold + 0.1, rng)
+    match = registry.match_all(db_session, close, mic_dominant=False, may_create=False)
+    assert match.speaker_id == first.speaker_id
+
+
 def test_same_voice_matches_same_profile(registry, db_session, rng):
     """Повторное появление того же голоса попадает в уже существующий профиль."""
     voice = unit(rng.standard_normal(DIM))

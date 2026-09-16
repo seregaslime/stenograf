@@ -423,6 +423,7 @@ class LiveSession:
         return self._registry.match_all(
             db, embedding, mic_dominant=dominance == "mic", recent_ids=recent,
             audio=segment.audio, owner_id=self._user_id,
+            may_create=speech_s >= self._cfg.speaker_new_min_s,
         )
 
     def _short_segment_donor(self, dominance: str, start_s: float) -> Optional[MatchResult]:

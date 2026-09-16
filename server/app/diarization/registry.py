@@ -123,7 +123,8 @@ class SpeakerRegistry:
         recent_ids: frozenset[int] = frozenset(),
         audio: Optional[np.ndarray] = None,
         owner_id: Optional[int] = None,
-    ) -> MatchResult:
+        may_create: bool = True,
+    ) -> Optional[MatchResult]:
         """Ищет владельца голоса по отпечаткам всех спикеров ЭТОГО человека.
 
         Чужие библиотеки не просматриваются: голоса коллег — это лишние
@@ -146,6 +147,9 @@ class SpeakerRegistry:
 
         audio — реплика сегмента: сохраняется рядом с новым отпечатком, чтобы
         «звучание» можно было прослушать на вкладке «Спикеры».
+
+        may_create=False — голос никого не напомнил, но нового спикера из него
+        не заводить: вернуть None, реплика останется ничьей.
         """
         cfg = self._cfg
         # Профиль «Вы» этого человека — вне замка: он может создаваться в базе
@@ -198,6 +202,10 @@ class SpeakerRegistry:
                 speaker = db.get(Speaker, speaker_id)
                 return MatchResult(speaker_id, speaker.name, is_self, round(sim, 3), False)
 
+            if not may_create:
+                log.info("Короткая реплика никого не напомнила — остаётся ничьей "
+                         "(лучшая близость %.3f)", best_sim)
+                return None
             speaker = crud.create_speaker(db, owner_id)
             self._add_print(db, speaker.id, embedding, audio, owner_id)
             log.info("Новый профиль голоса: %s (лучшая близость была %.3f)", speaker.name, best_sim)

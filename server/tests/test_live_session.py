@@ -56,11 +56,11 @@ def test_short_segment_reuses_last_speaker(cfg, db_session, registry):
     embedder = _FakeEmbedder(rand_unit(1))
     session = _make_session(cfg, registry, embedder)
 
-    long_seg = _segment(0.0, 2.0)
+    long_seg = _segment(0.0, 3.0)
     first = asyncio.run(session._match_speaker(db_session, long_seg, "system"))
     session._last_by_channel["system"] = (first, long_seg.end_s)
 
-    short_seg = _segment(2.5, cfg.speaker_min_embed_s / 2)  # короче минимума
+    short_seg = _segment(3.5, cfg.speaker_min_embed_s / 2)  # короче минимума
     match = asyncio.run(session._match_speaker(db_session, short_seg, "system"))
 
     assert match.speaker_id == first.speaker_id
@@ -78,11 +78,11 @@ def test_short_segment_after_long_pause_stays_unattributed(cfg, db_session, regi
     embedder = _FakeEmbedder(rand_unit(2))
     session = _make_session(cfg, registry, embedder)
 
-    long_seg = _segment(0.0, 2.0)
+    long_seg = _segment(0.0, 3.0)
     first = asyncio.run(session._match_speaker(db_session, long_seg, "system"))
     session._last_by_channel["system"] = (first, long_seg.end_s)
 
-    short_seg = _segment(10.0, cfg.speaker_min_embed_s / 2)
+    short_seg = _segment(11.0, cfg.speaker_min_embed_s / 2)
     match = asyncio.run(session._match_speaker(db_session, short_seg, "system"))
 
     assert match is None            # реплика без имени
@@ -94,12 +94,12 @@ def test_short_segment_inherits_self(cfg, db_session, registry):
     embedder = _FakeEmbedder(rand_unit(3))
     session = _make_session(cfg, registry, embedder)
 
-    long_seg = _segment(0.0, 2.0)
+    long_seg = _segment(0.0, 3.0)
     first = asyncio.run(session._match_speaker(db_session, long_seg, "mic"))
     assert first.is_self  # первый голос из микрофона — «Вы»
     session._last_by_channel["mic"] = (first, long_seg.end_s)
 
-    short_seg = _segment(2.5, cfg.speaker_min_embed_s / 2)
+    short_seg = _segment(3.5, cfg.speaker_min_embed_s / 2)
     match = asyncio.run(session._match_speaker(db_session, short_seg, "mixed"))
     assert match.is_self
     assert match.speaker_id == first.speaker_id
@@ -114,11 +114,11 @@ def test_short_segment_from_other_channel_stays_unattributed(cfg, db_session, re
     embedder = _FakeEmbedder(rand_unit(4))
     session = _make_session(cfg, registry, embedder)
 
-    long_seg = _segment(0.0, 2.0)
+    long_seg = _segment(0.0, 3.0)
     first = asyncio.run(session._match_speaker(db_session, long_seg, "mic"))
     session._last_by_channel["mic"] = (first, long_seg.end_s)
 
-    short_seg = _segment(2.2, cfg.speaker_min_embed_s / 2)
+    short_seg = _segment(3.2, cfg.speaker_min_embed_s / 2)
     match = asyncio.run(session._match_speaker(db_session, short_seg, "system"))
 
     assert match is None
@@ -190,6 +190,48 @@ def test_unattributed_replica_does_not_become_a_donor(cfg, db_session, registry)
     следующая = _segment(0.5, cfg.speaker_min_embed_s / 2)
     assert asyncio.run(session._match_speaker(db_session, следующая, "mic")) is None
     assert session._short_segment_donor("mic", 0.5) is None
+
+
+def _речь(start_s: float, speech_s: float, cfg) -> SpeechSegment:
+    """Сегмент с заданной длиной самой речи: VAD добавляет запас по краям."""
+    return _segment(start_s, speech_s + 2 * cfg.vad_pad_ms / 1000)
+
+
+def test_короткая_незнакомая_реплика_не_заводит_спикера(cfg, db_session, registry):
+    """«Ха-ха» и «Ну зачем?» знакомого человека на секунде звука не узнаются.
+
+    Раньше каждая такая реплика заводила новый профиль: на записи подкаста
+    с двумя голосами их набралось пять лишних. Теперь она остаётся ничьей.
+    Длина на полсекунды короче порога — чтобы тест не зависел от того, как
+    округлится граница.
+    """
+    embedder = _FakeEmbedder(rand_unit(10))
+    session = _make_session(cfg, registry, embedder)
+
+    короткая = _речь(0.0, cfg.speaker_new_min_s - 0.5, cfg)
+    assert asyncio.run(session._match_speaker(db_session, короткая, "system")) is None
+    assert embedder.calls == 1  # голос сравнили — просто не с кем
+
+
+def test_длинная_незнакомая_реплика_заводит_спикера(cfg, db_session, registry):
+    """Страж с другой стороны: новый человек, сказавший фразу подлиннее, получает
+    профиль сразу, а не копится в «Неизвестных»."""
+    session = _make_session(cfg, registry, _FakeEmbedder(rand_unit(11)))
+
+    длинная = _речь(0.0, cfg.speaker_new_min_s + 0.5, cfg)
+    match = asyncio.run(session._match_speaker(db_session, длинная, "system"))
+    assert match is not None and match.is_new
+
+
+def test_короткая_реплика_знакомого_голоса_узнаётся(cfg, db_session, registry):
+    """Порог только про новых: короткая реплика уже известного голоса приписывается ему."""
+    session = _make_session(cfg, registry, _FakeEmbedder(rand_unit(12)))
+    знакомый = asyncio.run(session._match_speaker(
+        db_session, _речь(0.0, cfg.speaker_new_min_s + 0.5, cfg), "system"))
+
+    короткая = _речь(10.0, cfg.speaker_new_min_s - 0.5, cfg)
+    match = asyncio.run(session._match_speaker(db_session, короткая, "system"))
+    assert match.speaker_id == знакомый.speaker_id
 
 
 # --- разрез реплики по смене голоса ---
