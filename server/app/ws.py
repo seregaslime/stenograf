@@ -44,6 +44,7 @@ from .db import crud
 from .db.database import session_scope
 from .diarization.embedder import VoiceEmbedder
 from .diarization.registry import MatchResult, SpeakerRegistry
+from .diarization.turns import HOP_S, WINDOW_S, turn_times
 from .modes import DEFAULT_MODE, normalize_mode
 
 log = logging.getLogger(__name__)
@@ -289,10 +290,61 @@ class LiveSession:
             if item is _STOP:
                 return
             meeting_id, segment = item
+            # Разрез — улучшение, а не условие: если он упал, реплика идёт
+            # целиком, как шла до него. Потерять её из-за сбоя разреза было бы
+            # хуже склейки, которую он лечит.
             try:
-                await self._process_segment(meeting_id, segment)
+                части = await self._split_by_voice(segment)
             except Exception:
-                log.exception("Ошибка обработки сегмента")
+                log.exception("Разрез по смене голоса не удался — реплика идёт целиком")
+                части = [segment]
+            # Каждая часть отдельно: сбой одной не должен уносить остальные.
+            # Иначе падение распознавания на первой части молча теряло бы вторую
+            # — чужой голос, ради которого разрез и делался.
+            for part in части:
+                try:
+                    await self._process_segment(meeting_id, part)
+                except Exception:
+                    log.exception("Ошибка обработки сегмента")
+
+    async def _split_by_voice(self, segment: SpeechSegment) -> list[SpeechSegment]:
+        """Двое говорят встык в одном канале — режем реплику там, где сменился голос.
+
+        Разрез по доминанте (_split_by_dominance) это не ловит: оба голоса идут
+        одним каналом, например звуком системы в подкасте или звонке. VAD тоже
+        не ловит: пауза между говорящими 80–280 мс (замер на записи), а он режет
+        только с ~400 мс тишины. Без разреза отпечаток голоса считается один на
+        двоих, и реплику целиком забирает тот, кто говорил дольше.
+
+        Здесь, а не в _enqueue рядом с разрезом по каналу: отпечаток на каждое
+        окно — это десятки миллисекунд работы модели на окно, и в цикле событий
+        живая встреча встала бы. Поэтому в отдельном потоке и в потребителе
+        очереди, откуда и так зовётся распознавание.
+        """
+        if segment.duration_s < WINDOW_S + 3 * HOP_S:
+            return [segment]  # меньше двух пар окон — сравнивать нечего, модель не трогаем
+        return await asyncio.to_thread(self._split_by_voice_sync, segment)
+
+    def _split_by_voice_sync(self, segment: SpeechSegment) -> list[SpeechSegment]:
+        окна = []
+        сдвиг = 0.0
+        while сдвиг + WINDOW_S <= segment.duration_s:
+            lo = int(сдвиг * SAMPLE_RATE)
+            окна.append(self._embedder.embed(segment.audio[lo:lo + int(WINDOW_S * SAMPLE_RATE)]))
+            сдвиг += HOP_S
+        моменты = turn_times(np.array(окна), segment.start_s, self._cfg.speaker_turn_threshold)
+        if not моменты:
+            return [segment]
+        границы = [segment.start_s, *моменты, segment.end_s]
+        части = []
+        for начало, конец in zip(границы, границы[1:]):
+            lo = int((начало - segment.start_s) * SAMPLE_RATE)
+            hi = min(int((конец - segment.start_s) * SAMPLE_RATE), len(segment.audio))
+            if hi > lo:
+                части.append(SpeechSegment(segment.audio[lo:hi], начало, конец))
+        log.info("Сегмент %.1f–%.1f с разрезан по смене голоса на %d части",
+                 segment.start_s, segment.end_s, len(части))
+        return части or [segment]
 
     async def _process_segment(self, meeting_id: int, segment: SpeechSegment) -> None:
         text = await self._transcriber.transcribe(segment.audio)
