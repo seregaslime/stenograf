@@ -218,7 +218,10 @@ export default function MeetingPage({
                   теперь считает приложение, поэтому нажмите «Создать резюме» ещё раз.
                 </div>
               )}
-              {meeting.summary_error && (
+              {/* Ошибка прошлой попытки — не пока идёт новая: рядом с крутилкой она
+                  читалась так, будто и эта попытка уже упала. Упадёт — придёт
+                  свежая ошибка вместе с перечитанной встречей. */}
+              {meeting.summary_error && !progress && (
                 <div className="banner warn">{meeting.summary_error}</div>
               )}
               {meeting.summary ? (
