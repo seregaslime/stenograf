@@ -54,6 +54,7 @@ LEVELS: list[Level] = [
         "одна функция или класс в изоляции, зависимости замоканы",
         ["tests", "--ignore=tests/test_api.py",
          "--ignore=tests/test_diarization_integration.py",
+         "--ignore=tests/test_vad_integration.py",
          "-m", "not integration and not e2e and not load"],
     ),
     Level(
@@ -63,8 +64,9 @@ LEVELS: list[Level] = [
     ),
     Level(
         "integration", "Интеграционные (модели)",
-        "реальная ECAPA на синтезированных голосах macOS",
-        ["tests/test_diarization_integration.py", "-m", "integration"],
+        "реальные ECAPA и VAD на синтезированной речи macOS",
+        ["tests/test_diarization_integration.py", "tests/test_vad_integration.py",
+         "-m", "integration"],
         slow=True,
     ),
     Level(
