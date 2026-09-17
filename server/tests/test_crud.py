@@ -1,6 +1,9 @@
 """Юнит-тесты операций с БД (db/crud.py) на настоящем PostgreSQL (фикстура db_session)."""
+import pytest
+from sqlalchemy.exc import IntegrityError
+
 from app.db import crud
-from app.db.models import Meeting, Speaker
+from app.db.models import Chunk, Document, Meeting, Speaker
 
 
 def test_self_speaker_created_once(db_session):
@@ -196,3 +199,43 @@ def test_выделение_в_начале_не_уносит_остаток_р�
         ("Да, согласен.", бабка.id, None),
         ("Нет, погоди.", сатир.id, 0.61),
     ]
+
+
+# --- куски поиска: из встречи или из документа ---
+
+def _кусок(**источник) -> Chunk:
+    return Chunk(text="кусок", model="bge-m3", vector=[1.0, 0.0, 0.0], **источник)
+
+
+def test_у_куска_ровно_один_источник(db_session):
+    """Кусок из встречи и документа сразу нашёлся бы в поиске дважды под разными
+    подписями, а ничей — привёл бы в никуда. Держит это база, а не код."""
+    встреча = crud.create_meeting(db_session, "Планёрка", False)
+    документ = Document(title="Регламент", text="текст")
+    db_session.add(документ)
+    db_session.flush()
+
+    for лишний in (_кусок(meeting_id=встреча.id, document_id=документ.id), _кусок()):
+        with db_session.begin_nested():
+            db_session.add(лишний)
+            with pytest.raises(IntegrityError):
+                db_session.flush()
+
+
+def test_удаление_документа_уносит_только_его_куски(db_session):
+    встреча = crud.create_meeting(db_session, "Планёрка", False)
+    сегмент = crud.add_segment(db_session, встреча.id, None, "mic", 0, 1, "реплика")
+    документ = Document(title="Регламент", text="текст")
+    db_session.add(документ)
+    db_session.flush()
+    db_session.add_all([
+        _кусок(meeting_id=встреча.id, first_segment_id=сегмент.id,
+               last_segment_id=сегмент.id, start_s=0.0),
+        _кусок(document_id=документ.id),
+    ])
+    db_session.flush()
+
+    db_session.delete(документ)
+    db_session.flush()
+    db_session.expire_all()
+    assert [к.meeting_id for к in db_session.query(Chunk)] == [встреча.id]

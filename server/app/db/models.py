@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, LargeBinary, String, Text
+from sqlalchemy import JSON, CheckConstraint, DateTime, Float, ForeignKey, LargeBinary, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -125,25 +125,61 @@ class Meeting(Base):
     )
 
 
+class Document(Base):
+    """Свой файл человека в базе знаний: регламент, ТЗ, заметки (пункт 5а).
+
+    Хранится извлечённый текст, а не сам файл: искать нужно по тексту, а
+    оригинал у человека и так есть. Ищется тем же поиском, что и встречи.
+    """
+
+    __tablename__ = "documents"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Как у встреч: SET NULL, а не CASCADE — отзыв доступа не удаляет данные;
+    # ничейные документы достаются первому заведённому (auth.create_user).
+    owner_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    title: Mapped[str] = mapped_column(String(300))
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    # Куски поиска умирают вместе с документом — как у встречи
+    chunks: Mapped[list["Chunk"]] = relationship(cascade="all, delete-orphan")
+
+
 class Chunk(Base):
-    """Кусок разговора для поиска: несколько подряд идущих реплик и их вектор.
+    """Кусок для поиска и его вектор: из встречи или из документа.
 
     Ищем не по репликам: они короткие (на живых встречах в среднем 49 символов),
     и вектор от «Да-да, согласен» ничего не значит. Кусок набирается до
-    search_chunk_chars символов, а в выдаче показываются реплики, попавшие в
-    него, — их границы хранятся здесь же.
+    search_chunk_chars символов. У куска встречи хранятся границы реплик и время;
+    у куска документа их нет — есть только текст.
 
-    Таблица создаётся сама (create_all добавляет ОТСУТСТВУЮЩИЕ таблицы), поэтому
-    отдельной миграции не нужно — в отличие от новой колонки в существующей.
+    Источник у куска ровно один, и это держит база, а не код: одна таблица
+    кусков — это один индекс HNSW и один поиск на встречи и документы сразу.
     """
 
     __tablename__ = "chunks"
+    __table_args__ = (
+        CheckConstraint("(meeting_id IS NULL) <> (document_id IS NULL)", name="chunks_one_source"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"))
-    first_segment_id: Mapped[int] = mapped_column(ForeignKey("segments.id", ondelete="CASCADE"))
-    last_segment_id: Mapped[int] = mapped_column(ForeignKey("segments.id", ondelete="CASCADE"))
-    start_s: Mapped[float] = mapped_column(Float)
+    meeting_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("meetings.id", ondelete="CASCADE"), nullable=True
+    )
+    document_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    first_segment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("segments.id", ondelete="CASCADE"), nullable=True
+    )
+    last_segment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("segments.id", ondelete="CASCADE"), nullable=True
+    )
+    # Секунда встречи, с которой начинается кусок; у документа времени нет
+    start_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     text: Mapped[str] = mapped_column(Text)
     # Какой моделью посчитан вектор: сменили модель — старые куски надо
     # пересчитать, иначе в одном индексе окажутся несравнимые векторы.
@@ -155,7 +191,7 @@ class Chunk(Base):
     # кусков сотни, база перебирает их точно и быстро, индекс — после замера.
     vector: Mapped[list[float]] = mapped_column(Vector())
 
-    meeting: Mapped[Meeting] = relationship()
+    meeting: Mapped[Optional[Meeting]] = relationship()
 
 
 class Segment(Base):

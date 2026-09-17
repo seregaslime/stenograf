@@ -13,7 +13,7 @@ import app.main as main
 from app import auth
 from app.db import crud
 from app.db.database import session_scope
-from app.db.models import Meeting, Speaker, User
+from app.db.models import Document, Meeting, Speaker, User
 from app.ws import LiveSession
 
 
@@ -204,11 +204,17 @@ def test_первый_человек_получает_ничейные_встр�
     профиль = crud.create_speaker(db_session)
     assert профиль.owner_id is None
 
+    документ = Document(title="Регламент", text="текст")
+    db_session.add(документ)
+    db_session.flush()
+
     сергей, _ = auth.create_user(db_session, "Сергей")
     assert db_session.get(Meeting, старая.id).owner_id == сергей.id
     # Библиотека голосов уезжает вместе с архивом: разделять их нечем, это
     # данные одного и того же человека
     assert db_session.get(Speaker, профиль.id).owner_id == сергей.id
+    # И документы базы знаний — по той же причине, что и встречи
+    assert db_session.get(Document, документ.id).owner_id == сергей.id
 
 
 def test_второй_человек_чужого_не_получает(db_session):
