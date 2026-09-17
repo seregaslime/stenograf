@@ -413,7 +413,8 @@ class IndexChunk(BaseModel):
     last_segment_id: int
     start_s: float
     text: str
-    vector: list[float]
+    # Пустой вектор база не примет: у vector размерность не меньше единицы
+    vector: list[float] = Field(min_length=1)
 
 
 class IndexBody(BaseModel):
@@ -424,7 +425,7 @@ class IndexBody(BaseModel):
 
 class QueryBody(BaseModel):
     model: str
-    vector: list[float]
+    vector: list[float] = Field(min_length=1)
     limit: int | None = Field(None, ge=1, le=SEARCH_LIMIT_MAX)
 
 

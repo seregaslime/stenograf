@@ -23,7 +23,8 @@ jobs:
     # терял часовой пояс, а тесты на это опирались.
     services:
       postgres:
-        image: postgres:17-alpine
+        # С pgvector: поиск сравнивает векторы в самой базе
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: stenograf
           POSTGRES_PASSWORD: stenograf
@@ -166,7 +167,7 @@ jobs:
       # медленные уровни не поднимут сервер вовсе: SQLite из проекта убран.
       - name: PostgreSQL на раннере
         run: |
-          brew install postgresql@17
+          brew install postgresql@17 pgvector
           brew services start postgresql@17
           for i in $(seq 30); do
             /opt/homebrew/opt/postgresql@17/bin/pg_isready -h 127.0.0.1 && break

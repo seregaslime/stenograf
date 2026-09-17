@@ -5,21 +5,24 @@
 
 Как: каждый кусок разговора превращается в вектор (эмбеддинг), вопрос — тоже,
 и мы берём куски с наибольшей близостью. Это ровно то, что SpeakerRegistry
-делает с голосами (`np.dot` по L2-нормированным векторам ECAPA), только
+делает с голосами (скалярное произведение L2-нормированных векторов), только
 сравниваются не тембры, а смыслы.
 
 Векторы считает приложение: у каждого своя модель эмбеддингов и свой адрес.
 Здесь осталось то, для чего модель не нужна, — нарезка разговора на куски и
 сравнение готовых векторов.
 
-Векторной СУБД (FAISS, sqlite-vec) здесь нет намеренно: на живых данных это
-матрица в единицы мегабайт, полный перебор занимает миллисекунды, а лишнее
-хранилище — это ещё одна зависимость и ещё один способ сломаться.
+Сравнивает база, расширением pgvector (требование куратора от 17.09.2026). До
+этого векторы лежали байтами, и сервер на каждый запрос поднимал в память все
+куски человека и перемножал их в numpy. На сотнях кусков разницы в скорости
+нет; она в том, что с базой знаний (пункт 5а) кусков станет на порядки больше,
+а память сервера — 3.9 ГБ на всё. Индекса пока нет: база перебирает куски
+точно, приблизительный индекс HNSW — после замера на настоящем объёме.
 """
 import logging
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import Settings
@@ -66,14 +69,12 @@ def build_chunks(segments: list[Segment], max_chars: int) -> list[dict]:
     return [к for к in куски if к["text"]]
 
 
-def _to_blob(vector: list[float]) -> bytes:
-    """L2-нормированный float32 в BLOB: после нормировки близость — обычное
-    скалярное произведение, без деления на длины при каждом поиске."""
+def _normalized(vector: list[float]) -> np.ndarray:
+    """L2-нормированный float32: после нормировки близость — обычное скалярное
+    произведение, без деления на длины при каждом поиске."""
     v = np.asarray(vector, dtype=np.float32)
     норма = float(np.linalg.norm(v))
-    if норма:
-        v = v / норма
-    return v.tobytes()
+    return v / норма if норма else v
 
 
 def pending_chunks(db: Session, cfg: Settings, model: str,
@@ -121,7 +122,7 @@ def store_vectors(db: Session, model: str, meeting: Meeting, куски: list[di
         db.add(Chunk(
             meeting_id=meeting.id,
             model=model,
-            vector=_to_blob(кусок["vector"]),
+            vector=_normalized(кусок["vector"]),
             first_segment_id=кусок["first_segment_id"],
             last_segment_id=кусок["last_segment_id"],
             start_s=кусок["start_s"],
@@ -139,21 +140,24 @@ def search_by_vector(db: Session, model: str, вектор: list[float], limit: 
     считать эмбеддинги сервер разучился, а искать по ним умеет по-прежнему: так
     по сети едут килобайты вопроса, а не мегабайты матрицы.
     """
-    q = np.frombuffer(_to_blob(вектор), dtype=np.float32)
-    отбор = select(Chunk).where(Chunk.model == model)
+    q = _normalized(вектор)
+    # <#> в pgvector — скалярное произведение со знаком минус: по возрастанию
+    # идут самые близкие.
+    расстояние = Chunk.vector.max_inner_product(q)
+    отбор = (
+        select(Chunk, расстояние)
+        # Векторы другой длины — от другой версии модели, пересчёт которой не
+        # дошёл до конца. Сравнивать их база отказывается с ошибкой, поэтому
+        # отсеиваются до сравнения, а не ломают запрос человека.
+        .where(Chunk.model == model, func.vector_dims(Chunk.vector) == len(q))
+        .order_by(расстояние)
+        .limit(limit)
+    )
     if owner_id is not None:
         отбор = отбор.join(Meeting, Chunk.meeting_id == Meeting.id).where(
             Meeting.owner_id == owner_id
         )
-    куски = [к for к in db.scalars(отбор) if len(к.vector) == q.nbytes]
-    if not куски:
-        return []
-
-    матрица = np.frombuffer(b"".join(к.vector for к in куски), dtype=np.float32)
-    матрица = матрица.reshape(len(куски), -1)
-    близости = матрица @ q
-    лучшие = np.argsort(-близости)[:limit]
-    return [_result(куски[i], float(близости[i])) for i in лучшие]
+    return [_result(кусок, -float(минус_близость)) for кусок, минус_близость in db.execute(отбор)]
 
 
 def _result(chunk: Chunk, similarity: float) -> dict:

@@ -10,6 +10,7 @@
 Проверка идёт на настоящей базе: сравнивать SQL-описание можно только с той
 СУБД, которая его исполняет.
 """
+import numpy as np
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
@@ -43,3 +44,47 @@ def test_ревизии_создают_ровно_то_что_в_моделях(
         "модель и не сняли ревизию: .venv/bin/alembic revision --autogenerate "
         f"-m 'что поменялось'. Расхождения: {расхождения}"
     )
+
+
+def test_старые_векторы_переезжают_в_pgvector_а_битые_уходят_на_пересчёт():
+    """Ревизия 5d1c2e7a9b40 переносит байты в колонку vector, а не пересчитывает.
+
+    Пересчитать векторы сервер не может — модель у приложения. Поэтому перенос
+    обязан сохранить числа как были. Кусок с битыми байтами перенести не во
+    что: удаляются все куски его встречи, чтобы она снова встала в очередь на
+    индексацию, а не считалась проиндексированной с дырой.
+    """
+    models.Base.metadata.drop_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    command.upgrade(alembic_config(), "69052433fe21")
+
+    целый = np.array([0.6, 0.8, 0.0], dtype=np.float32)
+    with engine.begin() as conn:
+        for встреча in (1, 2, 3):
+            conn.execute(text(
+                "INSERT INTO meetings (id, title, status, started_at, record_audio) "
+                "VALUES (:m, 'встреча', 'done', now(), false)"), {"m": встреча})
+            conn.execute(text(
+                "INSERT INTO segments (id, meeting_id, channel, start_s, end_s, text, created_at) "
+                "VALUES (:m, :m, 'mic', 0, 1, 'реплика', now())"), {"m": встреча})
+
+        def кусок(встреча: int, байты: bytes) -> None:
+            conn.execute(text(
+                "INSERT INTO chunks (meeting_id, first_segment_id, last_segment_id, start_s, "
+                "text, model, vector) VALUES (:m, :m, :m, 0, 'кусок', 'bge-m3', :v)"),
+                {"m": встреча, "v": байты})
+
+        кусок(1, целый.tobytes())
+        кусок(2, целый.tobytes())       # целый, но у его встречи есть битый сосед
+        кусок(2, b"\x00\x01\x02")       # не делится на float32
+        кусок(3, np.array([np.nan, 1.0], dtype=np.float32).tobytes())  # база NaN не примет
+
+    command.upgrade(alembic_config(), "head")
+
+    with engine.connect() as conn:
+        строки = conn.execute(text(
+            "SELECT meeting_id, vector::text FROM chunks ORDER BY meeting_id")).all()
+    assert [встреча for встреча, _ in строки] == [1]
+    перенесённый = np.asarray(строки[0][1].strip("[]").split(","), dtype=np.float32)
+    assert np.array_equal(перенесённый, целый)
