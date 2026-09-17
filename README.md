@@ -110,15 +110,20 @@
 ## Быстрый старт (локально, macOS/Linux)
 
 Требования: Python 3.11+ (или [uv](https://docs.astral.sh/uv/)), Node.js 20+ и
-**PostgreSQL** — встречи, спикеры и векторы поиска хранятся в нём.
+**PostgreSQL с расширением [pgvector](https://github.com/pgvector/pgvector)** —
+встречи, спикеры и векторы поиска хранятся в нём, а поиск сравнивает векторы в
+самой базе.
 
 ```bash
 # Проще всего поднять базу тем же compose, что и на сервере:
 docker compose up -d db
 
-# Или своей, если PostgreSQL уже стоит на машине:
+# Или своей, если PostgreSQL уже стоит на машине (pgvector ставится отдельно:
+# brew install pgvector — собран под PostgreSQL 17 и 18):
 createuser -s stenograf && createdb -O stenograf stenograf
 psql -d postgres -c "ALTER ROLE stenograf PASSWORD 'stenograf'"
+# Если роль stenograf не суперпользователь, расширение включает тот, кто им является:
+psql -d stenograf -c "CREATE EXTENSION IF NOT EXISTS vector"
 ```
 
 Для протокола и подсказок нужна языковая модель — проще всего
@@ -469,6 +474,7 @@ cd server
 cd server
 uv pip install --python .venv/bin/python -r requirements-dev.txt   # один раз (pytest, pytest-cov)
 createdb -O stenograf stenograf_test                               # один раз
+psql -d stenograf_test -c "CREATE EXTENSION IF NOT EXISTS vector"    # один раз, если stenograf не суперпользователь
 
 # Отчёт целиком: гоняет уровни, считает покрытие, перезаписывает TEST_REPORT.md
 .venv/bin/python scripts/test_report.py          # быстрые уровни (секунды)
