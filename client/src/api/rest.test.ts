@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./rest";
+import { api, toBase64 } from "./rest";
 import { setSetting } from "../store";
 
 afterEach(() => {
@@ -122,5 +122,21 @@ describe("rest: файлы забираются с токеном, а не ад�
       json: async () => ({ detail: "Нужен токен доступа" }),
     })));
     await expect(api.exportFile(1, "txt")).rejects.toThrow("Нужен токен доступа");
+  });
+});
+
+describe("загрузка документа", () => {
+  it("байты cp1251 уходят как есть — кодировку распознаёт сервер", async () => {
+    const fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetch);
+    await api.uploadDocument("Регламент.txt", new Uint8Array([0xd0, 0xe5, 0xe3]));  // «Рег» в cp1251
+    const тело = JSON.parse((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body as string);
+    expect(тело).toEqual({ filename: "Регламент.txt", content_base64: "0OXj" });
+  });
+
+  it("мегабайтный файл не упирается в предел аргументов функции", () => {
+    // String.fromCharCode на мегабайт разом падает — поэтому кусками
+    const байты = new Uint8Array(1_000_000).fill(65);
+    expect(atob(toBase64(байты))).toHaveLength(1_000_000);
   });
 });

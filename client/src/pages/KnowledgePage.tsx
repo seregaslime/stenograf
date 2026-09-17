@@ -18,6 +18,17 @@ const STATUS_LABEL: Record<KnowledgeSourceStatus, string> = {
   empty: "текста нет",
 };
 
+/** Число со словом в нужной форме: plural(3, ["кусок", "куска", "кусков"]) → «3 куска». */
+export function plural(n: number, [один, два, пять]: [string, string, string]): string {
+  const десятки = n % 100, единицы = n % 10;
+  if (десятки >= 11 && десятки <= 14) return `${n} ${пять}`;
+  if (единицы === 1) return `${n} ${один}`;
+  if (единицы >= 2 && единицы <= 4) return `${n} ${два}`;
+  return `${n} ${пять}`;
+}
+
+const КУСКИ: [string, string, string] = ["кусок", "куска", "кусков"];
+
 export function formatDuration(seconds: number): string {
   if (seconds < 60) return "меньше минуты";
   const минуты = Math.round(seconds / 60);
@@ -42,6 +53,8 @@ export default function KnowledgePage() {
   const [status, setStatus] = useState<KnowledgeStatusDto | null>(null);
   const [error, setError] = useState("");
   const [progress, setProgress] = useState<IndexProgress | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const выбор = useRef<HTMLInputElement>(null);
   const начало = useRef(0);
   const model = loadLlmSettings().embedModel;
   // Перечитать состояние — после индексации; счётчик вместо функции в зависимостях эффекта
@@ -55,6 +68,31 @@ export default function KnowledgePage() {
   const найдётся = источники.filter((и) => и.status === "indexed").length;
   const ждут = источники.filter((и) => и.status === "waiting");
   const кусковЖдёт = ждут.reduce((сумма, и) => сумма + и.chunks_waiting, 0);
+  const другойМоделью = ждут.filter((и) => и.chunks_other_models > 0);
+
+  async function upload(file: File) {
+    setUploading(true);
+    setError("");
+    try {
+      await api.uploadDocument(file.name, new Uint8Array(await file.arrayBuffer()));
+      перечитать((в) => в + 1);
+    } catch (exc) {
+      setError((exc as Error).message);
+    } finally {
+      setUploading(false);
+      if (выбор.current) выбор.current.value = "";  // тот же файл можно выбрать снова
+    }
+  }
+
+  async function remove(id: number, title: string) {
+    if (!confirm(`Удалить документ «${title}» из базы знаний?`)) return;
+    try {
+      await api.deleteDocument(id);
+      перечитать((в) => в + 1);
+    } catch (exc) {
+      setError((exc as Error).message);
+    }
+  }
 
   async function index() {
     const searchApi: SearchApi = {
@@ -69,7 +107,10 @@ export default function KnowledgePage() {
       await indexPending(searchApi, loadLlmSettings(), model, setProgress);
     } catch (exc) {
       // Сохранённое не пропадает: повторный запуск продолжит со следующего источника
-      setError(`${(exc as Error).message} Уже посчитанное сохранено — можно продолжить.`);
+      // Своё сообщение модели не всегда кончается точкой («…ollama pull имя») —
+      // без неё приписка склеивалась с командой в одно предложение
+      const причина = (exc as Error).message.trim().replace(/[.!?…]?$/, ".");
+      setError(`${причина} Уже посчитанное сохранено — можно продолжить.`);
     } finally {
       setProgress(null);
       перечитать((в) => в + 1);
@@ -85,6 +126,19 @@ export default function KnowledgePage() {
       </p>
       {error && <div className="banner error">{error}</div>}
 
+      {/* Сменили модель эмбеддингов — векторы прежней поиск не видит. Молча
+          пересчитывать при первом поиске значило бы получасовое «зависание»;
+          здесь человек видит, сколько это займёт, и решает сам. */}
+      {другойМоделью.length > 0 && !progress && (
+        <div className="banner warn">
+          {другойМоделью.length === 1
+            ? "Один источник посчитан другой моделью эмбеддингов"
+            : `${plural(другойМоделью.length, ["источник", "источника", "источников"])} посчитаны другой моделью эмбеддингов`}
+          , а выбрана «{model}». Поиск их не найдёт, пока они не пересчитаны. Пересчёт
+          заменит прежние векторы: вернётесь к старой модели — считать придётся заново.
+        </div>
+      )}
+
       {status && (
         <div className="card settings-block">
           <div className="meta">Модель эмбеддингов: {model}</div>
@@ -92,7 +146,7 @@ export default function KnowledgePage() {
             Найдётся поиском: <strong>{найдётся}</strong> из {источники.length}
             {ждут.length > 0 && (
               <>
-                {" "}· ждут индексации: <strong>{ждут.length}</strong> ({кусковЖдёт} кусков,{" "}
+                {" "}· ждут индексации: <strong>{ждут.length}</strong> ({plural(кусковЖдёт, КУСКИ)},{" "}
                 {formatDuration(remainingSeconds(0, кусковЖдёт, 0))})
               </>
             )}
@@ -116,21 +170,52 @@ export default function KnowledgePage() {
         </div>
       )}
 
-      {источники.length > 0 && (
-        <div className="card settings-block">
-          {status?.meetings.map((встреча) => (
-            <SourceRow key={`m${встреча.id}`} kind="Встреча" source={встреча} />
-          ))}
-          {status?.documents.map((документ) => (
-            <SourceRow key={`d${документ.id}`} kind="Документ" source={документ} />
-          ))}
+      <div className="card settings-block">
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ flex: 1 }} className="hint">
+            Свои документы — регламенты, ТЗ, заметки в .txt и .md до мегабайта — поиск
+            найдёт вместе со встречами
+          </span>
+          <input
+            ref={выбор}
+            type="file"
+            accept=".txt,.md"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void upload(file);
+            }}
+          />
+          <button className="btn small" disabled={uploading} onClick={() => выбор.current?.click()}>
+            {uploading ? <span className="spinner" /> : "Загрузить документ"}
+          </button>
         </div>
-      )}
+        {status?.meetings.map((встреча) => (
+          <SourceRow key={`m${встреча.id}`} kind="Встреча" source={встреча} />
+        ))}
+        {status?.documents.map((документ) => (
+          <SourceRow
+            key={`d${документ.id}`}
+            kind="Документ"
+            source={документ}
+            onDelete={() => void remove(документ.id, документ.title)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
 
-function SourceRow({ kind, source }: { kind: string; source: KnowledgeStatusDto["meetings"][number] | KnowledgeStatusDto["documents"][number] }) {
+function SourceRow({
+  kind,
+  source,
+  onDelete,
+}: {
+  kind: string;
+  source: KnowledgeStatusDto["meetings"][number] | KnowledgeStatusDto["documents"][number];
+  /** Только у документа: встречи удаляются в истории вместе с транскриптом. */
+  onDelete?: () => void;
+}) {
   const кусков = source.status === "indexed" ? source.chunks : source.chunks_waiting;
   return (
     <div className="list-item" style={{ marginTop: 8 }} data-status={source.status}>
@@ -138,9 +223,15 @@ function SourceRow({ kind, source }: { kind: string; source: KnowledgeStatusDto[
         <div>{source.title}</div>
         <div className="meta">
           {kind} · {STATUS_LABEL[source.status]}
-          {кусков > 0 && ` · ${кусков} кусков`}
+          {кусков > 0 && ` · ${plural(кусков, КУСКИ)}`}
+          {source.chunks_other_models > 0 && source.status !== "indexed" && " · посчитан другой моделью"}
         </div>
       </div>
+      {onDelete && (
+        <button className="btn small danger" onClick={onDelete}>
+          Удалить
+        </button>
+      )}
     </div>
   );
 }

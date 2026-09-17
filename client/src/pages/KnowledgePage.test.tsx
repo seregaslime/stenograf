@@ -12,11 +12,26 @@ import type { KnowledgeStatusDto } from "../types";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+// В jsdom у File нет arrayBuffer(), в браузере и Electron он есть — досказываем
+if (!File.prototype.arrayBuffer) {
+  File.prototype.arrayBuffer = function (this: File) {
+    return new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(this);
+    });
+  };
+}
+
 const строка = (id: number, title: string, status: "indexed" | "waiting" | "not_ready" | "empty", chunks = 0, chunks_waiting = 0) =>
   ({ id, title, status, chunks, chunks_waiting, chunks_other_models: 0 });
 
 let состояние: KnowledgeStatusDto;
 const спрошено: string[] = [];
+const загружено: { filename: string; bytes: number[] }[] = [];
+const удалено: number[] = [];
+let отказЗагрузки: Error | null = null;
 let индексация: (onProgress: (p: IndexProgress) => void) => Promise<number> = async () => 0;
 
 vi.mock("../api/rest", () => ({
@@ -26,6 +41,15 @@ vi.mock("../api/rest", () => ({
       return состояние;
     }),
     searchPending: vi.fn(), searchIndex: vi.fn(), searchQuery: vi.fn(),
+    uploadDocument: vi.fn(async (filename: string, bytes: Uint8Array) => {
+      if (отказЗагрузки) throw отказЗагрузки;
+      загружено.push({ filename, bytes: Array.from(bytes) });
+      return {};
+    }),
+    deleteDocument: vi.fn(async (id: number) => {
+      удалено.push(id);
+      return { deleted: id };
+    }),
   },
 }));
 vi.mock("../llm/settings", () => ({ loadLlmSettings: () => ({ embedModel: "bge-m3" }) }));
@@ -34,13 +58,16 @@ vi.mock("../llm/search", () => ({
     индексация(onProgress)),
 }));
 
-const { default: KnowledgePage, formatDuration, remainingSeconds } = await import("./KnowledgePage");
+const { default: KnowledgePage, formatDuration, remainingSeconds, plural } = await import("./KnowledgePage");
 
 let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
   спрошено.length = 0;
+  загружено.length = 0;
+  удалено.length = 0;
+  отказЗагрузки = null;
   состояние = {
     model: "bge-m3",
     meetings: [
@@ -96,6 +123,18 @@ describe("экран базы знаний", () => {
     expect(спрошено).toHaveLength(2);
   });
 
+  it("сообщение модели без точки не склеивается с припиской", async () => {
+    // Так ответила Ollama вживую: команда в конце, точки нет
+    индексация = async () => {
+      throw new Error("Модель «nomic-embed-text» не найдена. Скачайте её: ollama pull nomic-embed-text");
+    };
+    await открыть();
+    await act(async () => кнопка()!.click());
+    expect(container.querySelector(".banner.error")?.textContent).toBe(
+      "Модель «nomic-embed-text» не найдена. Скачайте её: ollama pull nomic-embed-text. Уже посчитанное сохранено — можно продолжить.",
+    );
+  });
+
   it("ошибка говорит, что посчитанное сохранено, и даёт продолжить", async () => {
     индексация = async () => {
       throw new Error("Модель недоступна.");
@@ -109,10 +148,71 @@ describe("экран базы знаний", () => {
   });
 });
 
+describe("смена модели эмбеддингов", () => {
+  it("предупреждает, если источники посчитаны другой моделью", async () => {
+    состояние.documents[0] = { ...состояние.documents[0], chunks_other_models: 480 };
+    await открыть();
+    const предупреждение = container.querySelector(".banner.warn")?.textContent ?? "";
+    expect(предупреждение).toContain("другой моделью эмбеддингов, а выбрана «bge-m3»");
+    expect(предупреждение).toContain("вернётесь к старой модели — считать придётся заново");
+    expect(container.textContent).toContain("Документ · ждёт индексации · 480 кусков · посчитан другой моделью");
+  });
+
+  it("без чужих векторов не пугает", async () => {
+    await открыть();
+    expect(container.querySelector(".banner.warn")).toBeNull();
+  });
+});
+
+describe("документы на экране", () => {
+  async function выбрать(файл: File) {
+    const поле = container.querySelector<HTMLInputElement>("input[type=file]")!;
+    Object.defineProperty(поле, "files", { value: [файл], configurable: true });
+    await act(async () => {
+      поле.dispatchEvent(new Event("change", { bubbles: true }));
+      // FileReader отдаёт байты отдельной задачей — ждём её
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
+
+  it("загрузка отправляет байты файла и перечитывает состояние", async () => {
+    await открыть();
+    await выбрать(new File([new Uint8Array([0xd0, 0xe5, 0xe3])], "Регламент.txt"));
+    expect(загружено).toEqual([{ filename: "Регламент.txt", bytes: [0xd0, 0xe5, 0xe3] }]);
+    expect(спрошено).toHaveLength(2);
+  });
+
+  it("отказ сервера при загрузке показывается", async () => {
+    отказЗагрузки = new Error("Пока принимаются только файлы .txt и .md.");
+    await открыть();
+    await выбрать(new File(["%PDF"], "договор.pdf"));
+    expect(container.querySelector(".banner.error")?.textContent).toBe("Пока принимаются только файлы .txt и .md.");
+  });
+
+  it("удаление — только у документов и только после подтверждения", async () => {
+    await открыть();
+    const удалить = Array.from(container.querySelectorAll("button")).filter((b) => b.textContent === "Удалить");
+    expect(удалить).toHaveLength(1);  // встречи удаляются в истории, здесь — только документ
+    const подтверждение = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+
+    await act(async () => удалить[0].click());
+    expect(удалено).toEqual([]);
+    await act(async () => удалить[0].click());
+    expect(удалено).toEqual([3]);
+    подтверждение.mockRestore();
+  });
+});
+
 describe("оценка времени", () => {
   it("до начала — по замеру, дальше — по тому, как идёт на самом деле", () => {
     expect(remainingSeconds(0, 480, 0)).toBe(120);            // 4 куска/с по замеру
     expect(remainingSeconds(100, 480, 50_000)).toBe(190);     // идёт 2 куска/с — медленнее замера
+  });
+
+  it("число со словом склоняется — «2 кусков» на экране выглядело неряшливо", () => {
+    expect([1, 2, 5, 11, 21, 22].map((n) => plural(n, ["кусок", "куска", "кусков"]))).toEqual([
+      "1 кусок", "2 куска", "5 кусков", "11 кусков", "21 кусок", "22 куска",
+    ]);
   });
 
   it("минуты и часы читаются человеком", () => {

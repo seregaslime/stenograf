@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { Page } from "../App";
 import { api } from "../api/rest";
-import KnowledgeBase from "../components/KnowledgeBase";
 import { formatTime } from "../components/Transcript";
 import { LlmRouter } from "../llm/router";
-import { answerByFragments, indexPending, searchMeetings, type SearchApi } from "../llm/search";
+import {
+  answerByFragments,
+  indexPending,
+  searchMeetings,
+  type IndexProgress,
+  type SearchApi,
+} from "../llm/search";
 import { loadLlmSettings, llmReady } from "../llm/settings";
 import type { SearchHit, MeetingListItem } from "../types";
 
@@ -42,6 +47,9 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
+  // Индексация перед поиском: после смены модели эмбеддингов пересчитывается
+  // всё, и голая крутилка на кнопке выглядела бы получасовым зависанием
+  const [indexing, setIndexing] = useState<IndexProgress | null>(null);
   const [searchError, setSearchError] = useState("");
   const [answer, setAnswer] = useState("");
   const [answering, setAnswering] = useState(false);
@@ -88,7 +96,8 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
     try {
       // Первый запрос после новой встречи заодно её индексирует — он дольше.
       // Векторы считает приложение: у каждого своя модель эмбеддингов.
-      await indexPending(searchApi, settings, settings.embedModel);
+      await indexPending(searchApi, settings, settings.embedModel, (шаг) =>
+        setIndexing(шаг.source ? шаг : null));
       const results = await searchMeetings(
         searchApi, settings, settings.embedModel, текст,
       );
@@ -99,6 +108,7 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
       setHits(null);
     } finally {
       setSearching(false);
+      setIndexing(null);
     }
   }
 
@@ -152,8 +162,16 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
         </div>
         <span className="hint">
           Ищет по смыслу, а не по словам: «что решили по срокам» найдёт разговор,
-          где говорили «двигаем сдачу на следующий месяц»
+          где говорили «двигаем сдачу на следующий месяц». Ищет и в документах —
+          они загружаются на экране «База знаний»
         </span>
+        {indexing && (
+          <div className="banner info" style={{ marginTop: 10 }}>
+            <span className="spinner" /> Сначала индексация: кусок {indexing.chunksDone} из{" "}
+            {indexing.chunksTotal} · «{indexing.source}». Подробности и оценка времени —
+            на экране «База знаний».
+          </div>
+        )}
         {searchError && (
           <div className="banner error" style={{ marginTop: 10 }}>
             {searchError}
@@ -197,7 +215,6 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
           </div>
         ))}
       </div>
-      <KnowledgeBase />
       {meetings && meetings.length === 0 && (
         <div className="empty">
           <div className="big-icon">🗂️</div>

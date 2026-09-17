@@ -14,6 +14,17 @@ import type {
   SummarySaved,
 } from "../types";
 
+/** Байты файла в base64 — кусками: String.fromCharCode на мегабайт сразу
+ *  упирается в предел числа аргументов функции и падает. */
+export function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const шаг = 0x8000;
+  for (let i = 0; i < bytes.length; i += шаг) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + шаг));
+  }
+  return btoa(binary);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
   const response = await fetch(getServerUrl() + path, {
@@ -164,12 +175,12 @@ export const api = {
   knowledgeStatus: (model: string) =>
     request<KnowledgeStatusDto>(`/api/knowledge/status?model=${encodeURIComponent(model)}`),
   documents: () => request<DocumentDto[]>("/api/documents"),
-  // Содержимое в base64: сервер сам распознаёт кодировку (UTF-8, UTF-16, cp1251),
-  // поэтому файл уходит байтами, а не текстом, прочитанным браузером в UTF-8.
-  uploadDocument: (filename: string, contentBase64: string) =>
+  // Байтами, а не текстом: сервер сам распознаёт кодировку (UTF-8, UTF-16,
+  // cp1251), а текст, прочитанный браузером, уже был бы перечитан в UTF-8.
+  uploadDocument: (filename: string, bytes: Uint8Array) =>
     request<DocumentDto>("/api/documents", {
       method: "POST",
-      body: JSON.stringify({ filename, content_base64: contentBase64 }),
+      body: JSON.stringify({ filename, content_base64: toBase64(bytes) }),
     }),
   deleteDocument: (id: number) =>
     request<{ deleted: number }>(`/api/documents/${id}`, { method: "DELETE" }),
