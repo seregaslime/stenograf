@@ -33,6 +33,8 @@ const НАЙДЕНО: SearchHit[] = [
     meeting_title: "Планёрка",
     started_at: "2026-08-14T10:00:00",
     start_s: 125.6,
+    document_id: null,
+    document_title: null,
     text: "перенесли демо на вторник",
     similarity: 0.71,
   },

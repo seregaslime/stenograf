@@ -410,10 +410,11 @@ SEARCH_LIMIT_MAX = 20
 
 
 class IndexChunk(BaseModel):
-    """Кусок разговора с уже посчитанным вектором."""
-    first_segment_id: int
-    last_segment_id: int
-    start_s: float
+    """Кусок встречи или документа с уже посчитанным вектором. Реплики и время
+    есть только у куска встречи."""
+    first_segment_id: int | None = None
+    last_segment_id: int | None = None
+    start_s: float | None = None
     text: str
     # Пустой вектор база не примет: у vector размерность не меньше единицы
     vector: list[float] = Field(min_length=1)
@@ -421,7 +422,9 @@ class IndexChunk(BaseModel):
 
 class IndexBody(BaseModel):
     model: str
-    meeting_id: int
+    # Ровно одно из двух: чьи это куски
+    meeting_id: int | None = None
+    document_id: int | None = None
     chunks: list[IndexChunk]
 
 
@@ -433,27 +436,40 @@ class QueryBody(BaseModel):
 
 @app.get("/api/search/pending")
 def search_pending(request: Request, model: str):
-    """Что осталось проиндексировать ЭТОЙ моделью: встречи и куски разговора.
+    """Что осталось проиндексировать ЭТОЙ моделью: встречи и документы с кусками.
 
     Имя модели обязательно и приходит от приложения: векторы считает оно, у
     каждого своя модель, и сервер про этот выбор больше ничего не знает.
     Нарезка осталась здесь — она про содержимое встречи, а не про модель.
     """
     with session_scope() as db:
-        return {"meetings": search.pending_chunks(db, settings, model, владелец(request))}
+        return {
+            "meetings": search.pending_chunks(db, settings, model, владелец(request)),
+            "documents": search.pending_documents(db, settings, model, владелец(request)),
+        }
 
 
 @app.post("/api/search/index")
 def search_index(body: IndexBody, request: Request):
-    """Принимает посчитанные векторы. Чужую встречу проиндексировать нельзя."""
+    """Принимает посчитанные векторы встречи или документа. Чужое проиндексировать нельзя."""
+    if (body.meeting_id is None) == (body.document_id is None):
+        raise HTTPException(400, "Нужно указать ровно одно: meeting_id или document_id")
+    куски = [к.model_dump() for к in body.chunks]
     with session_scope() as db:
-        meeting = crud.meeting_for_owner(db, body.meeting_id, владелец(request))
-        if meeting is None:
-            raise HTTPException(404, "Встреча не найдена")
-        сохранено = search.store_vectors(
-            db, body.model, meeting, [к.model_dump() for к in body.chunks]
-        )
-    return {"meeting_id": body.meeting_id, "chunks": сохранено}
+        if body.document_id is not None:
+            source = documents.for_owner(db, body.document_id, владелец(request))
+            if source is None:
+                raise HTTPException(404, "Документ не найден")
+        else:
+            source = crud.meeting_for_owner(db, body.meeting_id, владелец(request))
+            if source is None:
+                raise HTTPException(404, "Встреча не найдена")
+            # Кусок встречи без реплик и времени в выдаче не открыть на нужном месте
+            if any(к["first_segment_id"] is None or к["last_segment_id"] is None
+                   or к["start_s"] is None for к in куски):
+                raise HTTPException(400, "У куска встречи должны быть реплики и время")
+        сохранено = search.store_vectors(db, body.model, source, куски)
+    return {"meeting_id": body.meeting_id, "document_id": body.document_id, "chunks": сохранено}
 
 
 @app.post("/api/search/query")

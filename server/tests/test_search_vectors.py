@@ -163,3 +163,58 @@ def test_пустой_вектор_отбивается_до_базы(client, в
     assert client.post("/api/search/query", json={
         "model": модель(встреча), "vector": [],
     }).status_code == 422
+
+
+# --- документы базы знаний ищутся вместе со встречами ---
+
+@pytest.fixture()
+def документ():
+    from app.db.models import Document
+
+    with session_scope() as db:
+        д = Document(title="Регламент созвонов", text="# Созвоны\n\nПо вторникам в 11, демо по пятницам.")
+        db.add(д)
+        db.flush()
+        return д.id
+
+
+def test_документ_индексируется_и_находится_рядом_со_встречей(client, встреча, документ):
+    """Главное обещание пункта 5а: один поиск по встречам и документам сразу."""
+    модель_ = модель(встреча)
+    ждут = client.get(f"/api/search/pending?model={модель_}").json()
+    [д] = [д for д in ждут["documents"] if д["document_id"] == документ]
+    assert д["title"] == "Регламент созвонов"
+    assert д["chunks"] and set(д["chunks"][0]) == {"text"}  # у документа нет реплик и времени
+
+    assert client.post("/api/search/index", json={
+        "model": модель_, "document_id": документ,
+        "chunks": [{**к, "vector": БЛИЗКИЙ} for к in д["chunks"]],
+    }).status_code == 200
+    client.post("/api/search/index", json={
+        "model": модель_, "meeting_id": встреча,
+        "chunks": [{**к, "vector": ДАЛЁКИЙ} for к in куски(client, встреча)],
+    })
+
+    найдено = client.post("/api/search/query", json={"model": модель_, "vector": БЛИЗКИЙ}).json()["results"]
+    assert найдено[0]["document_id"] == документ
+    assert найдено[0]["document_title"] == "Регламент созвонов"
+    assert найдено[0]["meeting_id"] is None and найдено[0]["start_s"] is None
+    assert any(к["meeting_id"] == встреча and к["document_id"] is None for к in найдено)
+
+    ждут = client.get(f"/api/search/pending?model={модель_}").json()
+    assert документ not in [д["document_id"] for д in ждут["documents"]]
+
+
+def test_индексация_требует_ровно_один_источник(client, встреча, документ):
+    кусок = {"first_segment_id": 1, "last_segment_id": 1, "start_s": 0.0, "text": "т", "vector": БЛИЗКИЙ}
+    for тело in ({}, {"meeting_id": встреча, "document_id": документ}):
+        assert client.post("/api/search/index", json={
+            "model": "bge-m3", "chunks": [кусок], **тело}).status_code == 400
+
+
+def test_кусок_встречи_без_реплик_не_принимается(client, встреча):
+    """Кусок встречи без реплик и времени в выдаче не открыть на нужном месте."""
+    assert client.post("/api/search/index", json={
+        "model": модель(встреча), "meeting_id": встреча,
+        "chunks": [{"text": "без реплик", "vector": БЛИЗКИЙ}],
+    }).status_code == 400

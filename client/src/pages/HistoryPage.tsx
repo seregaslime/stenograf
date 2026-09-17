@@ -176,15 +176,20 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
         )}
         {hits?.map((hit, i) => (
           <div
-            key={`${hit.meeting_id}-${i}`}
+            key={`${hit.meeting_id ?? "д" + hit.document_id}-${i}`}
             className="list-item"
             style={{ marginTop: 10 }}
-            onClick={() => navigate({ name: "meeting", id: hit.meeting_id })}
+            // У документа своей страницы нет — открывать нечего, текст куска уже здесь
+            onClick={() => {
+              if (hit.meeting_id !== null) navigate({ name: "meeting", id: hit.meeting_id });
+            }}
           >
             <div className="grow">
               <div className="meta">
-                {hit.meeting_title} · {formatDate(hit.started_at)} · {mmss(hit.start_s)} ·
-                близость {hit.similarity.toFixed(2)}
+                {hit.document_id !== null
+                  ? `Документ «${hit.document_title}»`
+                  : `${hit.meeting_title} · ${formatDate(hit.started_at)} · ${mmss(hit.start_s ?? 0)}`}
+                {" "}· близость {hit.similarity.toFixed(2)}
               </div>
               <div>{hit.text}</div>
             </div>

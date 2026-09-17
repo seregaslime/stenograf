@@ -5,6 +5,7 @@ import type {
   MeetingDetail,
   MeetingListItem,
   SearchHit,
+  PendingDocumentDto,
   PendingMeetingDto,
   SegmentDto,
   SpeakerDto,
@@ -84,7 +85,7 @@ export const api = {
 
   /** Что осталось проиндексировать ЭТОЙ моделью: векторы считает приложение. */
   searchPending: (model: string) =>
-    request<{ meetings: PendingMeetingDto[] }>(
+    request<{ meetings: PendingMeetingDto[]; documents: PendingDocumentDto[] }>(
       `/api/search/pending?model=${encodeURIComponent(model)}`,
     ),
 

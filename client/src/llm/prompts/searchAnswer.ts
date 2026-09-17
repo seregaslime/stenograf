@@ -30,9 +30,9 @@ const RULES = `Правила:
 
 /** Кусок разговора из выдачи поиска. */
 export interface SearchHitLike {
-  meeting_title?: string;
+  meeting_title?: string | null;
   started_at?: string | null;
-  start_s?: number;
+  start_s?: number | null;
   text?: string;
 }
 
