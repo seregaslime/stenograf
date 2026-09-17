@@ -140,6 +140,14 @@ export interface PendingMeetingDto {
   }[];
 }
 
+/** Документ базы знаний в списке: текст не отдаётся — только сколько его. */
+export interface DocumentDto {
+  id: number;
+  title: string;
+  created_at: string;
+  chars: number;
+}
+
 /** Документ базы знаний, которому нужны векторы: у его кусков есть только текст. */
 export interface PendingDocumentDto {
   document_id: number;

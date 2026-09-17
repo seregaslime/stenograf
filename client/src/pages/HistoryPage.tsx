@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { Page } from "../App";
 import { api } from "../api/rest";
+import KnowledgeBase from "../components/KnowledgeBase";
 import { formatTime } from "../components/Transcript";
 import { LlmRouter } from "../llm/router";
 import { answerByFragments, indexPending, searchMeetings, type SearchApi } from "../llm/search";
@@ -196,6 +197,7 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
           </div>
         ))}
       </div>
+      <KnowledgeBase />
       {meetings && meetings.length === 0 && (
         <div className="empty">
           <div className="big-icon">🗂️</div>

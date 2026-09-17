@@ -1,6 +1,7 @@
 import { getServerUrl, getToken } from "../store";
 import type {
   AsrStateDto,
+  DocumentDto,
   HealthDto,
   MeetingDetail,
   MeetingListItem,
@@ -89,12 +90,17 @@ export const api = {
       `/api/search/pending?model=${encodeURIComponent(model)}`,
     ),
 
-  searchIndex: (body: {
-    model: string;
-    meeting_id: number;
-    chunks: (PendingMeetingDto["chunks"][number] & { vector: number[] })[];
-  }) =>
-    request<{ meeting_id: number; chunks: number }>("/api/search/index", {
+  // Векторы встречи или документа базы знаний — ровно одного из двух
+  searchIndex: (
+    body:
+      | {
+        model: string;
+        meeting_id: number;
+        chunks: (PendingMeetingDto["chunks"][number] & { vector: number[] })[];
+      }
+      | { model: string; document_id: number; chunks: { text: string; vector: number[] }[] },
+  ) =>
+    request<{ chunks: number }>("/api/search/index", {
       method: "POST",
       body: JSON.stringify(body),
     }),
@@ -154,6 +160,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ first_word: firstWord, last_word: lastWord, speaker_id: speakerId }),
     }),
+  documents: () => request<DocumentDto[]>("/api/documents"),
+  // Содержимое в base64: сервер сам распознаёт кодировку (UTF-8, UTF-16, cp1251),
+  // поэтому файл уходит байтами, а не текстом, прочитанным браузером в UTF-8.
+  uploadDocument: (filename: string, contentBase64: string) =>
+    request<DocumentDto>("/api/documents", {
+      method: "POST",
+      body: JSON.stringify({ filename, content_base64: contentBase64 }),
+    }),
+  deleteDocument: (id: number) =>
+    request<{ deleted: number }>(`/api/documents/${id}`, { method: "DELETE" }),
   voiceprintAudio: (speakerId: number, printId: number) =>
     файл(`/api/speakers/${speakerId}/voiceprints/${printId}/audio`),
 };
