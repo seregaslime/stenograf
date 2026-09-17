@@ -140,6 +140,29 @@ export interface PendingMeetingDto {
   }[];
 }
 
+/** Состояние источника базы знаний для выбранной модели эмбеддингов.
+ *  indexed — найдётся поиском; waiting — ждёт векторов; not_ready — встреча
+ *  ещё идёт или составляется протокол; empty — индексировать нечего. */
+export type KnowledgeSourceStatus = "indexed" | "waiting" | "not_ready" | "empty";
+
+interface KnowledgeSourceState {
+  id: number;
+  title: string;
+  status: KnowledgeSourceStatus;
+  /** Кусков, посчитанных выбранной моделью */
+  chunks: number;
+  /** Кусков, которые ждут векторов выбранной модели */
+  chunks_waiting: number;
+  /** Кусков, посчитанных другими моделями: поиск с выбранной их не видит */
+  chunks_other_models: number;
+}
+
+export interface KnowledgeStatusDto {
+  model: string;
+  meetings: (KnowledgeSourceState & { started_at: string | null })[];
+  documents: (KnowledgeSourceState & { created_at: string; chars: number })[];
+}
+
 /** Документ базы знаний в списке: текст не отдаётся — только сколько его. */
 export interface DocumentDto {
   id: number;

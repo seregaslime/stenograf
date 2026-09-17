@@ -218,3 +218,54 @@ def test_кусок_встречи_без_реплик_не_принимаетс
         "model": модель(встреча), "meeting_id": встреча,
         "chunks": [{"text": "без реплик", "vector": БЛИЗКИЙ}],
     }).status_code == 400
+
+
+# --- состояние базы знаний для экрана (пункт 5б) ---
+
+def статус(client, модель_: str) -> dict:
+    return client.get(f"/api/knowledge/status?model={модель_}").json()
+
+
+def найти(список: list[dict], id_: int) -> dict:
+    return next(и for и in список if и["id"] == id_)
+
+
+def test_статус_показывает_ожидание_и_индексацию(client, встреча, документ):
+    """Главное, что экран должен сказать человеку: найдётся ли его встреча и
+    документ, и сколько кусков ещё ждут векторов — по ним оценивается время."""
+    модель_ = модель(встреча)
+    до = статус(client, модель_)
+    assert найти(до["meetings"], встреча)["status"] == "waiting"
+    assert найти(до["meetings"], встреча)["chunks_waiting"] == len(куски(client, встреча))
+    assert найти(до["documents"], документ)["status"] == "waiting"
+
+    порции = куски(client, встреча)
+    client.post("/api/search/index", json={
+        "model": модель_, "meeting_id": встреча,
+        "chunks": [{**к, "vector": БЛИЗКИЙ} for к in порции],
+    })
+    после = найти(статус(client, модель_)["meetings"], встреча)
+    assert (после["status"], после["chunks"], после["chunks_waiting"]) == ("indexed", len(порции), 0)
+
+
+def test_другая_модель_видит_чужие_векторы_и_снова_ждёт(client, встреча):
+    """Сменили модель в настройках — поиск старые векторы не возьмёт. Экран
+    должен это показать, а не рапортовать «проиндексировано»."""
+    порции = куски(client, встреча)
+    client.post("/api/search/index", json={
+        "model": модель(встреча), "meeting_id": встреча,
+        "chunks": [{**к, "vector": БЛИЗКИЙ} for к in порции],
+    })
+    другая = найти(статус(client, "другая-модель")["meetings"], встреча)
+    assert (другая["status"], другая["chunks"], другая["chunks_other_models"]) == ("waiting", 0, len(порции))
+
+
+def test_идущая_и_пустая_встречи_не_ждут_индексации(client):
+    with session_scope() as db:
+        идёт = crud.create_meeting(db, "Идёт", False).id
+        пустая = crud.create_meeting(db, "Тишина", False)
+        crud.end_meeting(db, пустая.id, status="done")
+        пустая_id = пустая.id
+    состояние = статус(client, "bge-m3")
+    assert найти(состояние["meetings"], идёт)["status"] == "not_ready"
+    assert найти(состояние["meetings"], пустая_id)["status"] == "empty"

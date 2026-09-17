@@ -434,6 +434,14 @@ class QueryBody(BaseModel):
     limit: int | None = Field(None, ge=1, le=SEARCH_LIMIT_MAX)
 
 
+@app.get("/api/knowledge/status")
+def knowledge_status(request: Request, model: str):
+    """Состояние базы знаний для выбранной модели эмбеддингов: что найдётся
+    поиском, что ждёт индексации и что посчитано другой моделью."""
+    with session_scope() as db:
+        return search.knowledge_status(db, settings, model, владелец(request))
+
+
 @app.get("/api/search/pending")
 def search_pending(request: Request, model: str):
     """Что осталось проиндексировать ЭТОЙ моделью: встречи и документы с кусками.

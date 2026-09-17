@@ -9,8 +9,10 @@ import { buildSearchAnswerPrompt } from "./prompts/searchAnswer";
 import { LlmRouter, type LlmSettings } from "./router";
 import {
   answerByFragments,
+  EMBED_BATCH,
   indexPending,
   searchMeetings,
+  type IndexProgress,
   type PendingMeeting,
   type SearchApi,
 } from "./search";
@@ -154,7 +156,7 @@ describe("документы базы знаний", () => {
   it("индексируются после встреч, со своим document_id и без реплик", async () => {
     const embed = модельЭмбеддингов([0, 1, 0]);
     const отправлено: unknown[] = [];
-    const шаги: [number, number][] = [];
+    const шаги: IndexProgress[] = [];
     const api: SearchApi = {
       pending: async () => ({
         meetings: [{ meeting_id: 7, title: "Планёрка", chunks: [кусок(1)] }],
@@ -167,7 +169,7 @@ describe("документы базы знаний", () => {
       query: async () => ({ results: [] }),
     };
 
-    const посчитано = await indexPending(api, НАСТРОЙКИ, "bge-m3", (г, в) => шаги.push([г, в]));
+    const посчитано = await indexPending(api, НАСТРОЙКИ, "bge-m3", (шаг) => шаги.push(шаг));
 
     expect(посчитано).toBe(2);
     expect(отправлено[0]).toMatchObject({ meeting_id: 7 });
@@ -177,7 +179,12 @@ describe("документы базы знаний", () => {
       document_id: 3,
       chunks: [{ text: "по вторникам", vector: [0, 1, 0] }],
     });
-    expect(шаги).toEqual([[0, 2], [1, 2], [2, 2]]);
+    // Прогресс — по кускам, с названием источника, который считается сейчас
+    expect(шаги).toEqual([
+      { chunksDone: 0, chunksTotal: 2, source: "Планёрка" },
+      { chunksDone: 1, chunksTotal: 2, source: "Регламент" },
+      { chunksDone: 2, chunksTotal: 2, source: "" },
+    ]);
     embed.mockRestore();
   });
 
@@ -190,5 +197,67 @@ describe("документы базы знаний", () => {
     const { prompt } = buildSearchAnswerPrompt("когда созвоны", [документ, ...НАЙДЕНО]);
     expect(prompt).toContain("[Документ «Регламент созвонов»]\nпо вторникам в 11");
     expect(prompt).toContain("[Встреча «Планёрка», 2026-08-14, 2:05]");
+  });
+});
+
+describe("индексация пачками", () => {
+  it("большой источник уходит модели пачками, прогресс растёт по кускам", async () => {
+    const пачки: number[] = [];
+    const embed = vi.spyOn(OllamaClient.prototype, "embed").mockImplementation(async (_m, texts) => {
+      пачки.push(texts.length);
+      return texts.map(() => [1, 0, 0]);
+    });
+    const отправлено: { chunks: unknown[] }[] = [];
+    const api: SearchApi = {
+      pending: async () => ({
+        meetings: [],
+        documents: [{ document_id: 3, title: "Большой", chunks: Array.from({ length: 70 }, (_, i) => ({ text: `кусок ${i}` })) }],
+      }),
+      index: async (body) => {
+        отправлено.push(body);
+        return { chunks: body.chunks.length };
+      },
+      query: async () => ({ results: [] }),
+    };
+    const готово: number[] = [];
+
+    await indexPending(api, НАСТРОЙКИ, "bge-m3", (шаг) => готово.push(шаг.chunksDone));
+
+    expect(пачки).toEqual([EMBED_BATCH, EMBED_BATCH, 70 - 2 * EMBED_BATCH]);
+    expect(готово).toEqual([0, 32, 64, 70]);
+    // Сервер получает источник целиком одним запросом: половина векторов
+    // сделала бы документ «проиндексированным с дырой»
+    expect(отправлено).toHaveLength(1);
+    expect(отправлено[0].chunks).toHaveLength(70);
+    embed.mockRestore();
+  });
+
+  it("модель упала на втором источнике — первый сохранён, повтор продолжает со второго", async () => {
+    let вызов = 0;
+    const embed = vi.spyOn(OllamaClient.prototype, "embed").mockImplementation(async (_m, texts) => {
+      вызов += 1;
+      if (вызов === 2) throw new Error("Модель недоступна");
+      return texts.map(() => [1, 0, 0]);
+    });
+    const сохранено = new Set<number>();
+    const api: SearchApi = {
+      // Как сервер: отданные на индексацию источники больше не ждут
+      pending: async () => ({
+        meetings: [7, 8].filter((id) => !сохранено.has(id))
+          .map((id) => ({ meeting_id: id, title: `Встреча ${id}`, chunks: [кусок(id)] })),
+      }),
+      index: async (body) => {
+        if ("meeting_id" in body) сохранено.add(body.meeting_id);
+        return { chunks: body.chunks.length };
+      },
+      query: async () => ({ results: [] }),
+    };
+
+    await expect(indexPending(api, НАСТРОЙКИ, "bge-m3")).rejects.toThrow("Модель недоступна");
+    expect([...сохранено]).toEqual([7]);
+
+    await expect(indexPending(api, НАСТРОЙКИ, "bge-m3")).resolves.toBe(1);
+    expect([...сохранено]).toEqual([7, 8]);
+    embed.mockRestore();
   });
 });

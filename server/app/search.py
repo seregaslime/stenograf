@@ -35,7 +35,7 @@ import logging
 import re
 
 import numpy as np
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from .config import Settings
@@ -220,6 +220,74 @@ def pending_documents(db: Session, cfg: Settings, model: str,
         if куски:
             ждут.append({"document_id": документ.id, "title": документ.title, "chunks": куски})
     return ждут
+
+
+def knowledge_status(db: Session, cfg: Settings, model: str,
+                     owner_id: int | None = None) -> dict:
+    """Что в базе знаний проиндексировано выбранной моделью, а что ждёт (пункт 5б).
+
+    По каждой встрече и документу: сколько кусков посчитано ЭТОЙ моделью, сколько
+    другими (они в поиск с этой моделью не попадают) и сколько кусков ждёт
+    векторов. Состояние источника:
+      - indexed — векторы этой модели есть;
+      - waiting — векторов этой модели нет, а искать есть по чему;
+      - not_ready — встреча ещё идёт или протокол составляется: в очередь на
+        индексацию попадают только законченные встречи;
+      - empty — в источнике нет текста, индексировать нечего.
+
+    Число ждущих кусков берётся из той же нарезки, что отдаётся приложению на
+    индексацию, — иначе оценка времени на экране расходилась бы с тем, что
+    приложение потом посчитает.
+    """
+    посчитано: dict[tuple[str, int], dict[str, int]] = {}
+    for meeting_id, document_id, модель, сколько in db.execute(
+        select(Chunk.meeting_id, Chunk.document_id, Chunk.model, func.count())
+        .group_by(Chunk.meeting_id, Chunk.document_id, Chunk.model)
+    ):
+        ключ = ("meeting", meeting_id) if meeting_id is not None else ("document", document_id)
+        посчитано.setdefault(ключ, {})[модель] = сколько
+
+    ждут = {("meeting", m["meeting_id"]): len(m["chunks"])
+            for m in pending_chunks(db, cfg, model, owner_id)}
+    ждут |= {("document", d["document_id"]): len(d["chunks"])
+             for d in pending_documents(db, cfg, model, owner_id)}
+
+    def состояние(ключ: tuple[str, int], готова: bool) -> dict:
+        модели = посчитано.get(ключ, {})
+        if модели.get(model):
+            статус = "indexed"
+        elif ключ in ждут:
+            статус = "waiting"
+        elif not готова:
+            статус = "not_ready"
+        else:
+            статус = "empty"
+        return {
+            "status": статус,
+            "chunks": модели.get(model, 0),
+            "chunks_waiting": ждут.get(ключ, 0),
+            "chunks_other_models": sum(n for имя, n in модели.items() if имя != model),
+        }
+
+    встречи = select(Meeting).order_by(Meeting.started_at.desc())
+    документы = select(Document).order_by(Document.created_at.desc())
+    if owner_id is not None:
+        встречи = встречи.where(Meeting.owner_id == owner_id)
+        документы = документы.where(Document.owner_id == owner_id)
+    return {
+        "model": model,
+        "meetings": [
+            {"id": m.id, "title": m.title,
+             "started_at": m.started_at.isoformat() if m.started_at else None,
+             **состояние(("meeting", m.id), m.status == "done")}
+            for m in db.scalars(встречи)
+        ],
+        "documents": [
+            {"id": d.id, "title": d.title, "created_at": d.created_at.isoformat(), "chars": len(d.text),
+             **состояние(("document", d.id), True)}
+            for d in db.scalars(документы)
+        ],
+    }
 
 
 def store_vectors(db: Session, model: str, source: Meeting | Document, куски: list[dict]) -> int:

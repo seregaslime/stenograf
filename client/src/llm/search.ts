@@ -50,52 +50,75 @@ function embedder(settings: LlmSettings): OllamaClient {
   return new OllamaClient({ url: settings.ollamaUrl, keepAlive: settings.keepAlive });
 }
 
+/** Сколько кусков отправлять модели за раз. Замер 17.09.2026, bge-m3 на ПК,
+ *  256 кусков: одним запросом 62–63 с, пачками по 32 — 61–65 с. Пачки ничего не
+ *  стоят, а прогресс по ним обновляется раз в ~8 секунд вместо одного раза на
+ *  весь документ, который на мегабайте считается 7 минут молча. */
+export const EMBED_BATCH = 32;
+
+/** Где сейчас индексация: куски всех источников и текущий источник. */
+export interface IndexProgress {
+  chunksDone: number;
+  chunksTotal: number;
+  /** Название встречи или документа, который считается сейчас; "" — готово. */
+  source: string;
+}
+
 /**
- * Досчитывает векторы для встреч, у которых их нет. Возвращает, сколько кусков
- * посчитано.
+ * Досчитывает векторы для встреч и документов, у которых их нет. Возвращает,
+ * сколько кусков посчитано.
  *
  * Ленивая индексация, как и была: встреча могла пройти до появления поиска, а
  * модель — смениться. Проверка дешёвая, пересчёт идёт только там, где не хватает.
+ * Упала посредине (модель недоступна) — повторный вызов продолжит с того
+ * источника, на котором упала: уже отправленные сервер больше не отдаёт.
  */
 export async function indexPending(
   api: SearchApi,
   settings: LlmSettings,
   model: string,
-  onProgress: (готово: number, всего: number) => void = () => {},
+  onProgress: (progress: IndexProgress) => void = () => {},
 ): Promise<number> {
   const { meetings, documents = [] } = await api.pending(model);
-  const всего = meetings.length + documents.length;
+  // Документы — после встреч: большой документ считается минутами, а новая
+  // встреча в поиске нужнее вчерашнего регламента.
+  const очередь = [
+    ...meetings.map((в) => ({ title: в.title, texts: в.chunks.map((к) => к.text), meeting: в })),
+    ...documents.map((д) => ({ title: д.title, texts: д.chunks.map((к) => к.text), document: д })),
+  ];
+  const всего = очередь.reduce((сумма, и) => сумма + и.texts.length, 0);
   if (всего === 0) return 0;
 
   const модель = embedder(settings);
-  let посчитано = 0;
   let готово = 0;
-  for (const встреча of meetings) {
-    onProgress(готово++, всего);
-    const векторы = await модель.embed(model, встреча.chunks.map((к) => к.text));
-    // Кусок уходит обратно вместе со своим вектором: пересчитывать нарезку на
-    // сервере нельзя — встречу могли дописать, и вектор лёг бы к чужому тексту.
-    await api.index({
-      model,
-      meeting_id: встреча.meeting_id,
-      chunks: встреча.chunks.map((к, i) => ({ ...к, vector: векторы[i] })),
-    });
-    посчитано += встреча.chunks.length;
+  for (const источник of очередь) {
+    const векторы: number[][] = [];
+    for (let i = 0; i < источник.texts.length; i += EMBED_BATCH) {
+      onProgress({ chunksDone: готово, chunksTotal: всего, source: источник.title });
+      const пачка = источник.texts.slice(i, i + EMBED_BATCH);
+      векторы.push(...(await модель.embed(model, пачка)));
+      готово += пачка.length;
+    }
+    // Источник уходит целиком, а не пачками: сервер заменяет его куски разом,
+    // и встреча с половиной векторов считалась бы проиндексированной с дырой.
+    // Кусок — вместе со своим вектором: пересчитывать нарезку на сервере нельзя,
+    // встречу могли дописать, и вектор лёг бы к чужому тексту.
+    if ("meeting" in источник && источник.meeting) {
+      await api.index({
+        model,
+        meeting_id: источник.meeting.meeting_id,
+        chunks: источник.meeting.chunks.map((к, i) => ({ ...к, vector: векторы[i] })),
+      });
+    } else if ("document" in источник && источник.document) {
+      await api.index({
+        model,
+        document_id: источник.document.document_id,
+        chunks: источник.document.chunks.map((к, i) => ({ text: к.text, vector: векторы[i] })),
+      });
+    }
   }
-  // Документы — после встреч: большой документ считается минутами, а новая
-  // встреча в поиске нужнее вчерашнего регламента.
-  for (const документ of documents) {
-    onProgress(готово++, всего);
-    const векторы = await модель.embed(model, документ.chunks.map((к) => к.text));
-    await api.index({
-      model,
-      document_id: документ.document_id,
-      chunks: документ.chunks.map((к, i) => ({ text: к.text, vector: векторы[i] })),
-    });
-    посчитано += документ.chunks.length;
-  }
-  onProgress(всего, всего);
-  return посчитано;
+  onProgress({ chunksDone: всего, chunksTotal: всего, source: "" });
+  return всего;
 }
 
 /** Ближайшие куски к вопросу. Пустой вопрос — пустая выдача, без похода к модели. */

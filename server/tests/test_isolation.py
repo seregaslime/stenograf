@@ -174,6 +174,8 @@ def test_чужие_документы_не_видны_и_не_удаляютс�
     assert найдено == []
     ждут = client.get("/api/search/pending?model=другая", headers=заголовки).json()["documents"]
     assert ждут == []
+    состояние = client.get("/api/knowledge/status?model=bge-m3", headers=заголовки).json()
+    assert состояние["documents"] == []
     with session_scope() as db:
         assert db.get(Document, чужой_id) is not None
         db.delete(db.get(Document, чужой_id))
@@ -190,3 +192,6 @@ def test_поиск_не_видит_чужих_встреч(client, двое):
 
     ждут = client.get("/api/search/pending?model=bge-m3", headers=заголовки).json()["meetings"]
     assert all(m["meeting_id"] != двое["встреча_куратора"] for m in ждут)
+
+    состояние = client.get("/api/knowledge/status?model=bge-m3", headers=заголовки).json()
+    assert all(m["id"] != двое["встреча_куратора"] for m in состояние["meetings"])
