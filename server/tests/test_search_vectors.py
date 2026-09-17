@@ -150,3 +150,16 @@ def test_чужую_встречу_проиндексировать_нельзя
             for таблица in (Meeting, User):
                 for строка in db.scalars(select(таблица)):
                     db.delete(строка)
+
+
+def test_пустой_вектор_отбивается_до_базы(client, встреча):
+    """У vector размерность не меньше единицы: пустой вектор база не примет, и
+    вместо внятного отказа человек получил бы ошибку сервера."""
+    порции = куски(client, встреча)
+    assert client.post("/api/search/index", json={
+        "model": модель(встреча), "meeting_id": встреча,
+        "chunks": [{**к, "vector": []} for к in порции],
+    }).status_code == 422
+    assert client.post("/api/search/query", json={
+        "model": модель(встреча), "vector": [],
+    }).status_code == 422

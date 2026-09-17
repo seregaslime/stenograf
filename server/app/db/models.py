@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, DateTime, Float, ForeignKey, LargeBinary, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -147,9 +148,12 @@ class Chunk(Base):
     # Какой моделью посчитан вектор: сменили модель — старые куски надо
     # пересчитать, иначе в одном индексе окажутся несравнимые векторы.
     model: Mapped[str] = mapped_column(String(80))
-    # float32, L2-нормированный. BLOB, а не JSON: 1024 числа текстом весят
-    # вчетверо больше и разбираются на порядок дольше.
-    vector: Mapped[bytes] = mapped_column(LargeBinary)
+    # L2-нормированный: близость — скалярное произведение, его и считает база.
+    # Размерность не зафиксирована намеренно: у каждого человека своя модель
+    # эмбеддингов (bge-m3 — 1024, другие — 768), и векторы разной длины лежат в
+    # одной колонке. Цена — индекс HNSW требует фиксированной размерности; пока
+    # кусков сотни, база перебирает их точно и быстро, индекс — после замера.
+    vector: Mapped[list[float]] = mapped_column(Vector())
 
     meeting: Mapped[Meeting] = relationship()
 
