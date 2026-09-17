@@ -3,6 +3,8 @@
 Запуск для разработки:  uvicorn app.main:app --host 0.0.0.0 --port 8765
 Все данные (БД, модели, образцы голосов, записи) лежат в server/data/.
 """
+import base64
+import binascii
 import logging
 import shutil
 import threading
@@ -17,7 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from . import auth, search
+from . import auth, documents, search
 from .asr.transcriber import GIGAAM_AVAILABLE, MLX_AVAILABLE, Transcriber
 from .config import (
     ASR_ENGINES,
@@ -551,6 +553,47 @@ def reassign_segment_words(segment_id: int, body: ReassignBody, request: Request
             raise HTTPException(400, f"Номера слов вне реплики: в ней {len(segment.words)} слов")
         куски = crud.reassign_words(db, segment, body.first_word, body.last_word, body.speaker_id)
         return {"segments": [crud.segment_to_dict(s) for s in куски]}
+
+
+class DocumentBody(BaseModel):
+    filename: str = Field(min_length=1, max_length=300)
+    # Содержимое файла в base64, а не форма с файлом: форма требует ещё одной
+    # зависимости (python-multipart), а документы здесь до мегабайта.
+    content_base64: str
+
+
+@app.get("/api/documents")
+def get_documents(request: Request):
+    with session_scope() as db:
+        return documents.list_for_owner(db, владелец(request))
+
+
+@app.post("/api/documents")
+def upload_document(body: DocumentBody, request: Request):
+    # Размер — до разбора base64: иначе огромное тело сначала раскодировалось бы
+    # целиком в память, и только потом было бы отвергнуто.
+    if len(body.content_base64) > documents.MAX_BYTES * 4 // 3 + 4:
+        raise HTTPException(413, "Файл больше мегабайта: его индексация заняла бы больше семи минут.")
+    try:
+        raw = base64.b64decode(body.content_base64, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(400, "Файл пришёл повреждённым")
+    with session_scope() as db:
+        try:
+            document = documents.create(db, body.filename, raw, владелец(request))
+        except documents.DocumentRejected as exc:
+            raise HTTPException(exc.status, exc.message)
+        return documents.to_dict(document.id, document.title, document.created_at, len(document.text))
+
+
+@app.delete("/api/documents/{document_id}")
+def delete_document(document_id: int, request: Request):
+    with session_scope() as db:
+        document = documents.for_owner(db, document_id, владелец(request))
+        if document is None:
+            raise HTTPException(404, "Документ не найден")
+        db.delete(document)
+    return {"deleted": document_id}
 
 
 @app.post("/api/speakers/merge")
