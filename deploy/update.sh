@@ -45,6 +45,24 @@ else
     rm -f "backups/stenograf-$stamp.sql"
 fi
 
+# Сменившийся образ базы подменять молча нельзя: `up -d server` пересоздаёт и
+# базу, от которой сервер зависит, — новый образ поверх старого тома. Так
+# 17.09.2026 postgres:17-alpine сменился на pgvector/pgvector:pg17, а текст
+# Alpine и Debian сортируют по-разному: индексы старого тома у нового образа
+# врут. Базу сначала переносят дампом, а уже потом обновляются.
+running_db=$(docker compose ps -q db 2>/dev/null || true)
+if [ -n "$running_db" ]; then
+    have_db=$(docker inspect -f '{{.Config.Image}}' "$running_db")
+    want_db=$(docker compose config | sed -n '/^  db:$/,/^  [a-z]/p' | awk '$1 == "image:" {print $2; exit}')
+    if [ "$have_db" = "$want_db" ]; then
+        :
+    else
+        echo "✗ Образ базы сменился: $have_db → $want_db."
+        echo "  Поверх старого тома его ставить нельзя — сначала перенос: sh deploy/move-db.sh"
+        exit 1
+    fi
+fi
+
 echo "→ Тяну образ"
 docker compose pull server
 
