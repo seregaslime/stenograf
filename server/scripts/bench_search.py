@@ -1,16 +1,14 @@
-"""Когда поиску по встречам понадобится индекс: точный перебор против HNSW.
+"""Поиск по встречам через индекс HNSW против точного перебора: скорость и точность.
 
-Поиск сравнивает векторы в базе расширением pgvector без индекса — база
-перебирает все куски человека (app/search.py). Индекс HNSW быстрее на больших
-объёмах, но приблизительный: изредка отдаёт не самые близкие куски. Бенчмарк
-отвечает на вопрос, с какого числа кусков перебор перестаёт укладываться во
-время, которое человек не замечает, и сколько точности индекс за это берёт.
-
-Что меряется на каждом объёме:
-  - настоящий запрос поиска (search.search_by_vector) — медиана и p95;
-  - запрос через индекс HNSW — медиана, p95 и время построения индекса;
-  - точность индекса (recall@5): сколько из настоящих пяти ближайших кусков
-    индекс вернул.
+Поиск (app/search.py) идёт через индекс HNSW: он быстрый на больших объёмах, но
+приблизительный — изредка отдаёт не самые близкие куски. Бенчмарк меряет ту
+самую функцию, которую зовёт сервер, двумя способами на одних данных:
+  - перебор — индекс запрещён, база сравнивает вопрос со всеми кусками. Это
+    точный ответ и заодно время, которое было бы без индекса;
+  - индекс — при нескольких значениях hnsw.ef_search (сколько кандидатов
+    смотрит индекс): больше кандидатов — точнее, но медленнее.
+Точность (recall@5) — сколько из пяти кусков перебора индекс тоже нашёл.
+По этим числам выбирается search.EF_SEARCH.
 
 Векторы синтетические, 1024 числа как у bge-m3, но не равномерный шум: у
 настоящих эмбеддингов разговоры группируются по темам, а на равномерном шуме
@@ -19,11 +17,13 @@
 на живых векторах её надо перепроверить.
 
 База — тестовая (stenograf_test), куски складываются под отдельным именем
-модели и удаляются в конце. Рабочая база не трогается.
+модели и удаляются в конце. Рабочая база не трогается. Числа зависят от машины
+и от кэша базы (shared_buffers): индекс, не влезающий в кэш, даёт редкие
+медленные запросы — это видно по p95.
 
 Запуск:
     .venv/bin/python scripts/bench_search.py
-    .venv/bin/python scripts/bench_search.py --sizes 1000,10000 --queries 20
+    .venv/bin/python scripts/bench_search.py --sizes 1000,10000 --ef 40,100 --queries 20
 """
 import argparse
 import os
@@ -55,6 +55,9 @@ MODEL = "bench-bge-m3"
 TOP_K = 5
 TOPICS = 300
 SPREAD = 0.9  # разброс вокруг темы: близость внутри темы ~0.5–0.6, как у соседних кусков разговора
+# Прогрев длинный: индекс на 50 тысяч кусков весит ~400 МБ и в кэш базы (128 МБ
+# по умолчанию) не помещается — первые запросы читают его страницы с диска.
+WARMUP = 10
 
 
 def make_vectors(n: int, rng: np.random.Generator, centers: np.ndarray) -> np.ndarray:
@@ -62,8 +65,12 @@ def make_vectors(n: int, rng: np.random.Generator, centers: np.ndarray) -> np.nd
     return (v / np.linalg.norm(v, axis=1, keepdims=True)).astype(np.float32)
 
 
-def add_chunks(vectors: np.ndarray, meeting_id: int, segment_id: int) -> None:
-    """Двоичный COPY: миллион строк INSERT по одной шёл бы часами."""
+def add_chunks(vectors: np.ndarray, first: int, meeting_id: int, segment_id: int) -> None:
+    """Двоичный COPY: сотня тысяч INSERT по одному шла бы десятки минут.
+
+    start_s у каждого куска свой — по нему куски узнаются в выдаче при подсчёте
+    точности: текст и встреча у всех одинаковые.
+    """
     raw = engine.raw_connection()
     try:
         conn = raw.driver_connection
@@ -74,47 +81,47 @@ def add_chunks(vectors: np.ndarray, meeting_id: int, segment_id: int) -> None:
                 "FROM STDIN WITH (FORMAT BINARY)"
             ) as copy:
                 copy.set_types(["int4", "int4", "int4", "float8", "text", "varchar", "vector"])
-                for v in vectors:
-                    copy.write_row((meeting_id, segment_id, segment_id, 0.0, "кусок", MODEL, v))
+                for i, v in enumerate(vectors, start=first):
+                    copy.write_row((meeting_id, segment_id, segment_id, float(i), "кусок", MODEL, v))
         conn.commit()
     finally:
         raw.close()
 
 
-def timed(fn) -> tuple[float, object]:
-    start = time.perf_counter()
-    result = fn()
-    return (time.perf_counter() - start) * 1000, result
+def run_sql(sql: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(text(sql))
 
 
-def percentile(values: list[float], p: float) -> float:
-    return float(np.percentile(values, p))
+def measure(queries: np.ndarray, *, exact: bool) -> tuple[list[float], list[set[float]]]:
+    """Время и найденные куски на каждый вопрос. Первые WARMUP — прогрев кэша."""
+    times, found = [], []
+    for i, q in enumerate(queries):
+        with session_scope() as db:
+            if exact:
+                db.execute(text("SET LOCAL enable_indexscan = off"))
+            start = time.perf_counter()
+            rows = search.search_by_vector(db, MODEL, q.tolist(), TOP_K)
+            elapsed = (time.perf_counter() - start) * 1000
+        if i >= WARMUP:
+            times.append(elapsed)
+            found.append({r["start_s"] for r in rows})
+    return times, found
 
 
-def exact_ids(q: np.ndarray) -> list[int]:
-    with engine.connect() as conn:
-        return [r[0] for r in conn.execute(text(
-            "SELECT id FROM chunks WHERE model = :m AND vector_dims(vector) = :d "
-            "ORDER BY vector <#> CAST(:q AS vector) LIMIT :k"),
-            {"m": MODEL, "d": DIM, "q": str(q.tolist()), "k": TOP_K})]
-
-
-# Колонка без размерности, а индексу HNSW размерность нужна: индекс строится по
-# выражению с приведением и только по одной модели. Запрос обязан повторить
-# выражение дословно — иначе планировщик индекс не возьмёт.
-INDEX_SQL = (f"CREATE INDEX bench_hnsw ON chunks USING hnsw ((vector::vector({DIM})) vector_ip_ops) "
-             f"WHERE model = '{MODEL}'")
-INDEX_QUERY = (f"SELECT id FROM chunks WHERE model = '{MODEL}' "
-               f"ORDER BY vector::vector({DIM}) <#> CAST(:q AS vector({DIM})) LIMIT {TOP_K}")
+def med_p95(times: list[float]) -> str:
+    return f"{statistics.median(times):>6.1f} /{np.percentile(times, 95):>6.1f} мс"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--sizes", default="1000,10000,50000,100000",
+    parser.add_argument("--sizes", default="10000,50000,100000",
                         help="объёмы кусков через запятую, по возрастанию")
+    parser.add_argument("--ef", default="40,100,200", help="значения hnsw.ef_search через запятую")
     parser.add_argument("--queries", type=int, default=30, help="запросов на каждый объём")
     args = parser.parse_args()
     sizes = [int(s) for s in args.sizes.split(",")]
+    efs = [int(e) for e in args.ef.split(",")]
 
     init_db()
     rng = np.random.default_rng(42)
@@ -128,51 +135,55 @@ def main() -> None:
         db.flush()
         meeting_id, segment_id = meeting.id, segment.id
 
-    print(f"{'кусков':>8} | {'перебор мед':>11} {'p95':>6} | {'индекс мед':>10} {'p95':>6} "
-          f"{'сборка':>8} | {'точность':>8} | план")
+    index = f"{search.INDEX_PREFIX}{DIM}"
+    print(f"{'кусков':>7} | {'перебор мед/p95':>15} | {'ef':>4} {'индекс мед/p95':>15} "
+          f"{'точность':>8} | сборка, размер индекса")
+    default_ef = search.EF_SEARCH
     try:
         loaded = 0
         for size in sizes:
-            add_chunks(make_vectors(size - loaded, rng, centers), meeting_id, segment_id)
+            # Индекс снимается на время заливки и строится заново — как его строит
+            # миграция по уже лежащим векторам; вставка через живой индекс шла бы
+            # в разы дольше и мерила бы не то.
+            run_sql(f"DROP INDEX IF EXISTS {index}")
+            add_chunks(make_vectors(size - loaded, rng, centers), loaded, meeting_id, segment_id)
             loaded = size
-            with engine.begin() as conn:
-                conn.execute(text("ANALYZE chunks"))
-            queries = make_vectors(args.queries + 3, rng, centers)
-
-            exact_ms = []
+            start = time.perf_counter()
             with session_scope() as db:
-                for i, q in enumerate(queries):
-                    ms, _ = timed(lambda: search.search_by_vector(db, MODEL, q.tolist(), TOP_K))
-                    if i >= 3:  # первые — прогрев кэша страниц
-                        exact_ms.append(ms)
-
-            build_ms, _ = timed(lambda: _run(INDEX_SQL))
-            index_ms, recalls = [], []
+                search.ensure_index(db, DIM)
+            build_s = time.perf_counter() - start
+            run_sql("ANALYZE chunks")
             with engine.connect() as conn:
-                plan = " ".join(r[0] for r in conn.execute(
-                    text("EXPLAIN " + INDEX_QUERY), {"q": str(queries[0].tolist())}))
-                for i, q in enumerate(queries):
-                    ms, rows = timed(lambda: conn.execute(text(INDEX_QUERY), {"q": str(q.tolist())}).all())
-                    if i >= 3:
-                        index_ms.append(ms)
-                        recalls.append(len({r[0] for r in rows} & set(exact_ids(q))) / TOP_K)
-            _run("DROP INDEX bench_hnsw")
+                index_size = conn.execute(
+                    text(f"SELECT pg_size_pretty(pg_relation_size('{index}'))")).scalar()
 
-            print(f"{size:>8} | {statistics.median(exact_ms):>9.1f}мс {percentile(exact_ms, 95):>6.1f} | "
-                  f"{statistics.median(index_ms):>8.1f}мс {percentile(index_ms, 95):>6.1f} "
-                  f"{build_ms / 1000:>7.1f}с | {statistics.mean(recalls):>8.2f} | "
-                  f"{'индекс' if 'bench_hnsw' in plan else 'перебор'}", flush=True)
+            queries = make_vectors(args.queries + WARMUP, rng, centers)
+            # Индекс меряется первым: перебор прогоняет через кэш всю таблицу и
+            # вытесняет из него страницы индекса. На сервере перебора не бывает,
+            # и в первом прогоне этот порядок сделал индекс «медленным, как перебор».
+            by_ef = {}
+            for ef in efs:
+                search.EF_SEARCH = ef
+                by_ef[ef] = measure(queries, exact=False)
+            exact_ms, exact_found = measure(queries, exact=True)
+            for n, ef in enumerate(efs):
+                index_ms, index_found = by_ef[ef]
+                recall = statistics.mean(len(a & b) / TOP_K for a, b in zip(index_found, exact_found))
+                head = (f"{size:>7} | {med_p95(exact_ms)}" if n == 0 else f"{'':>7} | {'':>15}")
+                tail = f"{build_s:.0f} с, {index_size}" if n == 0 else ""
+                print(f"{head} | {ef:>4} {med_p95(index_ms)} {recall:>8.2f} | {tail}", flush=True)
     finally:
-        _run("DROP INDEX IF EXISTS bench_hnsw")
+        search.EF_SEARCH = default_ef
+        run_sql(f"DROP INDEX IF EXISTS {index}")
         with session_scope() as db:
             db.query(Chunk).filter(Chunk.model == MODEL).delete()
             db.query(Segment).filter(Segment.id == segment_id).delete()
             db.query(Meeting).filter(Meeting.id == meeting_id).delete()
-
-
-def _run(sql: str) -> None:
-    with engine.begin() as conn:
-        conn.execute(text(sql))
+        # Удалённые строки лежат в таблице мёртвыми, пока их не вычистят: после
+        # пары прогонов перебор на тысяче кусков шёл 547 мс вместо 6 — продирался
+        # через сотни тысяч удалённых векторов. Следующий замер врал бы.
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text("VACUUM FULL ANALYZE chunks"))
 
 
 if __name__ == "__main__":
