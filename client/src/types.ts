@@ -140,11 +140,30 @@ export interface PendingMeetingDto {
   }[];
 }
 
+/** Документ базы знаний в списке: текст не отдаётся — только сколько его. */
+export interface DocumentDto {
+  id: number;
+  title: string;
+  created_at: string;
+  chars: number;
+}
+
+/** Документ базы знаний, которому нужны векторы: у его кусков есть только текст. */
+export interface PendingDocumentDto {
+  document_id: number;
+  title: string;
+  chunks: { text: string }[];
+}
+
+/** Кусок из выдачи поиска: из встречи или из документа базы знаний.
+ *  Поля другого источника — null: у документа нет времени, у встречи — документа. */
 export interface SearchHit {
-  meeting_id: number;
-  meeting_title: string;
+  meeting_id: number | null;
+  meeting_title: string | null;
   started_at: string | null;
-  start_s: number;
+  start_s: number | null;
+  document_id: number | null;
+  document_title: string | null;
   text: string;
   /** Косинусная близость к запросу, 0…1 — та же мера, что у голосов. */
   similarity: number;

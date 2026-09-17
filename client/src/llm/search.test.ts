@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { OllamaClient } from "./ollama";
+import { buildSearchAnswerPrompt } from "./prompts/searchAnswer";
 import { LlmRouter, type LlmSettings } from "./router";
 import {
   answerByFragments,
@@ -33,6 +34,8 @@ const НАЙДЕНО: SearchHit[] = [
     meeting_title: "Планёрка",
     started_at: "2026-08-14T10:00:00",
     start_s: 125.6,
+    document_id: null,
+    document_title: null,
     text: "перенесли демо на вторник",
     similarity: 0.71,
   },
@@ -144,5 +147,48 @@ describe("ответ по найденному", () => {
 
     await expect(answerByFragments(llm, "вопрос", [])).resolves.toBe("");
     expect(generate).not.toHaveBeenCalled();
+  });
+});
+
+describe("документы базы знаний", () => {
+  it("индексируются после встреч, со своим document_id и без реплик", async () => {
+    const embed = модельЭмбеддингов([0, 1, 0]);
+    const отправлено: unknown[] = [];
+    const шаги: [number, number][] = [];
+    const api: SearchApi = {
+      pending: async () => ({
+        meetings: [{ meeting_id: 7, title: "Планёрка", chunks: [кусок(1)] }],
+        documents: [{ document_id: 3, title: "Регламент", chunks: [{ text: "по вторникам" }] }],
+      }),
+      index: async (body) => {
+        отправлено.push(body);
+        return { chunks: body.chunks.length };
+      },
+      query: async () => ({ results: [] }),
+    };
+
+    const посчитано = await indexPending(api, НАСТРОЙКИ, "bge-m3", (г, в) => шаги.push([г, в]));
+
+    expect(посчитано).toBe(2);
+    expect(отправлено[0]).toMatchObject({ meeting_id: 7 });
+    // Встреча первой: новая встреча в поиске нужнее вчерашнего регламента
+    expect(отправлено[1]).toEqual({
+      model: "bge-m3",
+      document_id: 3,
+      chunks: [{ text: "по вторникам", vector: [0, 1, 0] }],
+    });
+    expect(шаги).toEqual([[0, 2], [1, 2], [2, 2]]);
+    embed.mockRestore();
+  });
+
+  it("в ответе модели кусок документа подписан документом, а не встречей", () => {
+    const документ: SearchHit = {
+      meeting_id: null, meeting_title: null, started_at: null, start_s: null,
+      document_id: 3, document_title: "Регламент созвонов",
+      text: "по вторникам в 11", similarity: 0.8,
+    };
+    const { prompt } = buildSearchAnswerPrompt("когда созвоны", [документ, ...НАЙДЕНО]);
+    expect(prompt).toContain("[Документ «Регламент созвонов»]\nпо вторникам в 11");
+    expect(prompt).toContain("[Встреча «Планёрка», 2026-08-14, 2:05]");
   });
 });

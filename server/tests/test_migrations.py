@@ -108,3 +108,36 @@ def test_индексы_поиска_не_считаются_расхожден�
     finally:
         db.rollback()
         db.close()
+
+
+def test_документы_не_ломают_куски_встреч_и_откат():
+    """Ревизия c505c6365acb делает поля встречи у куска необязательными. Куски
+    встреч, лежавшие до неё, должны остаться как были, а откат — пройти, даже
+    если куски документов уже появились: иначе он упал бы на meeting_id NULL."""
+    models.Base.metadata.drop_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    command.upgrade(alembic_config(), "b41e9d05c3f8")
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO meetings (id, title, status, started_at, record_audio) "
+            "VALUES (1, 'встреча', 'done', now(), false)"))
+        conn.execute(text(
+            "INSERT INTO segments (id, meeting_id, channel, start_s, end_s, text, created_at) "
+            "VALUES (1, 1, 'mic', 0, 1, 'реплика', now())"))
+        conn.execute(text(
+            "INSERT INTO chunks (meeting_id, first_segment_id, last_segment_id, start_s, text, model, vector) "
+            "VALUES (1, 1, 1, 0, 'кусок встречи', 'bge-m3', '[1,0,0]')"))
+
+    command.upgrade(alembic_config(), "c505c6365acb")
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT meeting_id, document_id FROM chunks")).all() == [(1, None)]
+        conn.execute(text("INSERT INTO documents (id, title, text, created_at) "
+                          "VALUES (1, 'Регламент', 'текст', now())"))
+        conn.execute(text("INSERT INTO chunks (document_id, text, model, vector) "
+                          "VALUES (1, 'кусок документа', 'bge-m3', '[0,1,0]')"))
+
+    command.downgrade(alembic_config(), "b41e9d05c3f8")
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT text FROM chunks")).scalars().all() == ["кусок встречи"]
+    command.upgrade(alembic_config(), "head")

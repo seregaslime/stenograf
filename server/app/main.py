@@ -3,6 +3,8 @@
 Запуск для разработки:  uvicorn app.main:app --host 0.0.0.0 --port 8765
 Все данные (БД, модели, образцы голосов, записи) лежат в server/data/.
 """
+import base64
+import binascii
 import logging
 import shutil
 import threading
@@ -17,7 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from . import auth, search
+from . import auth, documents, search
 from .asr.transcriber import GIGAAM_AVAILABLE, MLX_AVAILABLE, Transcriber
 from .config import (
     ASR_ENGINES,
@@ -408,10 +410,11 @@ SEARCH_LIMIT_MAX = 20
 
 
 class IndexChunk(BaseModel):
-    """Кусок разговора с уже посчитанным вектором."""
-    first_segment_id: int
-    last_segment_id: int
-    start_s: float
+    """Кусок встречи или документа с уже посчитанным вектором. Реплики и время
+    есть только у куска встречи."""
+    first_segment_id: int | None = None
+    last_segment_id: int | None = None
+    start_s: float | None = None
     text: str
     # Пустой вектор база не примет: у vector размерность не меньше единицы
     vector: list[float] = Field(min_length=1)
@@ -419,7 +422,9 @@ class IndexChunk(BaseModel):
 
 class IndexBody(BaseModel):
     model: str
-    meeting_id: int
+    # Ровно одно из двух: чьи это куски
+    meeting_id: int | None = None
+    document_id: int | None = None
     chunks: list[IndexChunk]
 
 
@@ -431,27 +436,40 @@ class QueryBody(BaseModel):
 
 @app.get("/api/search/pending")
 def search_pending(request: Request, model: str):
-    """Что осталось проиндексировать ЭТОЙ моделью: встречи и куски разговора.
+    """Что осталось проиндексировать ЭТОЙ моделью: встречи и документы с кусками.
 
     Имя модели обязательно и приходит от приложения: векторы считает оно, у
     каждого своя модель, и сервер про этот выбор больше ничего не знает.
     Нарезка осталась здесь — она про содержимое встречи, а не про модель.
     """
     with session_scope() as db:
-        return {"meetings": search.pending_chunks(db, settings, model, владелец(request))}
+        return {
+            "meetings": search.pending_chunks(db, settings, model, владелец(request)),
+            "documents": search.pending_documents(db, settings, model, владелец(request)),
+        }
 
 
 @app.post("/api/search/index")
 def search_index(body: IndexBody, request: Request):
-    """Принимает посчитанные векторы. Чужую встречу проиндексировать нельзя."""
+    """Принимает посчитанные векторы встречи или документа. Чужое проиндексировать нельзя."""
+    if (body.meeting_id is None) == (body.document_id is None):
+        raise HTTPException(400, "Нужно указать ровно одно: meeting_id или document_id")
+    куски = [к.model_dump() for к in body.chunks]
     with session_scope() as db:
-        meeting = crud.meeting_for_owner(db, body.meeting_id, владелец(request))
-        if meeting is None:
-            raise HTTPException(404, "Встреча не найдена")
-        сохранено = search.store_vectors(
-            db, body.model, meeting, [к.model_dump() for к in body.chunks]
-        )
-    return {"meeting_id": body.meeting_id, "chunks": сохранено}
+        if body.document_id is not None:
+            source = documents.for_owner(db, body.document_id, владелец(request))
+            if source is None:
+                raise HTTPException(404, "Документ не найден")
+        else:
+            source = crud.meeting_for_owner(db, body.meeting_id, владелец(request))
+            if source is None:
+                raise HTTPException(404, "Встреча не найдена")
+            # Кусок встречи без реплик и времени в выдаче не открыть на нужном месте
+            if any(к["first_segment_id"] is None or к["last_segment_id"] is None
+                   or к["start_s"] is None for к in куски):
+                raise HTTPException(400, "У куска встречи должны быть реплики и время")
+        сохранено = search.store_vectors(db, body.model, source, куски)
+    return {"meeting_id": body.meeting_id, "document_id": body.document_id, "chunks": сохранено}
 
 
 @app.post("/api/search/query")
@@ -551,6 +569,47 @@ def reassign_segment_words(segment_id: int, body: ReassignBody, request: Request
             raise HTTPException(400, f"Номера слов вне реплики: в ней {len(segment.words)} слов")
         куски = crud.reassign_words(db, segment, body.first_word, body.last_word, body.speaker_id)
         return {"segments": [crud.segment_to_dict(s) for s in куски]}
+
+
+class DocumentBody(BaseModel):
+    filename: str = Field(min_length=1, max_length=300)
+    # Содержимое файла в base64, а не форма с файлом: форма требует ещё одной
+    # зависимости (python-multipart), а документы здесь до мегабайта.
+    content_base64: str
+
+
+@app.get("/api/documents")
+def get_documents(request: Request):
+    with session_scope() as db:
+        return documents.list_for_owner(db, владелец(request))
+
+
+@app.post("/api/documents")
+def upload_document(body: DocumentBody, request: Request):
+    # Размер — до разбора base64: иначе огромное тело сначала раскодировалось бы
+    # целиком в память, и только потом было бы отвергнуто.
+    if len(body.content_base64) > documents.MAX_BYTES * 4 // 3 + 4:
+        raise HTTPException(413, "Файл больше мегабайта: его индексация заняла бы больше семи минут.")
+    try:
+        raw = base64.b64decode(body.content_base64, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(400, "Файл пришёл повреждённым")
+    with session_scope() as db:
+        try:
+            document = documents.create(db, body.filename, raw, владелец(request))
+        except documents.DocumentRejected as exc:
+            raise HTTPException(exc.status, exc.message)
+        return documents.to_dict(document.id, document.title, document.created_at, len(document.text))
+
+
+@app.delete("/api/documents/{document_id}")
+def delete_document(document_id: int, request: Request):
+    with session_scope() as db:
+        document = documents.for_owner(db, document_id, владелец(request))
+        if document is None:
+            raise HTTPException(404, "Документ не найден")
+        db.delete(document)
+    return {"deleted": document_id}
 
 
 @app.post("/api/speakers/merge")

@@ -32,13 +32,14 @@
   - точность: индекс приблизительный, отсюда EF_SEARCH ниже.
 """
 import logging
+import re
 
 import numpy as np
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .config import Settings
-from .db.models import Chunk, Meeting, Segment
+from .db.models import Chunk, Document, Meeting, Segment
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +80,46 @@ def build_chunks(segments: list[Segment], max_chars: int) -> list[dict]:
             закрыть()
     закрыть()
     return [к for к in куски if к["text"]]
+
+
+# Конец предложения: точка, вопрос, восклицание или многоточие и пробел за ними
+_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
+
+
+def document_chunks(text: str, max_chars: int) -> list[str]:
+    """Режет документ на куски примерно по max_chars символов.
+
+    Границы — по абзацам (пустая строка), как у встречи по репликам: абзац в
+    регламенте — законченная мысль, и разрезанный посредине он теряет смысл
+    вместе с вектором. Короткие абзацы склеиваются — заголовок в одну строку
+    сам по себе ничего не значит. Абзац длиннее max_chars режется по
+    предложениям, а предложение без точек, длиннее max_chars, — по словам:
+    в выгрузках из таблиц и логов бывает и такое.
+    """
+    части: list[str] = []
+    for абзац in re.split(r"\n\s*\n", text):
+        абзац = " ".join(абзац.split())
+        if not абзац:
+            continue
+        if len(абзац) <= max_chars:
+            части.append(абзац)
+            continue
+        for предложение in _SENTENCE_END.split(абзац):
+            while len(предложение) > max_chars:
+                разрез = предложение.rfind(" ", 0, max_chars)
+                разрез = разрез if разрез > 0 else max_chars
+                части.append(предложение[:разрез].strip())
+                предложение = предложение[разрез:].strip()
+            if предложение:
+                части.append(предложение)
+
+    куски: list[str] = []
+    for часть in части:
+        if куски and len(куски[-1]) + 1 + len(часть) <= max_chars:
+            куски[-1] = f"{куски[-1]}\n{часть}"
+        else:
+            куски.append(часть)
+    return куски
 
 
 # Индекс HNSW строится на каждую длину вектора отдельно: индексу нужна одна
@@ -159,28 +200,48 @@ def pending_chunks(db: Session, cfg: Settings, model: str,
     return ждут
 
 
-def store_vectors(db: Session, model: str, meeting: Meeting, куски: list[dict]) -> int:
-    """Кладёт присланные векторы. Прежние куски этой встречи удаляются.
+def pending_documents(db: Session, cfg: Settings, model: str,
+                      owner_id: int | None = None) -> list[dict]:
+    """Документы, которым нужны векторы ЭТОЙ модели, с нарезанными кусками.
+
+    Как pending_chunks для встреч: считает векторы приложение, нарезка — здесь.
+    """
+    готовые = set(db.scalars(
+        select(Chunk.document_id).where(Chunk.model == model, Chunk.document_id.is_not(None)).distinct()
+    ))
+    запрос = select(Document)
+    if owner_id is not None:
+        запрос = запрос.where(Document.owner_id == owner_id)
+    ждут = []
+    for документ in db.scalars(запрос.order_by(Document.id)):
+        if документ.id in готовые:
+            continue
+        куски = [{"text": кусок} for кусок in document_chunks(документ.text, cfg.search_chunk_chars)]
+        if куски:
+            ждут.append({"document_id": документ.id, "title": документ.title, "chunks": куски})
+    return ждут
+
+
+def store_vectors(db: Session, model: str, source: Meeting | Document, куски: list[dict]) -> int:
+    """Кладёт присланные векторы встречи или документа. Прежние куски источника удаляются.
 
     Кусок приходит вместе со своим вектором, а не пересчитывается здесь по
     номерам: у приложения и сервера нарезка могла бы разойтись на одну реплику
     (встречу дописали между запросами), и вектор лёг бы к чужому тексту —
     молча, потому что размерность совпала бы.
     """
-    for старый in db.scalars(select(Chunk).where(Chunk.meeting_id == meeting.id)):
+    своё = (Chunk.document_id if isinstance(source, Document) else Chunk.meeting_id) == source.id
+    for старый in db.scalars(select(Chunk).where(своё)):
         db.delete(старый)
     for dims in {len(кусок["vector"]) for кусок in куски}:
         ensure_index(db, dims)
     for кусок in куски:
-        db.add(Chunk(
-            meeting_id=meeting.id,
-            model=model,
-            vector=_normalized(кусок["vector"]),
-            first_segment_id=кусок["first_segment_id"],
-            last_segment_id=кусок["last_segment_id"],
-            start_s=кусок["start_s"],
-            text=кусок["text"],
-        ))
+        if isinstance(source, Document):
+            откуда = {"document_id": source.id}
+        else:
+            откуда = {"meeting_id": source.id, "first_segment_id": кусок["first_segment_id"],
+                      "last_segment_id": кусок["last_segment_id"], "start_s": кусок["start_s"]}
+        db.add(Chunk(model=model, vector=_normalized(кусок["vector"]), text=кусок["text"], **откуда))
     db.flush()
     return len(куски)
 
@@ -223,11 +284,15 @@ def search_sql(dims: int, by_owner: bool) -> str:
     """
     dims = int(dims)
     колонка = f"c.vector::vector({dims})" if dims <= INDEX_MAX_DIMS else "c.vector"
-    владелец = "AND m.owner_id = :owner_id" if by_owner else ""
+    # Владелец — у встречи или у документа, смотря откуда кусок: источник ровно
+    # один (ограничение chunks_one_source), второе соединение даёт NULL.
+    владелец = "AND COALESCE(m.owner_id, d.owner_id) = :owner_id" if by_owner else ""
     return (
-        f"SELECT c.meeting_id, m.title, m.started_at, c.start_s, c.text, "
+        f"SELECT c.meeting_id, m.title AS meeting_title, m.started_at, c.start_s, "
+        f"c.document_id, d.title AS document_title, c.text, "
         f"{колонка} <#> CAST(:q AS vector) AS distance "
-        f"FROM chunks c JOIN meetings m ON m.id = c.meeting_id "
+        f"FROM chunks c LEFT JOIN meetings m ON m.id = c.meeting_id "
+        f"LEFT JOIN documents d ON d.id = c.document_id "
         f"WHERE c.model = :model AND vector_dims(c.vector) = {dims} {владелец} "
         f"ORDER BY distance LIMIT :limit"
     )
@@ -235,8 +300,11 @@ def search_sql(dims: int, by_owner: bool) -> str:
 
 def _result(row) -> dict:
     return {
+        # Кусок встречи или документа: поля другого источника — null
         "meeting_id": row.meeting_id,
-        "meeting_title": row.title,
+        "meeting_title": row.meeting_title,
+        "document_id": row.document_id,
+        "document_title": row.document_title,
         "started_at": row.started_at.isoformat() if row.started_at else None,
         "start_s": row.start_s,
         "text": row.text,

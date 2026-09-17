@@ -26,7 +26,8 @@ from app.db.models import Meeting, Speaker, User
 ОТКРЫТО_БЕЗ_ТОКЕНА = {"/api/health"}
 
 # Пример значения для параметра пути: нам важен код ответа, а не сама сущность.
-ЗАГЛУШКИ = {"meeting_id": "1", "speaker_id": "1", "print_id": "1", "segment_id": "1"}
+ЗАГЛУШКИ = {"meeting_id": "1", "speaker_id": "1", "print_id": "1", "segment_id": "1",
+            "document_id": "1"}
 
 
 def подставить(путь: str) -> str:
@@ -145,6 +146,37 @@ def test_чужую_реплику_не_поделить_и_своё_чужом�
                        json=тело | {"speaker_id": мой_спикер}).status_code == 404
     assert client.post(f"/api/segments/{моя}/reassign", headers=заголовки,
                        json=тело | {"speaker_id": двое["спикер_куратора"]}).status_code == 404
+
+
+def test_чужие_документы_не_видны_и_не_удаляются(client, двое):
+    from app import search
+    from app.db.models import Document
+
+    with session_scope() as db:
+        куратор = db.scalar(select(User).where(User.name == "Куратор"))
+        чужой = Document(owner_id=куратор.id, title="Приказ", text="секретно")
+        db.add(чужой)
+        db.flush()
+        чужой_id = чужой.id
+    заголовки = {"Authorization": f"Bearer {двое['сергей']}"}
+    assert client.get("/api/documents", headers=заголовки).json() == []
+    assert client.delete(f"/api/documents/{чужой_id}", headers=заголовки).status_code == 404
+    # ни проиндексировать своими векторами, ни найти поиском, ни увидеть в очереди
+    assert client.post("/api/search/index", headers=заголовки, json={
+        "model": "bge-m3", "document_id": чужой_id,
+        "chunks": [{"text": "подделка", "vector": [1.0, 0.0, 0.0]}],
+    }).status_code == 404
+    with session_scope() as db:
+        search.store_vectors(db, "bge-m3", db.get(Document, чужой_id),
+                             [{"text": "секретно", "vector": [1.0, 0.0, 0.0]}])
+    найдено = client.post("/api/search/query", headers=заголовки, json={
+        "model": "bge-m3", "vector": [1.0, 0.0, 0.0]}).json()["results"]
+    assert найдено == []
+    ждут = client.get("/api/search/pending?model=другая", headers=заголовки).json()["documents"]
+    assert ждут == []
+    with session_scope() as db:
+        assert db.get(Document, чужой_id) is not None
+        db.delete(db.get(Document, чужой_id))
 
 
 def test_поиск_не_видит_чужих_встреч(client, двое):

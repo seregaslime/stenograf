@@ -1,5 +1,5 @@
 /**
- * Поиск по прошлым встречам со стороны приложения: считать векторы своей
+ * Поиск по прошлым встречам и документам базы знаний со стороны приложения: считать векторы своей
  * моделью, отдать их серверу, спросить у него ближайшие и ответить по ним.
  *
  * Разделение проведено по границе «что зависит от модели». Нарезка разговора и
@@ -19,14 +19,25 @@ export interface PendingMeeting {
   chunks: { first_segment_id: number; last_segment_id: number; start_s: number; text: string }[];
 }
 
+/** Документ базы знаний, которому нужны векторы: у его кусков только текст. */
+export interface PendingDocument {
+  document_id: number;
+  title: string;
+  chunks: { text: string }[];
+}
+
 /** Что умеет сервер: отдать неиндексированное, принять векторы, найти по вектору. */
 export interface SearchApi {
-  pending(model: string): Promise<{ meetings: PendingMeeting[] }>;
-  index(body: {
-    model: string;
-    meeting_id: number;
-    chunks: (PendingMeeting["chunks"][number] & { vector: number[] })[];
-  }): Promise<{ chunks: number }>;
+  pending(model: string): Promise<{ meetings: PendingMeeting[]; documents?: PendingDocument[] }>;
+  index(
+    body:
+      | {
+        model: string;
+        meeting_id: number;
+        chunks: (PendingMeeting["chunks"][number] & { vector: number[] })[];
+      }
+      | { model: string; document_id: number; chunks: { text: string; vector: number[] }[] },
+  ): Promise<{ chunks: number }>;
   query(body: { model: string; vector: number[]; limit?: number }): Promise<{ results: SearchHit[] }>;
 }
 
@@ -52,16 +63,16 @@ export async function indexPending(
   model: string,
   onProgress: (готово: number, всего: number) => void = () => {},
 ): Promise<number> {
-  const { meetings } = await api.pending(model);
-  if (meetings.length === 0) return 0;
+  const { meetings, documents = [] } = await api.pending(model);
+  const всего = meetings.length + documents.length;
+  if (всего === 0) return 0;
 
+  const модель = embedder(settings);
   let посчитано = 0;
-  for (const [индекс, встреча] of meetings.entries()) {
-    onProgress(индекс, meetings.length);
-    const векторы = await embedder(settings).embed(
-      model,
-      встреча.chunks.map((к) => к.text),
-    );
+  let готово = 0;
+  for (const встреча of meetings) {
+    onProgress(готово++, всего);
+    const векторы = await модель.embed(model, встреча.chunks.map((к) => к.text));
     // Кусок уходит обратно вместе со своим вектором: пересчитывать нарезку на
     // сервере нельзя — встречу могли дописать, и вектор лёг бы к чужому тексту.
     await api.index({
@@ -71,7 +82,19 @@ export async function indexPending(
     });
     посчитано += встреча.chunks.length;
   }
-  onProgress(meetings.length, meetings.length);
+  // Документы — после встреч: большой документ считается минутами, а новая
+  // встреча в поиске нужнее вчерашнего регламента.
+  for (const документ of documents) {
+    onProgress(готово++, всего);
+    const векторы = await модель.embed(model, документ.chunks.map((к) => к.text));
+    await api.index({
+      model,
+      document_id: документ.document_id,
+      chunks: документ.chunks.map((к, i) => ({ text: к.text, vector: векторы[i] })),
+    });
+    посчитано += документ.chunks.length;
+  }
+  onProgress(всего, всего);
   return посчитано;
 }
 
