@@ -137,3 +137,84 @@ def test_длинный_вектор_записывается(db_session):
     _положить(db_session, [1.0] + [0.0] * 4095)
     найдено = search.search_by_vector(db_session, "bge-m3", [1.0] + [0.0] * 4095, limit=5)
     assert [к["meeting_id"] for к in найдено] == [1]
+
+
+# ------------------------------------------------------------ индекс HNSW
+
+def _план(db, dims: int, by_owner: bool = False) -> str:
+    """План запроса поиска — в том виде, в каком его выберет база после пяти
+    одинаковых запросов: драйвер тогда переходит на заготовленный запрос с
+    общим планом, где параметры неизвестны. Здесь общий план выбран сразу."""
+    sql = search.search_sql(dims, by_owner)
+    параметры = [":q", ":model", ":limit"] + ([":owner_id"] if by_owner else [])
+    for номер, имя in enumerate(параметры, start=1):
+        sql = sql.replace(имя, f"${номер}")
+    db.execute(text("SET LOCAL enable_seqscan = off"))  # на пяти строках перебор дешевле всегда
+    db.execute(text("SET LOCAL plan_cache_mode = force_generic_plan"))
+    db.execute(text(f"PREPARE поиск AS {sql}"))
+    вектор = "[" + ",".join(["1"] + ["0"] * (dims - 1)) + "]"
+    аргументы = f"'{вектор}', 'bge-m3', 5" + (", 1" if by_owner else "")
+    план = "\\n".join(r[0] for r in db.execute(text(f"EXPLAIN EXECUTE поиск({аргументы})")))
+    db.execute(text("DEALLOCATE поиск"))
+    return план
+
+
+def test_индексация_строит_индекс_и_поиск_его_берёт(db_session):
+    """Главный риск индекса — что база его молча не возьмёт: приведение длины и
+    условие в запросе обязаны совпасть с индексом дословно, в том числе в общем
+    плане, где параметры неизвестны."""
+    встреча = Meeting(id=1, title="Планёрка", status="done")
+    db_session.add(встреча)
+    сегмент = _segment(1, "про сроки")
+    db_session.add(сегмент)
+    db_session.flush()
+    search.store_vectors(db_session, "bge-m3", встреча, [{
+        "first_segment_id": 1, "last_segment_id": 1, "start_s": 0.0,
+        "text": "про сроки", "vector": [1.0, 0.0, 0.0],
+    }])
+
+    индексы = db_session.execute(text(
+        "SELECT indexname FROM pg_indexes WHERE tablename = 'chunks'")).scalars().all()
+    assert "chunks_vector_hnsw_3" in индексы
+    assert "chunks_vector_hnsw_3" in _план(db_session, 3)
+    assert "chunks_vector_hnsw_3" in _план(db_session, 3, by_owner=True)
+
+
+def test_длинный_вектор_без_индекса(db_session):
+    """Длиннее 2000 чисел pgvector индекс не строит — такие векторы ищутся
+    перебором, и попытка создать индекс не должна ронять индексацию."""
+    search.ensure_index(db_session, 4096)
+    индексы = db_session.execute(text(
+        "SELECT indexname FROM pg_indexes WHERE tablename = 'chunks'")).scalars().all()
+    assert "chunks_vector_hnsw_4096" not in индексы
+
+
+def test_фильтр_после_индекса_не_съедает_выдачу(db_session):
+    """Индекс ищет ближайших среди всех кусков этой длины, а другая модель
+    отсеивается после. Здесь рядом с вопросом лежат 150 кусков чужой модели —
+    больше, чем кандидатов смотрит индекс, — а свои пять дальше. Без
+    итеративного поиска индекс отдал бы одних чужих, и выдача была бы пустой.
+
+    16 чисел, а не 3–4, как в соседних тестах: на крошечной размерности среди
+    полутора сотен почти одинаковых векторов граф индекса оставлял свою точку
+    недостижимой — индекс приблизительный, и на таких данных это видно ярче
+    всего. Граф строится со случайностью, поэтому устойчивость проверена
+    прогоном 20 раз подряд."""
+    rng = np.random.default_rng(3)
+    вопрос = np.zeros(16, dtype=np.float32)
+    вопрос[0] = 1.0
+    search.ensure_index(db_session, 16)
+    for номер in range(1, 156):
+        чужой = номер <= 150
+        шум = rng.normal(scale=0.05 if чужой else 0.15, size=16)
+        _положить(db_session, list(вопрос + шум), meeting_id=номер)
+        if чужой:
+            db_session.execute(text("UPDATE chunks SET model = 'другая' WHERE meeting_id = :m"),
+                               {"m": номер})
+    db_session.execute(text("ANALYZE chunks"))
+    db_session.execute(text("SET LOCAL enable_seqscan = off"))
+
+    найдено = search.search_by_vector(db_session, "bge-m3", list(вопрос), limit=5)
+    assert sorted(к["meeting_id"] for к in найдено) == list(range(151, 156))
+    близости = [к["similarity"] for к in найдено]
+    assert близости == sorted(близости, reverse=True)

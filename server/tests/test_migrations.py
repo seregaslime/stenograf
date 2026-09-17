@@ -17,7 +17,7 @@ from alembic.migration import MigrationContext
 from sqlalchemy import text
 
 from app.db import models
-from app.db.database import alembic_config, engine
+from app.db.database import alembic_config, alembic_include_object, engine
 
 
 def test_ревизии_создают_ровно_то_что_в_моделях():
@@ -88,3 +88,23 @@ def test_старые_векторы_переезжают_в_pgvector_а_бит�
     assert [встреча for встреча, _ in строки] == [1]
     перенесённый = np.asarray(строки[0][1].strip("[]").split(","), dtype=np.float32)
     assert np.array_equal(перенесённый, целый)
+
+
+def test_индексы_поиска_не_считаются_расхождением():
+    """Индексы HNSW сервер создаёт на лету, в models.py их нет. Autogenerate на
+    живой базе, где они уже есть, не должен предлагать их удалить."""
+    from app import search
+    from app.db.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        search.ensure_index(db, 1024)
+        расхождения = compare_metadata(
+            MigrationContext.configure(db.connection(),
+                                       opts={"include_object": alembic_include_object}),
+            models.Base.metadata,
+        )
+        assert [d for d in расхождения if "alembic_version" not in str(d)] == []
+    finally:
+        db.rollback()
+        db.close()

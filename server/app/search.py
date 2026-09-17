@@ -22,7 +22,7 @@
 import logging
 
 import numpy as np
-from sqlalchemy import func, select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .config import Settings
@@ -67,6 +67,39 @@ def build_chunks(segments: list[Segment], max_chars: int) -> list[dict]:
             закрыть()
     закрыть()
     return [к for к in куски if к["text"]]
+
+
+# Индекс HNSW строится на каждую длину вектора отдельно: индексу нужна одна
+# длина, а в колонке лежат векторы разных моделей эмбеддингов. Длиннее 2000
+# чисел pgvector индекс не строит — вектор должен уместиться в страницу индекса
+# (8 КБ по 4 байта на число). Такие модели (qwen3-embedding:4b — 2560 чисел)
+# ищутся перебором: медленнее на больших объёмах, но точно.
+INDEX_MAX_DIMS = 2000
+INDEX_PREFIX = "chunks_vector_hnsw_"
+
+
+def ensure_index(db: Session, dims: int) -> None:
+    """Индекс HNSW для векторов длины dims, если его ещё нет.
+
+    Зовётся, когда приходят векторы: так индекс появляется у модели любой длины,
+    которую человек выберет, а не только у тех, что предусмотрели заранее.
+    Первые векторы новой длины — это единицы кусков, и строится он мгновенно;
+    по уже лежащим векторам индексы строит миграция.
+
+    Длина вписывается в текст запроса числом, а не параметром: это целое из
+    len() присланного вектора, подставлять туда нечего. Замок нужен против
+    двух одновременных индексаций — второй CREATE INDEX IF NOT EXISTS, начатый
+    до конца первого, падает на уникальности имени.
+    """
+    dims = int(dims)
+    if not 0 < dims <= INDEX_MAX_DIMS:
+        return
+    db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": 7_300_000 + dims})
+    db.execute(text(
+        f"CREATE INDEX IF NOT EXISTS {INDEX_PREFIX}{dims} ON chunks "
+        f"USING hnsw ((vector::vector({dims})) vector_ip_ops) "
+        f"WHERE vector_dims(vector) = {dims}"
+    ))
 
 
 def _normalized(vector: list[float]) -> np.ndarray:
@@ -118,6 +151,8 @@ def store_vectors(db: Session, model: str, meeting: Meeting, куски: list[di
     """
     for старый in db.scalars(select(Chunk).where(Chunk.meeting_id == meeting.id)):
         db.delete(старый)
+    for dims in {len(кусок["vector"]) for кусок in куски}:
+        ensure_index(db, dims)
     for кусок in куски:
         db.add(Chunk(
             meeting_id=meeting.id,
@@ -141,31 +176,50 @@ def search_by_vector(db: Session, model: str, вектор: list[float], limit: 
     по сети едут килобайты вопроса, а не мегабайты матрицы.
     """
     q = _normalized(вектор)
-    # <#> в pgvector — скалярное произведение со знаком минус: по возрастанию
-    # идут самые близкие.
-    расстояние = Chunk.vector.max_inner_product(q)
-    отбор = (
-        select(Chunk, расстояние)
-        # Векторы другой длины — от другой версии модели, пересчёт которой не
-        # дошёл до конца. Сравнивать их база отказывается с ошибкой, поэтому
-        # отсеиваются до сравнения, а не ломают запрос человека.
-        .where(Chunk.model == model, func.vector_dims(Chunk.vector) == len(q))
-        .order_by(расстояние)
-        .limit(limit)
+    params = {"model": model, "q": str(q.tolist()), "limit": limit, "owner_id": owner_id}
+    with_index = len(q) <= INDEX_MAX_DIMS
+    if with_index:
+        # Индекс находит ближайших среди ВСЕХ кусков этой длины, а чужая модель и
+        # чужие встречи отсеиваются уже после. Обычный поиск по индексу отдал бы
+        # hnsw.ef_search кандидатов (40) и остановился — после отсева могло не
+        # остаться ни одного. Итеративный поиск продолжает, пока не наберёт
+        # limit, но отдаёт кандидатов в неточном порядке — поэтому пересортировка.
+        db.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+    строки = db.execute(text(search_sql(len(q), owner_id is not None)), params).all()
+    return [_result(строка) for строка in sorted(строки, key=lambda r: r.distance)]
+
+
+def search_sql(dims: int, by_owner: bool) -> str:
+    """Запрос поиска. Отдельно — чтобы тест мог спросить у базы его план.
+
+    Приведение к vector(dims) и условие на длину повторяют индекс дословно —
+    иначе база его не узнает. Длина вписана числом, а не параметром: драйвер
+    после пяти одинаковых запросов переходит на общий план, где параметр
+    неизвестен, и база молча уходила бы в перебор. Подставлять туда нечего:
+    это len() присланного вектора.
+
+    Векторы другой длины (пересчёт модели не дошёл до конца) отсеиваются до
+    сравнения: сравнивать их база отказывается с ошибкой. <#> — скалярное
+    произведение со знаком минус: по возрастанию идут самые близкие.
+    """
+    dims = int(dims)
+    колонка = f"c.vector::vector({dims})" if dims <= INDEX_MAX_DIMS else "c.vector"
+    владелец = "AND m.owner_id = :owner_id" if by_owner else ""
+    return (
+        f"SELECT c.meeting_id, m.title, m.started_at, c.start_s, c.text, "
+        f"{колонка} <#> CAST(:q AS vector) AS distance "
+        f"FROM chunks c JOIN meetings m ON m.id = c.meeting_id "
+        f"WHERE c.model = :model AND vector_dims(c.vector) = {dims} {владелец} "
+        f"ORDER BY distance LIMIT :limit"
     )
-    if owner_id is not None:
-        отбор = отбор.join(Meeting, Chunk.meeting_id == Meeting.id).where(
-            Meeting.owner_id == owner_id
-        )
-    return [_result(кусок, -float(минус_близость)) for кусок, минус_близость in db.execute(отбор)]
 
 
-def _result(chunk: Chunk, similarity: float) -> dict:
+def _result(row) -> dict:
     return {
-        "meeting_id": chunk.meeting_id,
-        "meeting_title": chunk.meeting.title,
-        "started_at": chunk.meeting.started_at.isoformat() if chunk.meeting.started_at else None,
-        "start_s": chunk.start_s,
-        "text": chunk.text,
-        "similarity": round(similarity, 3),
+        "meeting_id": row.meeting_id,
+        "meeting_title": row.title,
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "start_s": row.start_s,
+        "text": row.text,
+        "similarity": round(-float(row.distance), 3),
     }

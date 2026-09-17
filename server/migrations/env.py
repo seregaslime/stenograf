@@ -8,11 +8,13 @@
 from alembic import context
 
 from app.db import models
-from app.db.database import engine
+from app.db.database import alembic_include_object, engine
 
 target_metadata = models.Base.metadata
 
+
 with engine.connect() as connection:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(connection=connection, target_metadata=target_metadata,
+                      include_object=alembic_include_object)
     with context.begin_transaction():
         context.run_migrations()
