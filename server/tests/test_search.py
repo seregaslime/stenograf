@@ -7,6 +7,7 @@
 хорошо».
 """
 import numpy as np
+from sqlalchemy import text
 
 from app import search
 from app.db.models import Chunk, Meeting, Segment
@@ -110,3 +111,29 @@ def test_база_ранжирует_так_же_как_прежний_пере�
     ожидаемые = np.argsort(-близости)[:5] + 1
     assert [к["meeting_id"] for к in найдено] == list(ожидаемые)
     assert [к["similarity"] for к in найдено] == [round(float(близости[i - 1]), 3) for i in ожидаемые]
+
+
+# ------------------------------------------- хранение векторов и оценка диска
+
+def test_векторы_лежат_в_строке_а_не_в_отдельном_хранилище(db_session):
+    """Вынесенные в TOAST векторы перебор достаёт по одному, а база считает
+    такой перебор дешёвым и не берёт индекс. Замер на 50 тысячах кусков: 188 мс
+    с выносом, 59 мс без. MAIN, а не PLAIN, — иначе длинный вектор не запишется."""
+    хранение = db_session.execute(text(
+        "SELECT attstorage FROM pg_attribute "
+        "WHERE attrelid = 'chunks'::regclass AND attname = 'vector'")).scalar()
+    assert хранение == "m"
+
+
+def test_база_считает_диск_ssd(db_session):
+    """С оценкой для диска с головкой (4) база на 50 тысячах кусков выбирала
+    перебор за 120 мс вместо индекса за 36 мс."""
+    assert db_session.execute(text("SHOW random_page_cost")).scalar() == "1.1"
+
+
+def test_длинный_вектор_записывается(db_session):
+    """Вектор на 4096 чисел (qwen3-embedding:8b) — 16 КБ, больше страницы базы.
+    Со строгим хранением в строке запись упала бы; MAIN выносит то, что не влезло."""
+    _положить(db_session, [1.0] + [0.0] * 4095)
+    найдено = search.search_by_vector(db_session, "bge-m3", [1.0] + [0.0] * 4095, limit=5)
+    assert [к["meeting_id"] for к in найдено] == [1]
