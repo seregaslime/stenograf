@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "./api/rest";
 import HistoryPage from "./pages/HistoryPage";
+import KnowledgePage from "./pages/KnowledgePage";
 import LivePage from "./pages/LivePage";
 import MeetingPage from "./pages/MeetingPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -15,12 +16,14 @@ export type Page =
   // протокол по завершении»: считает его приложение, и повод — этот переход
   | { name: "meeting"; id: number; autosummarize?: boolean }
   | { name: "speakers" }
+  | { name: "knowledge" }
   | { name: "settings" };
 
 const NAV: { key: Page["name"]; icon: string; label: string }[] = [
   { key: "live", icon: "🎙️", label: "Встреча" },
   { key: "history", icon: "🗂️", label: "История" },
   { key: "speakers", icon: "👥", label: "Спикеры" },
+  { key: "knowledge", icon: "📚", label: "База знаний" },
   { key: "settings", icon: "⚙️", label: "Настройки" },
 ];
 
@@ -91,6 +94,7 @@ export default function App() {
           <MeetingPage id={page.id} autosummarize={page.autosummarize} navigate={setPage} />
         )}
         {page.name === "speakers" && <SpeakersPage />}
+        {page.name === "knowledge" && <KnowledgePage />}
         {page.name === "settings" && <SettingsPage onServerChange={() => setHealth(null)} />}
       </div>
     </div>

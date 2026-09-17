@@ -3,6 +3,7 @@ import type {
   AsrStateDto,
   DocumentDto,
   HealthDto,
+  KnowledgeStatusDto,
   MeetingDetail,
   MeetingListItem,
   SearchHit,
@@ -160,6 +161,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ first_word: firstWord, last_word: lastWord, speaker_id: speakerId }),
     }),
+  knowledgeStatus: (model: string) =>
+    request<KnowledgeStatusDto>(`/api/knowledge/status?model=${encodeURIComponent(model)}`),
   documents: () => request<DocumentDto[]>("/api/documents"),
   // Содержимое в base64: сервер сам распознаёт кодировку (UTF-8, UTF-16, cp1251),
   // поэтому файл уходит байтами, а не текстом, прочитанным браузером в UTF-8.
