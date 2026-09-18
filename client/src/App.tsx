@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api/rest";
+import IndexingToast from "./components/IndexingToast";
 import { useAutoIndexing } from "./llm/indexing";
 import HistoryPage from "./pages/HistoryPage";
 import KnowledgePage from "./pages/KnowledgePage";
@@ -102,6 +103,9 @@ export default function App() {
         {page.name === "knowledge" && <KnowledgePage />}
         {page.name === "settings" && <SettingsPage onServerChange={() => setHealth(null)} />}
       </div>
+      {/* Рядом со страницами, а не внутри: окошко про индексацию — общее для
+          всего приложения, и страница ему не хозяин */}
+      <IndexingToast наЭкранеБазы={page.name === "knowledge"} />
     </div>
   );
 }

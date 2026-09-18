@@ -42,11 +42,9 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
-  // Индексация перед поиском: после смены модели эмбеддингов пересчитывается
-  // всё, и голая крутилка на кнопке выглядела бы получасовым зависанием.
-  // Состояние общее на приложение: индексация могла начаться и не отсюда
+  // Про идущую индексацию (поиск её ждёт, и голая крутилка на кнопке выглядела
+  // бы зависанием) рассказывает окошко в углу — здесь нужна только её ошибка
   const индексация = useIndexing();
-  const indexing = индексация.progress;
   const [searchError, setSearchError] = useState("");
   const [answer, setAnswer] = useState("");
   const [answering, setAnswering] = useState(false);
@@ -155,15 +153,6 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
           где говорили «двигаем сдачу на следующий месяц». Ищет и в документах —
           они загружаются на экране «База знаний»
         </span>
-        {/* Пока источник не назван (запуск и самый конец) плашку не показываем:
-            «кусок 0 из 0 · «»» мигал бы пустыми кавычками */}
-        {indexing?.source && (
-          <div className="banner info" style={{ marginTop: 10 }}>
-            <span className="spinner" /> Сначала индексация: кусок {indexing.chunksDone} из{" "}
-            {indexing.chunksTotal} · «{indexing.source}». Подробности и оценка времени —
-            на экране «База знаний».
-          </div>
-        )}
         {/* Ошибка индексации приходит из общего состояния: считать мог и не
             этот экран, а человек узнаёт, почему найдено не всё */}
         {(searchError || индексация.error) && (
