@@ -4,9 +4,21 @@
     {
       "name": "client-web",
       "runtimeExecutable": "sh",
-      "runtimeArgs": ["-c", "cd /Users/serega_slime/Documents/practika/client && npx vite --host 127.0.0.1 --port ${PORT:-5199}"],
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/serega_slime/Documents/practika/client && npx vite --host 127.0.0.1 --port ${PORT:-5199}"
+      ],
       "autoPort": true,
       "port": 5173
+    },
+    {
+      "name": "server-local",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/serega_slime/Documents/practika/server && STENOGRAF_PRELOAD_ASR=true .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8766"
+      ],
+      "port": 8766
     }
   ]
 }
