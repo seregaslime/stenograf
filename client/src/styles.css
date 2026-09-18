@@ -166,6 +166,19 @@ label.field > span { display: block; font-size: 12.5px; color: var(--muted); mar
 .banner.info { background: rgba(79, 140, 255, 0.1); border: 1px solid rgba(79, 140, 255, 0.3); color: #a8c6ff; }
 .banner.warn { background: rgba(246, 196, 83, 0.1); border: 1px solid rgba(246, 196, 83, 0.3); color: #f2d491; }
 
+/* Окошко в углу: индексация идёт сама, и человек должен видеть, чем занята
+   Ollama. Поверх содержимого, но не поверх модалок — своего слоя не заводим */
+.toast {
+  position: fixed; right: 20px; bottom: 20px; z-index: 50;
+  display: flex; align-items: center; gap: 10px;
+  max-width: 320px; padding: 12px 14px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+}
+
 .empty {
   color: var(--muted); text-align: center; padding: 46px 20px;
 }

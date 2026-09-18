@@ -3,13 +3,8 @@ import type { Page } from "../App";
 import { api } from "../api/rest";
 import { formatTime } from "../components/Transcript";
 import { LlmRouter } from "../llm/router";
-import {
-  answerByFragments,
-  indexPending,
-  searchMeetings,
-  type IndexProgress,
-  type SearchApi,
-} from "../llm/search";
+import { searchApi, startIndexing, useIndexing } from "../llm/indexing";
+import { answerByFragments, searchMeetings } from "../llm/search";
 import { loadLlmSettings, llmReady } from "../llm/settings";
 import type { SearchHit, MeetingListItem } from "../types";
 
@@ -47,9 +42,9 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
-  // Индексация перед поиском: после смены модели эмбеддингов пересчитывается
-  // всё, и голая крутилка на кнопке выглядела бы получасовым зависанием
-  const [indexing, setIndexing] = useState<IndexProgress | null>(null);
+  // Про идущую индексацию (поиск её ждёт, и голая крутилка на кнопке выглядела
+  // бы зависанием) рассказывает окошко в углу — здесь нужна только её ошибка
+  const индексация = useIndexing();
   const [searchError, setSearchError] = useState("");
   const [answer, setAnswer] = useState("");
   const [answering, setAnswering] = useState(false);
@@ -72,13 +67,6 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
     void load();
   }, []);
 
-  /** Сервер умеет отдать неиндексированное, принять векторы и сравнить их. */
-  const searchApi: SearchApi = {
-    pending: (model) => api.searchPending(model),
-    index: (body) => api.searchIndex(body),
-    query: (body) => api.searchQuery(body),
-  };
-
   async function find() {
     const текст = query.trim();
     if (!текст) {
@@ -96,8 +84,9 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
     try {
       // Первый запрос после новой встречи заодно её индексирует — он дольше.
       // Векторы считает приложение: у каждого своя модель эмбеддингов.
-      await indexPending(searchApi, settings, settings.embedModel, (шаг) =>
-        setIndexing(шаг.source ? шаг : null));
+      // Если индексация уже идёт (сама или с экрана базы знаний), поиск ждёт её,
+      // а не запускает вторую: тогда те же куски считались бы дважды.
+      await startIndexing(settings.embedModel);
       const results = await searchMeetings(
         searchApi, settings, settings.embedModel, текст,
       );
@@ -108,7 +97,6 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
       setHits(null);
     } finally {
       setSearching(false);
-      setIndexing(null);
     }
   }
 
@@ -165,16 +153,11 @@ export default function HistoryPage({ navigate }: { navigate: (page: Page) => vo
           где говорили «двигаем сдачу на следующий месяц». Ищет и в документах —
           они загружаются на экране «База знаний»
         </span>
-        {indexing && (
-          <div className="banner info" style={{ marginTop: 10 }}>
-            <span className="spinner" /> Сначала индексация: кусок {indexing.chunksDone} из{" "}
-            {indexing.chunksTotal} · «{indexing.source}». Подробности и оценка времени —
-            на экране «База знаний».
-          </div>
-        )}
-        {searchError && (
+        {/* Ошибка индексации приходит из общего состояния: считать мог и не
+            этот экран, а человек узнаёт, почему найдено не всё */}
+        {(searchError || индексация.error) && (
           <div className="banner error" style={{ marginTop: 10 }}>
-            {searchError}
+            {searchError || индексация.error}
           </div>
         )}
         {(answering || answer) && (

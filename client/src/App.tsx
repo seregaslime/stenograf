@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "./api/rest";
+import IndexingToast from "./components/IndexingToast";
+import { useAutoIndexing } from "./llm/indexing";
 import HistoryPage from "./pages/HistoryPage";
 import KnowledgePage from "./pages/KnowledgePage";
 import LivePage from "./pages/LivePage";
@@ -46,6 +48,10 @@ export default function App() {
       clearInterval(timer);
     };
   }, []);
+
+  // Индексация сама досчитывает новое: после встречи и при запуске приложения.
+  // Во время встречи — нет: Ollama считает подсказки, и очередь к ней одна
+  useAutoIndexing(health !== null, livePhase !== null);
 
   const active = page.name === "meeting" ? "history" : page.name;
 
@@ -97,6 +103,9 @@ export default function App() {
         {page.name === "knowledge" && <KnowledgePage />}
         {page.name === "settings" && <SettingsPage onServerChange={() => setHealth(null)} />}
       </div>
+      {/* Рядом со страницами, а не внутри: окошко про индексацию — общее для
+          всего приложения, и страница ему не хозяин */}
+      <IndexingToast наЭкранеБазы={page.name === "knowledge"} />
     </div>
   );
 }
