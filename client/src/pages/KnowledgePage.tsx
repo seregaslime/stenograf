@@ -173,13 +173,13 @@ export default function KnowledgePage() {
       <div className="card settings-block">
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ flex: 1 }} className="hint">
-            Свои документы — регламенты, ТЗ, заметки в .txt, .md и .docx — поиск
-            найдёт вместе со встречами
+            Свои документы — регламенты, ТЗ, заметки в .txt, .md, .docx и .pdf —
+            поиск найдёт вместе со встречами
           </span>
           <input
             ref={выбор}
             type="file"
-            accept=".txt,.md,.docx"
+            accept=".txt,.md,.docx,.pdf"
             hidden
             onChange={(event) => {
               const file = event.target.files?.[0];
