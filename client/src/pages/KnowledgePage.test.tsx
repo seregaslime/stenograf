@@ -58,6 +58,7 @@ vi.mock("../llm/search", () => ({
     индексация(onProgress)),
 }));
 
+const { setMeetingLive } = await import("../llm/indexing");
 const { default: KnowledgePage, formatDuration, remainingSeconds, plural } = await import("./KnowledgePage");
 
 let container: HTMLDivElement;
@@ -175,11 +176,35 @@ describe("документы на экране", () => {
     });
   }
 
-  it("загрузка отправляет байты файла и перечитывает состояние", async () => {
+  it("загруженный документ отправляется, считается сам и обновляет сводку", async () => {
+    // Нажимать «Проиндексировать» следом за «Загрузить» человеку незачем: он уже
+    // сказал, чего хочет. Поэтому запросов состояния четыре: при открытии, после
+    // загрузки, проверка самого автозапуска (не пересчёт ли это после смены
+    // модели) и перечитывание, когда индексация закончилась
+    let посчитано = 0;
+    индексация = async () => {
+      посчитано += 1;
+      return 480;
+    };
     await открыть();
     await выбрать(new File([new Uint8Array([0xd0, 0xe5, 0xe3])], "Регламент.txt"));
     expect(загружено).toEqual([{ filename: "Регламент.txt", bytes: [0xd0, 0xe5, 0xe3] }]);
-    expect(спрошено).toHaveLength(2);
+    expect(посчитано).toBe(1);
+    expect(спрошено).toHaveLength(4);
+  });
+
+  it("во время встречи загруженный документ не считается: Ollama занята подсказками", async () => {
+    let посчитано = 0;
+    индексация = async () => {
+      посчитано += 1;
+      return 480;
+    };
+    setMeetingLive(true);
+    await открыть();
+    await выбрать(new File([new Uint8Array([0xd0])], "Регламент.txt"));
+    expect(загружено).toHaveLength(1);       // сам файл на сервере
+    expect(посчитано).toBe(0);               // а векторы подождут конца встречи
+    setMeetingLive(false);
   });
 
   it("отказ сервера при загрузке показывается", async () => {

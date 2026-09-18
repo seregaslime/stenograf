@@ -3,15 +3,42 @@
  * счёт векторов (он в search.test.ts), а то, что запуск ровно один и что его
  * видно со стороны — из любого места приложения.
  */
+import { act } from "react";
+import { createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { indexState, isIndexing, startIndexing, subscribe } from "./indexing";
+import {
+  autoIndex,
+  indexState,
+  isIndexing,
+  setMeetingLive,
+  startIndexing,
+  subscribe,
+  useAutoIndexing,
+} from "./indexing";
 import type { IndexProgress } from "./search";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let индексация: (onProgress: (p: IndexProgress) => void) => Promise<number> = async () => 0;
 let запусков = 0;
 
-vi.mock("../api/rest", () => ({ api: { searchPending: vi.fn(), searchIndex: vi.fn(), searchQuery: vi.fn() } }));
+let сводокСпрошено = 0;
+let сводка = {
+  model: "bge-m3",
+  meetings: [{ id: 1, title: "Планёрка", status: "waiting", chunks: 0, chunks_waiting: 8, chunks_other_models: 0, started_at: null }],
+  documents: [],
+};
+vi.mock("../api/rest", () => ({
+  api: {
+    searchPending: vi.fn(), searchIndex: vi.fn(), searchQuery: vi.fn(),
+    knowledgeStatus: vi.fn(async () => {
+      сводокСпрошено += 1;
+      return сводка;
+    }),
+  },
+}));
 vi.mock("./settings", () => ({ loadLlmSettings: () => ({ embedModel: "bge-m3" }) }));
 vi.mock("./search", () => ({
   indexPending: vi.fn((_api: unknown, _s: unknown, _m: string, onProgress: (p: IndexProgress) => void) => {
@@ -36,8 +63,15 @@ function медленная(результат: () => Promise<number> | number) 
 }
 
 afterEach(() => {
+  сводка = {
+    model: "bge-m3",
+    meetings: [{ id: 1, title: "Планёрка", status: "waiting", chunks: 0, chunks_waiting: 8, chunks_other_models: 0, started_at: null }],
+    documents: [],
+  };
   запусков = 0;
+  сводокСпрошено = 0;
   индексация = async () => 0;
+  setMeetingLive(false);
 });
 
 describe("один хозяин у индексации", () => {
@@ -149,5 +183,96 @@ describe("один хозяин у индексации", () => {
     expect(indexState().error).toBe("");
     удачный.отпустить();
     await второй;
+  });
+
+  it("сама индексация во время встречи не начинается", async () => {
+    // Эмбеддинги и подсказки считает одна Ollama, очередь к ней одна: документ
+    // на сотню кусков занимает её на полминуты, и подсказка придёт после него
+    setMeetingLive(true);
+    await autoIndex("bge-m3");
+    expect(запусков).toBe(0);
+    expect(isIndexing()).toBe(false);
+    expect(сводокСпрошено).toBe(0);  // и сервер во время встречи не тревожим
+  });
+
+  it("после встречи считает", async () => {
+    setMeetingLive(true);
+    await autoIndex("bge-m3");
+    setMeetingLive(false);
+    const запуск = медленная(() => 4);
+    await autoIndex("bge-m3");
+    запуск.отпустить();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(запусков).toBe(1);
+  });
+
+  it("без выбранной модели эмбеддингов сама не лезет к Ollama", async () => {
+    await autoIndex("");
+    expect(запусков).toBe(0);
+  });
+
+  it("считать нечего — к модели не обращается", async () => {
+    сводка = { ...сводка, meetings: [] };
+    await autoIndex("bge-m3");
+    expect(запусков).toBe(0);
+  });
+
+  it("пересчёт после смены модели сама не начинает — это решение человека", async () => {
+    // Он стоит столько же, сколько индексация всей базы с нуля, и на экране
+    // «База знаний» человеку показано, сколько это займёт. Тихо занять Ollama
+    // на полчаса вместо него — ровно то «зависание», от которого экран и спасал
+    сводка = {
+      ...сводка,
+      meetings: [{ ...сводка.meetings[0], chunks_other_models: 8 }],
+    };
+    await autoIndex("qwen3-embedding:0.6b");
+    expect(запусков).toBe(0);
+  });
+
+  it("просьбу человека встреча не отменяет: он видит, чего просит", async () => {
+    setMeetingLive(true);
+    const запуск = медленная(() => 2);
+    const обещание = startIndexing("bge-m3");
+    запуск.отпустить();
+    expect(await обещание).toBe(2);
+    expect(запусков).toBe(1);
+  });
+
+  /** Приложение с включённым автозапуском: те же два признака, что в App. */
+  function приложение(серверНаСвязи: boolean, идётВстреча: boolean) {
+    return createElement(function Корень() {
+      useAutoIndexing(серверНаСвязи, идётВстреча);
+      return null;
+    });
+  }
+
+  it("приложение досчитывает само, как только сервер отозвался", async () => {
+    const узел = document.createElement("div");
+    let корень: Root;
+    await act(async () => {
+      корень = createRoot(узел);
+      корень.render(приложение(false, false));      // сервер ещё молчит
+    });
+    expect(запусков).toBe(0);
+
+    await act(async () => корень.render(приложение(true, false)));
+    expect(запусков).toBe(1);
+    await act(async () => корень!.unmount());
+  });
+
+  it("во время встречи не считает, а по её окончании берётся сам", async () => {
+    const узел = document.createElement("div");
+    let корень: Root;
+    await act(async () => {
+      корень = createRoot(узел);
+      корень.render(приложение(true, true));        // идёт встреча
+    });
+    expect(запусков).toBe(0);
+    await autoIndex("bge-m3");                      // и загрузка документа тоже ждёт
+    expect(запусков).toBe(0);
+
+    await act(async () => корень!.render(приложение(true, false)));  // встреча кончилась
+    expect(запусков).toBe(1);
+    await act(async () => корень!.unmount());
   });
 });

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/rest";
-import { startIndexing, useIndexing } from "../llm/indexing";
+import { autoIndex, startIndexing, useIndexing } from "../llm/indexing";
 import { loadLlmSettings } from "../llm/settings";
 import type { KnowledgeSourceStatus, KnowledgeStatusDto } from "../types";
 
@@ -88,6 +88,9 @@ export default function KnowledgePage() {
     try {
       await api.uploadDocument(file.name, new Uint8Array(await file.arrayBuffer()));
       перечитать((в) => в + 1);
+      // Загруженный документ считается сам: нажимать «Проиндексировать» следом
+      // за «Загрузить» человеку незачем, он уже сказал, чего хочет
+      autoIndex(model);
     } catch (exc) {
       setError((exc as Error).message);
     } finally {
