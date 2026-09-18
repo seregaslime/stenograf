@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/rest";
+import ModelSelect from "../components/ModelSelect";
 import { OllamaClient } from "../llm/ollama";
 import { OpenAiClient, type ModelInfo } from "../llm/openai";
 import { loadLlmSettings, saveLlmSettings } from "../llm/settings";
@@ -66,6 +67,10 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
   // модели задавались только переменными окружения сервера.
   const [ollamaUrl, setOllamaUrl] = useState("");
   const [localModels, setLocalModels] = useState<string[]>([]);
+  // Модели для эмбеддингов спрашиваем сами, без кнопки «Запросить модели»:
+  // эмбеддинги считает Ollama и при выбранном внешнем API, а туда человек за
+  // списком локальных моделей не ходит.
+  const [embedModels, setEmbedModels] = useState<string[]>([]);
   const [localSummaryModel, setLocalSummaryModel] = useState("");
   const [localHintsModel, setLocalHintsModel] = useState("");
   // Роль модели для ответов по прошлым встречам — общая для обоих провайдеров
@@ -176,6 +181,21 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
     return s;
   }
 
+  useEffect(() => {
+    const адрес = ollamaUrl.trim();
+    if (!адрес) return;
+    let живой = true;
+    // Молча: Ollama может не отвечать, и это не повод пугать человека на
+    // странице, куда он зашёл поменять что-то другое. Тогда список пуст, и
+    // ModelSelect сам покажет поле ввода.
+    new OllamaClient({ url: адрес })
+      .embeddingModels()
+      .then((models) => живой && setEmbedModels(models));
+    return () => {
+      живой = false;
+    };
+  }, [ollamaUrl]);
+
   async function probeLocal() {
     setProbing(true);
     setProbeError("");
@@ -187,6 +207,7 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
       const models = await client.models();
       const res = { models, reachable: models.length > 0 || (await client.reachable()) };
       setLocalModels(res.models);
+      void client.embeddingModels().then(setEmbedModels);
       if (!res.reachable) {
         setProbeError("Ollama по этому адресу не отвечает — проверьте, что она запущена.");
         return;
@@ -610,11 +631,11 @@ export default function SettingsPage({ onServerChange }: { onServerChange: () =>
 
           <label className="field">
             <span>Модель эмбеддингов для поиска по встречам</span>
-            <input
-              className="input"
+            <ModelSelect
               value={embedModel}
-              onChange={(event) => setEmbedModel(event.target.value)}
+              models={embedModels}
               placeholder="bge-m3"
+              onChange={setEmbedModel}
             />
             <span className="hint">
               Считается через Ollama даже при выбранном внешнем API: это не

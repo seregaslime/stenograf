@@ -89,6 +89,42 @@ export class OllamaClient {
     }
   }
 
+  /**
+   * Модели, которыми можно считать эмбеддинги.
+   *
+   * Ollama сама говорит, что умеет модель (`/api/show` → capabilities), и без
+   * этого в списке рядом с bge-m3 стояли бы qwen3:4b и прочие разговорные:
+   * эмбеддинги они выдадут, но поиск по ним будет хуже, а человек об этом не
+   * узнает. Суффикс «:latest» убираем — Ollama отдаёт его в списке, но в
+   * настройках модель записана как «bge-m3», и без этого она выглядела бы
+   * ненайденной.
+   *
+   * Старая Ollama про capabilities не знает и отдаёт пустой список у всех:
+   * тогда показываем все модели, а не пустоту, из которой нечего выбрать.
+   */
+  async embeddingModels(): Promise<string[]> {
+    const все = await this.models();
+    const умеют = await Promise.all(все.map((имя) => this.capabilities(имя)));
+    const эмбеддинги = все.filter((_, i) => умеют[i].includes("embedding"));
+    const список = эмбеддинги.length || умеют.some((c) => c.length) ? эмбеддинги : все;
+    return [...new Set(список.map((имя) => имя.replace(/:latest$/, "")))];
+  }
+
+  private async capabilities(model: string): Promise<string[]> {
+    try {
+      const response = await fetch(`${this.base}/api/show`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model }),
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) return [];
+      return ((await response.json()) as { capabilities?: string[] }).capabilities ?? [];
+    } catch {
+      return [];
+    }
+  }
+
   /** Отвечает ли адрес вообще. Пустой список моделей — не признак: у живой
    *  Ollama их может быть ноль, если ничего не скачано. */
   async reachable(): Promise<boolean> {

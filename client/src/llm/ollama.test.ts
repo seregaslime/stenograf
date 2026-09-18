@@ -89,3 +89,34 @@ describe("OllamaClient.models", () => {
     await expect(клиент().models()).resolves.toEqual([]);
   });
 });
+
+describe("OllamaClient.embeddingModels", () => {
+  function сОтветами(теги: string[], умения: Record<string, string[]>) {
+    return stub((url, init) => {
+      if (url.endsWith("/api/tags")) return ok({ models: теги.map((name) => ({ name })) });
+      const { model } = JSON.parse(String(init?.body)) as { model: string };
+      return ok({ capabilities: умения[model] ?? [] });
+    });
+  }
+
+  it("оставляет только те, что умеют эмбеддинги, и убирает «:latest»", async () => {
+    // Иначе рядом с bge-m3 стоят разговорные модели: эмбеддинги они выдадут,
+    // но поиск по ним будет хуже, а человек об этом не узнает
+    сОтветами(["qwen3:4b", "bge-m3:latest", "qwen3-embedding:0.6b"], {
+      "qwen3:4b": ["completion", "tools"],
+      "bge-m3:latest": ["embedding"],
+      "qwen3-embedding:0.6b": ["tools", "embedding"],
+    });
+    await expect(клиент().embeddingModels()).resolves.toEqual(["bge-m3", "qwen3-embedding:0.6b"]);
+  });
+
+  it("старая Ollama не знает про capabilities — показываем все модели, а не пустоту", async () => {
+    сОтветами(["qwen3:4b", "bge-m3:latest"], {});
+    await expect(клиент().embeddingModels()).resolves.toEqual(["qwen3:4b", "bge-m3"]);
+  });
+
+  it("моделей эмбеддингов нет, а capabilities известны — список пуст честно", async () => {
+    сОтветами(["qwen3:4b"], { "qwen3:4b": ["completion"] });
+    await expect(клиент().embeddingModels()).resolves.toEqual([]);
+  });
+});
