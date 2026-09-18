@@ -183,10 +183,10 @@ describe("документы на экране", () => {
   });
 
   it("отказ сервера при загрузке показывается", async () => {
-    отказЗагрузки = new Error("Пока принимаются только файлы .txt и .md.");
+    отказЗагрузки = new Error("Пока принимаются файлы .txt, .md, .docx и .pdf.");
     await открыть();
-    await выбрать(new File(["%PDF"], "договор.pdf"));
-    expect(container.querySelector(".banner.error")?.textContent).toBe("Пока принимаются только файлы .txt и .md.");
+    await выбрать(new File(["PK"], "презентация.pptx"));
+    expect(container.querySelector(".banner.error")?.textContent).toBe("Пока принимаются файлы .txt, .md, .docx и .pdf.");
   });
 
   it("удаление — только у документов и только после подтверждения", async () => {
