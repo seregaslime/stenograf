@@ -595,9 +595,11 @@ def get_documents(request: Request):
 @app.post("/api/documents")
 def upload_document(body: DocumentBody, request: Request):
     # Размер — до разбора base64: иначе огромное тело сначала раскодировалось бы
-    # целиком в память, и только потом было бы отвергнуто.
-    if len(body.content_base64) > documents.MAX_BYTES * 4 // 3 + 4:
-        raise HTTPException(413, "Файл больше мегабайта: его индексация заняла бы больше семи минут.")
+    # целиком в память, и только потом было бы отвергнуто. Предел берём самый
+    # мягкий из возможных, точный — по расширению, внутри documents.create.
+    предел = max(documents.MAX_BYTES, *documents.MAX_FILE_BYTES.values())
+    if len(body.content_base64) > предел * 4 // 3 + 4:
+        raise HTTPException(413, f"Файл больше {предел // 1_000_000} МБ.")
     try:
         raw = base64.b64decode(body.content_base64, validate=True)
     except (binascii.Error, ValueError):

@@ -4,6 +4,7 @@
 коды ответов и форма данных, — а не внутренности.
 """
 import base64
+import io
 
 import pytest
 from fastapi.testclient import TestClient
@@ -85,3 +86,80 @@ def test_удалённый_документ_пропадает_из_списк�
     assert client.delete(f"/api/documents/{документ['id']}").status_code == 200
     assert документ["id"] not in [д["id"] for д in client.get("/api/documents").json()]
     assert client.delete(f"/api/documents/{документ['id']}").status_code == 404
+
+
+# ------------------------------------------------------------ docx
+
+def сделать_docx(абзацы: list[str], таблица: list[list[str]] | None = None) -> bytes:
+    """Настоящий docx, собранный тут же: двоичный файл в репозитории — это
+    файл, который никто не прочитает глазами в ревью."""
+    import docx
+
+    документ = docx.Document()
+    for абзац in абзацы:
+        документ.add_paragraph(абзац)
+    if таблица:
+        т = документ.add_table(rows=len(таблица), cols=len(таблица[0]))
+        for строка, значения in zip(т.rows, таблица):
+            for ячейка, значение in zip(строка.cells, значения):
+                ячейка.text = значение
+    буфер = io.BytesIO()
+    документ.save(буфер)
+    return буфер.getvalue()
+
+
+def test_из_docx_берутся_абзацы_и_таблицы():
+    """Таблица лежит в документе отдельно от абзацев: без её разбора из
+    регламента со сроками в поиск попала бы одна вода вокруг таблицы."""
+    текст = documents.docx_text(сделать_docx(
+        ["# Регламент", "Планёрка по вторникам."],
+        [["Этап", "Срок"], ["Демо", "пятница"]],
+    ))
+    assert текст.split("\n\n") == [
+        "# Регламент", "Планёрка по вторникам.", "Этап | Срок", "Демо | пятница",
+    ]
+
+
+def test_пустые_абзацы_docx_не_плодят_пустоты():
+    assert documents.docx_text(сделать_docx(["", "   ", "Есть текст"])) == "Есть текст"
+
+
+def test_повреждённый_docx_отбивается():
+    with pytest.raises(documents.DocumentRejected) as отказ:
+        documents.docx_text(b"PK\x03\x04" + "но дальше мусор".encode())
+    assert отказ.value.status == 415
+
+
+def test_zip_бомба_не_распаковывается(monkeypatch):
+    """Архив на пару килобайт, который распаковывается в гигабайты, положил бы
+    сервер ещё до того, как мы дошли бы до текста."""
+    import zipfile
+
+    буфер = io.BytesIO()
+    with zipfile.ZipFile(буфер, "w", zipfile.ZIP_DEFLATED) as архив:
+        архив.writestr("word/document.xml", b"\0" * 5_000_000)
+    monkeypatch.setattr(documents, "MAX_UNPACKED_BYTES", 1_000_000)
+
+    with pytest.raises(documents.DocumentRejected) as отказ:
+        documents.docx_text(буфер.getvalue())
+    assert отказ.value.status == 413
+    assert len(буфер.getvalue()) < 100_000  # сам архив крошечный — на размер файла не поймать
+
+
+def test_docx_загружается_через_api(client):
+    ответ = загрузить(client, "Регламент отдела.docx", сделать_docx(["Планёрка по вторникам в 11."]))
+    assert ответ.status_code == 200, ответ.text
+    assert ответ.json()["title"] == "Регламент отдела"
+    assert ответ.json()["chars"] == len("Планёрка по вторникам в 11.")
+
+
+def test_docx_без_текста_отбивается(client):
+    assert загрузить(client, "пустой.docx", сделать_docx(["", "  "])).status_code == 400
+
+
+def test_слишком_много_текста_в_файле_отбивается(client, monkeypatch):
+    """Предел на текст — про время индексации: миллион символов это ~7 минут."""
+    monkeypatch.setattr(documents, "MAX_BYTES", 100)
+    ответ = загрузить(client, "длинный.docx", сделать_docx(["а" * 200]))
+    assert ответ.status_code == 413
+    assert "индексация" in ответ.json()["detail"]

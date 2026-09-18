@@ -1,28 +1,34 @@
 """Документы базы знаний: приём файла, текст из него, свои и чужие документы.
 
-Пункт 5а. Человек загружает txt или md — регламент, ТЗ, заметки, — и документ
-ищется тем же поиском, что и встречи. Храним извлечённый текст, а не файл:
-искать нужно по тексту, оригинал у человека и так есть.
-
-pdf и docx не принимаются намеренно (решение Сергея 17.09.2026 — позже):
-текст из них достаётся отдельными библиотеками, а у pdf ещё и с потерями —
-колонки, колонтитулы и таблицы собираются как получится.
+Пункт 5а. Человек загружает txt, md или docx — регламент, ТЗ, заметки, — и
+документ ищется тем же поиском, что и встречи. Храним извлечённый текст, а не
+файл: искать нужно по тексту, оригинал у человека и так есть.
 """
+import zipfile
 from datetime import datetime
+from io import BytesIO
 from pathlib import PurePath
 from typing import Optional
 
+import docx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .db.models import Document
 
-ALLOWED_SUFFIXES = (".txt", ".md")
-# Предел не про место в базе, а про время индексации: векторы считает модель на
-# машине человека, bge-m3 на ПК — 4.4 куска в секунду (замер 02.09.2026).
-# Мегабайт текста — около 1700 кусков по 600 символов, то есть ~7 минут, пока
-# поиск ждёт индексацию. Больше этого человек сочтёт зависанием.
+ALLOWED_SUFFIXES = (".txt", ".md", ".docx")
+# Предел на ТЕКСТ — не про место в базе, а про время индексации: векторы считает
+# модель на машине человека, bge-m3 на ПК — 4.1 куска в секунду (замер
+# 17.09.2026). Мегабайт текста — около 1700 кусков по 600 символов, то есть ~7
+# минут, пока поиск ждёт индексацию. Больше этого человек сочтёт зависанием.
 MAX_BYTES = 1_000_000
+# Предел на ФАЙЛ. У txt и md файл и есть текст, а docx — архив: в нём картинки,
+# шрифты и разметка, и на мегабайт текста файл легко весит десять.
+MAX_FILE_BYTES = {".docx": 20_000_000}
+# Сколько может весить содержимое архива docx в распакованном виде. Архив на
+# мегабайт из одних нулей распаковывается в гигабайты и кладёт сервер на лопатки
+# ещё до того, как мы дойдём до текста, — это называется «zip-бомба».
+MAX_UNPACKED_BYTES = 100_000_000
 
 
 class DocumentRejected(ValueError):
@@ -65,23 +71,78 @@ def decode_text(raw: bytes) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def docx_text(raw: bytes) -> str:
+    """Текст из docx: абзацы и таблицы, по порядку.
+
+    Таблицы вытаскиваются отдельно: в документе они лежат не среди абзацев, и
+    без этого из регламента с таблицей сроков в поиск попала бы одна вода
+    вокруг неё. Ячейки строки склеиваются через « | » — так строка таблицы
+    остаётся одной строкой текста, а не рассыпается на слова.
+
+    Сноски, колонтитулы и надписи в фигурах не берём: в них обычно номера
+    страниц и реквизиты, для поиска это шум.
+    """
+    проверить_архив(raw)
+    try:
+        документ = docx.Document(BytesIO(raw))
+    except Exception:
+        raise DocumentRejected(415, "Не удалось прочитать docx: файл повреждён или это не Word.")
+
+    куски: list[str] = []
+    абзацы = {абзац._element: абзац for абзац in документ.paragraphs}
+    таблицы = {таблица._element: таблица for таблица in документ.tables}
+    for элемент in документ.element.body.iterchildren():
+        if элемент in абзацы:
+            текст = абзацы[элемент].text.strip()
+            if текст:
+                куски.append(текст)
+        elif элемент in таблицы:
+            for строка in таблицы[элемент].rows:
+                ячейки = [я.text.strip() for я in строка.cells if я.text.strip()]
+                if ячейки:
+                    куски.append(" | ".join(ячейки))
+    return "\n\n".join(куски)
+
+
+def проверить_архив(raw: bytes) -> None:
+    """Архив не должен распаковываться в гигабайты (zip-бомба)."""
+    try:
+        with zipfile.ZipFile(BytesIO(raw)) as архив:
+            распакованный = sum(файл.file_size for файл in архив.infolist())
+    except zipfile.BadZipFile:
+        raise DocumentRejected(415, "Не удалось прочитать docx: файл повреждён или это не Word.")
+    if распакованный > MAX_UNPACKED_BYTES:
+        raise DocumentRejected(413, "Файл распаковывается в слишком большой документ.")
+
+
 def title_from_filename(filename: str) -> str:
     """Название — имя файла без расширения: так человек узнает его в выдаче."""
     return PurePath(filename).stem.strip()[:300] or "Документ"
 
 
-def check_filename(filename: str) -> None:
-    if PurePath(filename).suffix.lower() not in ALLOWED_SUFFIXES:
-        raise DocumentRejected(415, "Пока принимаются только файлы .txt и .md.")
+def check_filename(filename: str) -> str:
+    """Расширение файла, если оно нам подходит. Иначе — отказ с понятным текстом."""
+    суффикс = PurePath(filename).suffix.lower()
+    if суффикс not in ALLOWED_SUFFIXES:
+        raise DocumentRejected(415, "Пока принимаются файлы .txt, .md и .docx.")
+    return суффикс
+
+
+def извлечь_текст(суффикс: str, raw: bytes) -> str:
+    return docx_text(raw) if суффикс == ".docx" else decode_text(raw)
 
 
 def create(db: Session, filename: str, raw: bytes, owner_id: Optional[int]) -> Document:
-    check_filename(filename)
-    if len(raw) > MAX_BYTES:
-        raise DocumentRejected(413, "Файл больше мегабайта: его индексация заняла бы больше семи минут.")
-    text = decode_text(raw).strip()
+    суффикс = check_filename(filename)
+    предел = MAX_FILE_BYTES.get(суффикс, MAX_BYTES)
+    if len(raw) > предел:
+        raise DocumentRejected(413, f"Файл больше {предел // 1_000_000} МБ.")
+    text = извлечь_текст(суффикс, raw).strip()
     if not text:
         raise DocumentRejected(400, "В файле нет текста.")
+    if len(text) > MAX_BYTES:
+        raise DocumentRejected(413, "В файле больше миллиона символов: "
+                                    "его индексация заняла бы больше семи минут.")
     document = Document(owner_id=owner_id, title=title_from_filename(filename), text=text)
     db.add(document)
     db.flush()
