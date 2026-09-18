@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/rest";
-import { indexPending, type IndexProgress, type SearchApi } from "../llm/search";
+import { startIndexing, useIndexing } from "../llm/indexing";
 import { loadLlmSettings } from "../llm/settings";
 import type { KnowledgeSourceStatus, KnowledgeStatusDto } from "../types";
 
@@ -52,17 +52,29 @@ export function remainingSeconds(done: number, total: number, elapsedMs: number)
 export default function KnowledgePage() {
   const [status, setStatus] = useState<KnowledgeStatusDto | null>(null);
   const [error, setError] = useState("");
-  const [progress, setProgress] = useState<IndexProgress | null>(null);
   const [uploading, setUploading] = useState(false);
   const выбор = useRef<HTMLInputElement>(null);
-  const начало = useRef(0);
   const model = loadLlmSettings().embedModel;
+  // Индексация общая на приложение: она могла начаться на этом экране, в поиске
+  // на истории или сама — а показать её нужно везде одинаково
+  const индексация = useIndexing();
+  const progress = индексация.progress;
+  const идёт = progress !== null;
   // Перечитать состояние — после индексации; счётчик вместо функции в зависимостях эффекта
   const [версия, перечитать] = useState(0);
 
   useEffect(() => {
     api.knowledgeStatus(model).then(setStatus).catch((exc: Error) => setError(exc.message));
   }, [model, версия]);
+
+  // Сводка «найдётся N из M» меняется, когда индексация заканчивается, — чьей
+  // бы она ни была: своей, поисковой или самостоятельной. Спрашивать сервер на
+  // её начале незачем: в этот момент у него ничего не изменилось.
+  const шлаИндексация = useRef(false);
+  useEffect(() => {
+    if (шлаИндексация.current && !идёт) перечитать((в) => в + 1);
+    шлаИндексация.current = идёт;
+  }, [идёт]);
 
   const источники = status ? [...status.meetings, ...status.documents] : [];
   const найдётся = источники.filter((и) => и.status === "indexed").length;
@@ -95,26 +107,8 @@ export default function KnowledgePage() {
   }
 
   async function index() {
-    const searchApi: SearchApi = {
-      pending: (m) => api.searchPending(m),
-      index: (body) => api.searchIndex(body),
-      query: (body) => api.searchQuery(body),
-    };
     setError("");
-    начало.current = Date.now();
-    setProgress({ chunksDone: 0, chunksTotal: кусковЖдёт, source: "" });
-    try {
-      await indexPending(searchApi, loadLlmSettings(), model, setProgress);
-    } catch (exc) {
-      // Сохранённое не пропадает: повторный запуск продолжит со следующего источника
-      // Своё сообщение модели не всегда кончается точкой («…ollama pull имя») —
-      // без неё приписка склеивалась с командой в одно предложение
-      const причина = (exc as Error).message.trim().replace(/[.!?…]?$/, ".");
-      setError(`${причина} Уже посчитанное сохранено — можно продолжить.`);
-    } finally {
-      setProgress(null);
-      перечитать((в) => в + 1);
-    }
+    await startIndexing(model, кусковЖдёт);
   }
 
   return (
@@ -124,7 +118,9 @@ export default function KnowledgePage() {
         Всё, по чему ищет поиск: встречи и документы. Чтобы кусок нашёлся, для него
         считается вектор моделью эмбеддингов — это и есть индексация.
       </p>
-      {error && <div className="banner error">{error}</div>}
+      {(error || индексация.error) && (
+        <div className="banner error">{error || индексация.error}</div>
+      )}
 
       {/* Сменили модель эмбеддингов — векторы прежней поиск не видит. Молча
           пересчитывать при первом поиске значило бы получасовое «зависание»;
@@ -155,7 +151,7 @@ export default function KnowledgePage() {
             <div className="banner info" style={{ marginTop: 10 }}>
               <span className="spinner" /> Кусок {progress.chunksDone} из {progress.chunksTotal}
               {progress.source && ` · «${progress.source}»`} · осталось{" "}
-              {formatDuration(remainingSeconds(progress.chunksDone, progress.chunksTotal, Date.now() - начало.current))}
+              {formatDuration(remainingSeconds(progress.chunksDone, progress.chunksTotal, Date.now() - индексация.startedAt))}
             </div>
           ) : (
             <button
